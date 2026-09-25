@@ -217,6 +217,10 @@ changes belong in an `override` profile.
 `cvt.config.validate.v1`, `cvt.config.diff.v1`, `cvt.config.rollback.v1`,
 `cvt.config.snapshots.v1`, `cvt.config.edit.v1`, `cvt.config.path.v1`.
 
+`path` lists everything this program owns — including `<home>/backups/` and the
+core's working directory, the two a user asking "where did my backups go" is
+looking for.
+
 ### `proxies`
 
 | Command | Effect |

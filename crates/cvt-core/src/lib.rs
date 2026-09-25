@@ -26,7 +26,9 @@ pub mod mihomo;
 pub mod model;
 pub mod paths;
 pub mod profile;
+pub mod settings;
 pub mod validate;
 
 pub use error::{Error, Result};
 pub use paths::AppPaths;
+pub use settings::Settings;

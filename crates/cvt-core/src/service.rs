@@ -297,7 +297,36 @@ impl Service {
             });
         }
         supervisor.validate_config(&binary, &config)?;
+        // Logs are rotated here or never: the child holds its log open for as
+        // long as it runs, so this is the only moment either file can be moved
+        // without a live process writing into a file nobody will read.
+        self.rotate_logs(&supervisor);
         supervisor.start(&binary, &config)
+    }
+
+    /// Rotate and prune both logs, best effort.
+    ///
+    /// Deliberately not fallible: a user who cannot rotate a log file still
+    /// wants their core started, and a full disk that stops a log from moving
+    /// is not a reason to refuse to run. What did happen is logged.
+    fn rotate_logs(&self, supervisor: &Supervisor) {
+        let settings = &self.settings.logs;
+        for log in [self.paths.core_log(), self.paths.app_log()] {
+            match supervisor.rotate_log(&log, settings.max_size_bytes, settings.keep) {
+                Ok(Some(path)) => tracing::info!(file = %path.display(), "log rotated"),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(log = %log.display(), error = %error, "could not rotate the log");
+                }
+            }
+            match supervisor.prune_logs(&log, settings.keep_days) {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!(removed, "old rotated logs deleted"),
+                Err(error) => {
+                    tracing::warn!(log = %log.display(), error = %error, "could not prune the logs");
+                }
+            }
+        }
     }
 
     /// Stop the core.

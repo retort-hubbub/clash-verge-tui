@@ -179,6 +179,37 @@ impl Default for UpdateSettings {
     }
 }
 
+/// What to do about the log files.
+///
+/// A core that runs for months writes to its log for months, and the file this
+/// program points it at is one nobody would otherwise rotate. Rotation happens
+/// when the core is *started*, which is the only moment it can be: the child
+/// holds the file open while it runs, so renaming it underneath would leave a
+/// live process writing into a file nothing will ever read again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LogSettings {
+    /// Rotate a log once it is larger than this, in bytes. Zero disables it.
+    pub max_size_bytes: u64,
+    /// How many rotated files to keep per log, oldest dropped first.
+    pub keep: usize,
+    /// Delete rotated files older than this many days. Zero keeps them.
+    pub keep_days: u64,
+}
+
+impl Default for LogSettings {
+    fn default() -> Self {
+        Self {
+            // A megabyte is roughly a week of an ordinary session at the
+            // default log level, and small enough that four of them are
+            // nothing.
+            max_size_bytes: 1024 * 1024,
+            keep: 4,
+            keep_days: 14,
+        }
+    }
+}
+
 /// Everything the user can tune.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -193,6 +224,8 @@ pub struct Settings {
     pub stream: StreamSettings,
     /// Configuration application.
     pub update: UpdateSettings,
+    /// Log files.
+    pub logs: LogSettings,
     /// Keys written by another version, preserved verbatim.
     #[serde(flatten)]
     pub other: serde_json::Map<String, Value>,
@@ -247,6 +280,15 @@ impl Settings {
                 format!(
                     "{} ms is unreasonably slow; use at most 60000",
                     self.ui.refresh_ms
+                ),
+            ));
+        }
+        if self.logs.keep > 64 {
+            return Err(Error::invalid(
+                "logs.keep",
+                format!(
+                    "{} rotated files per log is more than anyone reads; use at most 64",
+                    self.logs.keep
                 ),
             ));
         }

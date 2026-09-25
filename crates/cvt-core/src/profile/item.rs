@@ -262,6 +262,14 @@ pub struct PrfItem {
     /// Free-form description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub desc: String,
+    /// The subscription's own page, as the panel advertised it.
+    ///
+    /// Recorded rather than guessed: a panel that sends
+    /// `profile-web-page-url` is telling the user where to manage their
+    /// account, and the only moment anyone knows that is the moment the
+    /// subscription was fetched. Only http(s) is kept — see the parser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
     /// Subscription URL, for remote profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -407,6 +415,7 @@ impl Default for PrfItem {
             kind: ProfileType::Local,
             name: String::new(),
             desc: String::new(),
+            home: None,
             url: None,
             file: None,
             updated: None,

@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.4.0] - 2026-09-26
+
+Three gaps from `docs/FEATURE-COVERAGE.md`, which was written by reading the
+code rather than by intent and then turned out to be a work list.
+
+### Added
+
+- Log rotation and pruning, on `logs.max_size_bytes`, `logs.keep` and
+  `logs.keep_days`, applied to both the core's log and this program's. It runs
+  when the core is started, which is the only moment either file can be moved:
+  a running core holds its log open, so renaming it underneath would leave a
+  live process writing into a file nothing will read again.
+- `PrfItem::home`, recorded from `profile-web-page-url` — http(s) only, because
+  the interface shows it. A panel that has stopped sending the header does not
+  erase the value: what was true once is worth more than a blank.
+- A subscription's suggested name, read from `Content-Disposition` in both the
+  RFC 5987 and the older quoted spelling, and adopted by `profiles add` when
+  `--name` was not given.
+- Repair of a `path&a=b` subscription URL — a query string whose question mark
+  a panel forgot, which otherwise answers 404. Attempted only when the URL as
+  written fails to validate.
+
+### Changed
+
+- `logs.keep` above 64 is refused, and the settings screen does not yet offer
+  the three log options; they are edited in `cvt.yaml`.
+
 ## [0.3.0] - 2026-09-26
 
 A third adversarial review checked the fixes from the second and found ten more
@@ -201,7 +228,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.3.0...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.4.0...develop
+[0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
 [0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
 [0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0
 [0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

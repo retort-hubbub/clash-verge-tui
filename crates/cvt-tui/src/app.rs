@@ -66,6 +66,12 @@ pub const POLL_EVERY: u64 = 20;
 /// the outcome except through [`Event::Done`] or [`Event::Failed`]. Payloads
 /// carry what the binary cannot work out on its own — which uid, which node,
 /// which reload discipline — and nothing else.
+// `SaveSettings` carries a whole `Settings` and is by far the largest variant.
+// Boxing it would make every `Effect` match in the loop pay an indirection for
+// a payload that is constructed a handful of times per keystroke; the vector of
+// effects is built and dropped within one event, so the wasted bytes are
+// transient rather than resident.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// Restore the terminal and exit. The core keeps running.

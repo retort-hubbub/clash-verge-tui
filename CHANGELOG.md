@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.7.0] - 2026-09-26
+
+### Added
+
+- `test.urls` names the URLs a node can be measured against, and `cvt test urls
+  --node N` measures every one through a node. A delay says a socket opened to
+  one host — the same host for every node — so a node that cannot reach
+  anything useful still reports a healthy number. Naming the three places
+  people actually ask about (`google`, `github`, `youtube`) answers the
+  question they are asking instead.
+- `--url` accepts one of those names wherever it accepts a URL. A value that is
+  neither is refused with the list in the message, because fetching a typo
+  fails and looks like a node problem rather than a mistake.
+- `cvt test urls --list`, and `--json` shapes `cvt.test.urls.v1` and
+  `cvt.test.targets.v1`.
+
+### Note
+
+The default `youtube` target is `https://www.youtube.com/robots.txt` rather
+than the front page: a robots file is a few hundred bytes, it is served over
+the same TLS connection, and fetching a video page to measure latency would be
+a strange thing for a monitoring tool to do.
+
 ## [0.6.0] - 2026-09-26
 
 A fifth adversarial review, of the newest work. It found twelve problems: eight
@@ -358,7 +381,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.6.0...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.7.0...develop
+[0.7.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.7.0
 [0.6.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.6.0
 [0.5.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.5.0
 [0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1

@@ -244,8 +244,12 @@ impl Pipeline {
                 .cloned()
                 .unwrap_or_default();
             let merged = patch.apply_values(&existing);
-            let before = merged.len();
-            let after = existing.len();
+            // `before` is the list as it was and `after` is the list as it now
+            // is. These were the other way round, so the note read as
+            // `(new -> old)` and a patch that added three entries looked like it
+            // had removed three.
+            let before = existing.len();
+            let after = merged.len();
             config[key] = Value::Array(merged);
             applied.push(AppliedProfile::applied(
                 item,
@@ -598,6 +602,31 @@ rules:
         assert!(
             note.note.contains("sequence patch on rules"),
             "{}",
+            note.note
+        );
+        // Finding F16: the counts were reported the other way round, so a patch
+        // that adds a rule read as if it had removed one.
+        let counts = note
+            .note
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(inside, _)| inside.to_owned())
+            .unwrap_or_default();
+        let (before, after) = counts
+            .split_once(" -> ")
+            .expect("the note reports both lengths");
+        let before: usize = before.trim().parse().unwrap();
+        let after: usize = after.trim().parse().unwrap();
+        assert_eq!(
+            after,
+            outcome.config.raw_rules().len(),
+            "the second number is the length now: {}",
+            note.note
+        );
+        assert_eq!(
+            before + 1,
+            after,
+            "one rule was prepended, so the count went up: {}",
             note.note
         );
     }

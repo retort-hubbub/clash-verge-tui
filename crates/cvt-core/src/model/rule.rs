@@ -72,7 +72,12 @@ impl Rule {
         if PAYLOADLESS.contains(&kind.as_str()) {
             // MATCH,POLICY — tolerate a stray payload field defensively.
             let policy = parts.get(1).map_or("DIRECT", |s| s.trim()).to_owned();
-            return Some(Self { kind, payload: None, policy, params: Vec::new() });
+            return Some(Self {
+                kind,
+                payload: None,
+                policy,
+                params: Vec::new(),
+            });
         }
         if parts.len() < 3 {
             return None;
@@ -106,13 +111,15 @@ impl Rule {
     /// `true` when `no-resolve` is present.
     #[must_use]
     pub fn no_resolve(&self) -> bool {
-        self.params.iter().any(|p| p.eq_ignore_ascii_case("no-resolve"))
+        self.params
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("no-resolve"))
     }
 
     /// Name of the rule-set provider this rule references, if any.
     #[must_use]
     pub fn rule_set_name(&self) -> Option<&str> {
-        self.is_rule_set().then(|| self.payload.as_deref()).flatten()
+        self.payload.as_deref().filter(|_| self.is_rule_set())
     }
 
     /// `true` when the policy is one of the two built-in targets.
@@ -213,7 +220,10 @@ mod tests {
         let src = "AND,((DOMAIN,a.example),(NETWORK,udp)),PROXY";
         let r = Rule::parse(src).unwrap();
         assert_eq!(r.kind, "AND");
-        assert_eq!(r.payload.as_deref(), Some("((DOMAIN,a.example),(NETWORK,udp))"));
+        assert_eq!(
+            r.payload.as_deref(),
+            Some("((DOMAIN,a.example),(NETWORK,udp))")
+        );
         assert_eq!(r.policy, "PROXY");
         assert_eq!(r.to_string(), src, "round-trip must be byte-exact");
     }

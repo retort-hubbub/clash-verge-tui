@@ -73,6 +73,20 @@ option_if_let_else = "allow"
 items_after_statements = "allow"
 unused_async = "allow"
 future_not_send = "allow"
+# Style lints that produce noise without catching defects. Each is a deliberate
+# choice, not an oversight:
+#
+# * `missing_const_for_fn` fires on ~30 trivial accessors. Marking them `const`
+#   buys nothing here (they are not used in const context) and makes signatures
+#   harder to read and to change.
+# * `derive_partial_eq_without_eq` wants `Eq` on every value type. Several of
+#   ours hold `serde_json::Value`, which is not `Eq`, and none is used as a map
+#   key, so the derive would buy nothing.
+# * `needless_raw_string_hashes` fires on every `r#"..."#` in the tests.
+#   Uniform raw-string syntax is worth more than the two characters it saves.
+missing_const_for_fn = "allow"
+derive_partial_eq_without_eq = "allow"
+needless_raw_string_hashes = "allow"
 
 [profile.release]
 lto = "thin"

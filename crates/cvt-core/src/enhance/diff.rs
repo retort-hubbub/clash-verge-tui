@@ -135,7 +135,12 @@ impl Diff {
     pub fn touched_keys(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for e in &self.entries {
-            let key = e.path.split(['.', '[']).next().unwrap_or(&e.path).to_owned();
+            let key = e
+                .path
+                .split(['.', '['])
+                .next()
+                .unwrap_or(&e.path)
+                .to_owned();
             if !out.contains(&key) {
                 out.push(key);
             }
@@ -217,17 +222,19 @@ fn walk(before: &Value, after: &Value, path: String, out: &mut Diff, limit: usiz
             }
         }
         (Value::Array(b), Value::Array(a)) => walk_arrays(b, a, path, out, limit),
-        _ => push(out, path, Change::Changed { from: before.clone(), to: after.clone() }, limit),
+        _ => push(
+            out,
+            path,
+            Change::Changed {
+                from: before.clone(),
+                to: after.clone(),
+            },
+            limit,
+        ),
     }
 }
 
-fn walk_arrays(
-    before: &[Value],
-    after: &[Value],
-    path: String,
-    out: &mut Diff,
-    limit: usize,
-) {
+fn walk_arrays(before: &[Value], after: &[Value], path: String, out: &mut Diff, limit: usize) {
     // Shape 1: named mappings (proxies, proxy-groups, rule-providers entries).
     if let (Some(b), Some(a)) = (named(before), named(after)) {
         for (name, item) in &a {
@@ -260,14 +267,8 @@ fn walk_arrays(
     // that a reorder is not reported as a full replacement.
     if before.iter().all(is_scalar) && after.iter().all(is_scalar) {
         let before_set: Vec<&Value> = before.iter().collect();
-        let added: Vec<&Value> = after
-            .iter()
-            .filter(|v| !before_set.contains(v))
-            .collect();
-        let removed: Vec<&Value> = before
-            .iter()
-            .filter(|v| !after.contains(v))
-            .collect();
+        let added: Vec<&Value> = after.iter().filter(|v| !before_set.contains(v)).collect();
+        let removed: Vec<&Value> = before.iter().filter(|v| !after.contains(v)).collect();
         if added.is_empty() && removed.is_empty() {
             push(out, path, Change::Reordered, limit);
             return;
@@ -364,7 +365,11 @@ mod tests {
     fn reports_added_and_removed_top_level_keys() {
         let d = diff(&json!({"a": 1, "gone": 2}), &json!({"a": 1, "new": 3}));
         assert_eq!(d.len(), 2);
-        assert!(d.entries.iter().any(|e| e.path == "new" && matches!(e.change, Change::Added(_))));
+        assert!(
+            d.entries
+                .iter()
+                .any(|e| e.path == "new" && matches!(e.change, Change::Added(_)))
+        );
         assert!(
             d.entries
                 .iter()
@@ -393,13 +398,13 @@ mod tests {
             .iter()
             .filter(|e| matches!(e.change, Change::Added(_)))
             .collect();
-        let removed: Vec<&DiffEntry> = d
+        let removed = d
             .entries
             .iter()
             .filter(|e| matches!(e.change, Change::Removed(_)))
-            .collect();
+            .count();
         assert_eq!(added.len(), 1, "{:#?}", d.entries);
-        assert_eq!(removed.len(), 0, "a pure reorder must not look like a removal");
+        assert_eq!(removed, 0, "a pure reorder must not look like a removal");
         assert_eq!(added[0].path, "rules[+]");
     }
 
@@ -408,7 +413,11 @@ mod tests {
         let d = diff(&json!({"r": ["a", "b"]}), &json!({"r": ["b", "a"]}));
         assert_eq!(d.len(), 1);
         assert_eq!(d.entries[0].change, Change::Reordered);
-        assert_eq!(d.counts(), (0, 0, 0), "a reorder is none of added/removed/changed");
+        assert_eq!(
+            d.counts(),
+            (0, 0, 0),
+            "a reorder is none of added/removed/changed"
+        );
     }
 
     #[test]
@@ -434,9 +443,12 @@ mod tests {
                 .iter()
                 .any(|e| e.path == "proxy-groups[name=NEW]" && matches!(e.change, Change::Added(_)))
         );
-        assert!(d.entries.iter().any(
-            |e| e.path == "proxy-groups[name=GONE]" && matches!(e.change, Change::Removed(_))
-        ));
+        assert!(
+            d.entries
+                .iter()
+                .any(|e| e.path == "proxy-groups[name=GONE]"
+                    && matches!(e.change, Change::Removed(_)))
+        );
     }
 
     #[test]
@@ -474,7 +486,10 @@ mod tests {
         let d = diff(&json!({"mode": "rule"}), &json!({"mode": "global"}));
         let s = d.to_string();
         assert!(s.contains("~ mode"), "{s}");
-        assert!(s.contains("rule -> global") || s.contains("\"rule\" -> \"global\""), "{s}");
+        assert!(
+            s.contains("rule -> global") || s.contains("\"rule\" -> \"global\""),
+            "{s}"
+        );
     }
 
     #[test]

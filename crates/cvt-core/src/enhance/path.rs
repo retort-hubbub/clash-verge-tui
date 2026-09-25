@@ -61,7 +61,7 @@ impl Path {
         }
         let mut segments = Vec::new();
         let mut buf = String::new();
-        let mut chars = src.chars().peekable();
+        let mut chars = src.chars();
 
         let flush_key = |buf: &mut String, segments: &mut Vec<Segment>| {
             if !buf.is_empty() {
@@ -84,10 +84,7 @@ impl Path {
                         inner.push(c);
                     }
                     if !closed {
-                        return Err(Error::invalid(
-                            "path",
-                            format!("unclosed `[` in `{src}`"),
-                        ));
+                        return Err(Error::invalid("path", format!("unclosed `[` in `{src}`")));
                     }
                     let inner = inner.trim();
                     if inner.is_empty() {
@@ -121,7 +118,10 @@ impl Path {
         if segments.is_empty() {
             return Err(Error::invalid("path", format!("`{src}` has no segments")));
         }
-        Ok(Self { segments, source: src.to_owned() })
+        Ok(Self {
+            segments,
+            source: src.to_owned(),
+        })
     }
 
     /// The parsed steps.
@@ -231,7 +231,9 @@ fn check_settable(root: &Value, path: &Path) -> Result<()> {
                         let obj = v.as_object().ok_or_else(|| {
                             Error::invalid(
                                 "path",
-                                format!("`{path}`: `{k}` is a key, but the parent is not a mapping"),
+                                format!(
+                                    "`{path}`: `{k}` is a key, but the parent is not a mapping"
+                                ),
                             )
                         })?;
                         obj.get(k)
@@ -281,17 +283,15 @@ fn check_settable(root: &Value, path: &Path) -> Result<()> {
 
     // The container the final step writes into.
     match path.last() {
-        Segment::Key(k) => {
-            match cur {
-                None => Ok(()),
-                Some(v) if v.is_null() => Ok(()),
-                Some(v) if v.is_object() => Ok(()),
-                Some(_) => Err(Error::invalid(
-                    "path",
-                    format!("`{path}`: cannot set key `{k}` on a non-mapping"),
-                )),
-            }
-        }
+        Segment::Key(k) => match cur {
+            None => Ok(()),
+            Some(v) if v.is_null() => Ok(()),
+            Some(v) if v.is_object() => Ok(()),
+            Some(_) => Err(Error::invalid(
+                "path",
+                format!("`{path}`: cannot set key `{k}` on a non-mapping"),
+            )),
+        },
         Segment::Index(i) => {
             let v = cur.ok_or_else(|| {
                 Error::invalid(
@@ -343,18 +343,21 @@ fn set_here(container: &mut Value, seg: &Segment, new_value: Value) -> Result<()
             if container.is_null() {
                 *container = Value::Object(Map::new());
             }
-            let obj = container
-                .as_object_mut()
-                .ok_or_else(|| Error::invalid("path", format!("cannot set key `{k}` on a non-mapping")))?;
+            let obj = container.as_object_mut().ok_or_else(|| {
+                Error::invalid("path", format!("cannot set key `{k}` on a non-mapping"))
+            })?;
             obj.insert(k.clone(), new_value);
             Ok(())
         }
         Segment::Index(i) => {
-            let arr = container.as_array_mut().ok_or_else(|| {
-                Error::invalid("path", "cannot index a non-list".to_owned())
-            })?;
+            let arr = container
+                .as_array_mut()
+                .ok_or_else(|| Error::invalid("path", "cannot index a non-list".to_owned()))?;
             let idx = resolve_index(*i, arr.len()).ok_or_else(|| {
-                Error::invalid("path", format!("index {i} is out of range (len {})", arr.len()))
+                Error::invalid(
+                    "path",
+                    format!("index {i} is out of range (len {})", arr.len()),
+                )
             })?;
             arr[idx] = new_value;
             Ok(())
@@ -366,9 +369,7 @@ fn set_here(container: &mut Value, seg: &Segment, new_value: Value) -> Result<()
             let slot = arr
                 .iter_mut()
                 .find(|e| e.get(key.as_str()).and_then(Value::as_str) == Some(value.as_str()))
-                .ok_or_else(|| {
-                    Error::invalid("path", format!("no element with {key}={value}"))
-                })?;
+                .ok_or_else(|| Error::invalid("path", format!("no element with {key}={value}")))?;
             *slot = new_value;
             Ok(())
         }
@@ -423,7 +424,7 @@ fn descend_mut<'a>(cur: &'a mut Value, seg: &Segment, path: &Path) -> Result<&'a
 /// [`Error::InvalidValue`] when an intermediate step cannot be traversed.
 pub fn remove(root: &mut Value, path: &Path) -> Result<Option<Value>> {
     if path.segments().len() == 1 {
-        return remove_here(root, path.last());
+        return Ok(remove_here(root, path.last()));
     }
     let mut cur = root;
     for seg in path.parent() {
@@ -432,7 +433,7 @@ pub fn remove(root: &mut Value, path: &Path) -> Result<Option<Value>> {
             None => return Ok(None),
         }
     }
-    remove_here(cur, path.last())
+    Ok(remove_here(cur, path.last()))
 }
 
 fn step_mut<'a>(cur: &'a mut Value, seg: &Segment) -> Option<&'a mut Value> {
@@ -451,29 +452,20 @@ fn step_mut<'a>(cur: &'a mut Value, seg: &Segment) -> Option<&'a mut Value> {
     }
 }
 
-fn remove_here(container: &mut Value, seg: &Segment) -> Result<Option<Value>> {
+fn remove_here(container: &mut Value, seg: &Segment) -> Option<Value> {
     match seg {
-        Segment::Key(k) => Ok(container.as_object_mut().and_then(|o| o.remove(k))),
+        Segment::Key(k) => container.as_object_mut().and_then(|o| o.remove(k)),
         Segment::Index(i) => {
-            let Some(arr) = container.as_array_mut() else {
-                return Ok(None);
-            };
-            let Some(idx) = resolve_index(*i, arr.len()) else {
-                return Ok(None);
-            };
-            Ok(Some(arr.remove(idx)))
+            let arr = container.as_array_mut()?;
+            let idx = resolve_index(*i, arr.len())?;
+            Some(arr.remove(idx))
         }
         Segment::Selector { key, value } => {
-            let Some(arr) = container.as_array_mut() else {
-                return Ok(None);
-            };
-            let Some(idx) = arr
-                .iter()
-                .position(|e| e.get(key.as_str()).and_then(Value::as_str) == Some(value.as_str()))
-            else {
-                return Ok(None);
-            };
-            Ok(Some(arr.remove(idx)))
+            let arr = container.as_array_mut()?;
+            let idx = arr.iter().position(|e| {
+                e.get(key.as_str()).and_then(Value::as_str) == Some(value.as_str())
+            })?;
+            Some(arr.remove(idx))
         }
     }
 }
@@ -499,13 +491,15 @@ pub fn push(root: &mut Value, path: &Path, item: Value) -> Result<()> {
         let obj = root
             .as_object_mut()
             .ok_or_else(|| Error::invalid("path", "cannot push onto a non-mapping"))?;
-        let entry = obj.entry(k.clone()).or_insert_with(|| Value::Array(Vec::new()));
+        let entry = obj
+            .entry(k.clone())
+            .or_insert_with(|| Value::Array(Vec::new()));
         if entry.is_null() {
             *entry = Value::Array(Vec::new());
         }
-        let arr = entry.as_array_mut().ok_or_else(|| {
-            Error::invalid("path", format!("`{k}` is not a list"))
-        })?;
+        let arr = entry
+            .as_array_mut()
+            .ok_or_else(|| Error::invalid("path", format!("`{k}` is not a list")))?;
         arr.push(item);
         return Ok(());
     }
@@ -519,10 +513,11 @@ pub fn push(root: &mut Value, path: &Path, item: Value) -> Result<()> {
             if cur.is_null() {
                 *cur = Value::Object(Map::new());
             }
-            let obj = cur.as_object_mut().ok_or_else(|| {
-                Error::invalid("path", "cannot push onto a non-mapping")
-            })?;
-            obj.entry(k.clone()).or_insert_with(|| Value::Array(Vec::new()))
+            let obj = cur
+                .as_object_mut()
+                .ok_or_else(|| Error::invalid("path", "cannot push onto a non-mapping"))?;
+            obj.entry(k.clone())
+                .or_insert_with(|| Value::Array(Vec::new()))
         }
         Segment::Index(_) | Segment::Selector { .. } => {
             return Err(Error::invalid(
@@ -573,10 +568,15 @@ mod tests {
             ]
         );
         assert_eq!(
-            Path::parse("proxy-groups[name=PROXY].url").unwrap().segments(),
+            Path::parse("proxy-groups[name=PROXY].url")
+                .unwrap()
+                .segments(),
             &[
                 Segment::Key("proxy-groups".into()),
-                Segment::Selector { key: "name".into(), value: "PROXY".into() },
+                Segment::Selector {
+                    key: "name".into(),
+                    value: "PROXY".into()
+                },
                 Segment::Key("url".into())
             ]
         );
@@ -584,7 +584,10 @@ mod tests {
             Path::parse("proxies[name=\"JP 01\"]").unwrap().segments(),
             &[
                 Segment::Key("proxies".into()),
-                Segment::Selector { key: "name".into(), value: "JP 01".into() }
+                Segment::Selector {
+                    key: "name".into(),
+                    value: "JP 01".into()
+                }
             ]
         );
     }
@@ -600,14 +603,26 @@ mod tests {
     fn reads_through_every_segment_kind() {
         let v = sample();
         assert_eq!(get(&v, &Path::parse("mode").unwrap()), Some(&json!("rule")));
-        assert_eq!(get(&v, &Path::parse("dns.nameserver[0]").unwrap()), Some(&json!("1.1.1.1")));
-        assert_eq!(get(&v, &Path::parse("proxies[1].name").unwrap()), Some(&json!("B")));
-        assert_eq!(get(&v, &Path::parse("proxies[-1].name").unwrap()), Some(&json!("B")));
+        assert_eq!(
+            get(&v, &Path::parse("dns.nameserver[0]").unwrap()),
+            Some(&json!("1.1.1.1"))
+        );
+        assert_eq!(
+            get(&v, &Path::parse("proxies[1].name").unwrap()),
+            Some(&json!("B"))
+        );
+        assert_eq!(
+            get(&v, &Path::parse("proxies[-1].name").unwrap()),
+            Some(&json!("B"))
+        );
         assert_eq!(
             get(&v, &Path::parse("proxies[name=A].port").unwrap()),
             Some(&json!(1))
         );
-        assert_eq!(get(&v, &Path::parse("rules[-1]").unwrap()), Some(&json!("MATCH,DIRECT")));
+        assert_eq!(
+            get(&v, &Path::parse("rules[-1]").unwrap()),
+            Some(&json!("MATCH,DIRECT"))
+        );
     }
 
     #[test]
@@ -628,7 +643,12 @@ mod tests {
         set(&mut v, &Path::parse("a.b.c").unwrap(), json!(7)).unwrap();
         assert_eq!(v["a"]["b"]["c"], json!(7));
 
-        set(&mut v, &Path::parse("proxies[name=B].port").unwrap(), json!(443)).unwrap();
+        set(
+            &mut v,
+            &Path::parse("proxies[name=B].port").unwrap(),
+            json!(443),
+        )
+        .unwrap();
         assert_eq!(v["proxies"][1]["port"], json!(443));
     }
 
@@ -637,13 +657,21 @@ mod tests {
         let mut v = sample();
         let err = set(&mut v, &Path::parse("rules[7]").unwrap(), json!("x")).unwrap_err();
         assert!(err.to_string().contains("out of range"), "{err}");
-        assert_eq!(v["rules"].as_array().unwrap().len(), 1, "list must be untouched");
+        assert_eq!(
+            v["rules"].as_array().unwrap().len(),
+            1,
+            "list must be untouched"
+        );
     }
 
     #[test]
     fn removes_keys_selectors_and_indices() {
         let mut v = sample();
-        assert!(remove(&mut v, &Path::parse("dns.enable").unwrap()).unwrap().is_some());
+        assert!(
+            remove(&mut v, &Path::parse("dns.enable").unwrap())
+                .unwrap()
+                .is_some()
+        );
         assert!(!v["dns"].as_object().unwrap().contains_key("enable"));
 
         remove(&mut v, &Path::parse("proxies[name=A]").unwrap()).unwrap();
@@ -656,9 +684,21 @@ mod tests {
     #[test]
     fn removing_something_absent_is_a_no_op() {
         let mut v = sample();
-        assert!(remove(&mut v, &Path::parse("nothing.here").unwrap()).unwrap().is_none());
-        assert!(remove(&mut v, &Path::parse("proxies[99]").unwrap()).unwrap().is_none());
-        assert!(remove(&mut v, &Path::parse("proxies[name=ZZZ]").unwrap()).unwrap().is_none());
+        assert!(
+            remove(&mut v, &Path::parse("nothing.here").unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            remove(&mut v, &Path::parse("proxies[99]").unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            remove(&mut v, &Path::parse("proxies[name=ZZZ]").unwrap())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -674,7 +714,12 @@ mod tests {
         let mut v = sample();
         // `push` always targets a *list*; the leaf of the path is the list, not
         // the element.
-        push(&mut v, &Path::parse("rule-providers.blog").unwrap(), json!({"type": "http"})).unwrap();
+        push(
+            &mut v,
+            &Path::parse("rule-providers.blog").unwrap(),
+            json!({"type": "http"}),
+        )
+        .unwrap();
         assert_eq!(v["rule-providers"]["blog"][0]["type"], json!("http"));
     }
 
@@ -694,7 +739,10 @@ mod tests {
         // `a[0]` asserts that `a` is a list with a first element. It does not
         // exist, so this must fail rather than fabricate one.
         assert!(set(&mut v, &Path::parse("a[0]").unwrap(), json!("x")).is_err());
-        assert!(!v.as_object().unwrap().contains_key("a"), "nothing may be created");
+        assert!(
+            !v.as_object().unwrap().contains_key("a"),
+            "nothing may be created"
+        );
         assert_eq!(v, json!({}), "a failed set must be a complete no-op");
 
         // `push` is the explicit list-growing operation.

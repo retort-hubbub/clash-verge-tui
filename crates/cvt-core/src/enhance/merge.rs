@@ -90,10 +90,19 @@ impl MergeOptions {
     #[must_use]
     pub fn extend_lists() -> Self {
         let mut per_key = BTreeMap::new();
-        for key in ["rules", "proxies", "proxy-groups", "rule-providers", "proxy-providers"] {
+        for key in [
+            "rules",
+            "proxies",
+            "proxy-groups",
+            "rule-providers",
+            "proxy-providers",
+        ] {
             per_key.insert(key.to_owned(), ArrayStrategy::Append);
         }
-        Self { default_array: ArrayStrategy::Replace, per_key }
+        Self {
+            default_array: ArrayStrategy::Replace,
+            per_key,
+        }
     }
 
     /// Prepend to the list-shaped keys, so the patch outranks the base.
@@ -103,7 +112,10 @@ impl MergeOptions {
         for key in ["rules", "proxy-groups"] {
             per_key.insert(key.to_owned(), ArrayStrategy::Prepend);
         }
-        Self { default_array: ArrayStrategy::Replace, per_key }
+        Self {
+            default_array: ArrayStrategy::Replace,
+            per_key,
+        }
     }
 
     /// Strategy to use when merging the mapping at `key`.
@@ -227,7 +239,8 @@ pub fn expand_directives(patch: &Value, options: &MergeOptions) -> (Value, Merge
         // the directive's strategy decides where its items land.
         match out.get_mut(target) {
             Some(Value::Array(existing)) => {
-                let mut combined = ArrayStrategy::Union.apply(existing, ensure_array(&value).as_slice());
+                let mut combined =
+                    ArrayStrategy::Union.apply(existing, ensure_array(&value).as_slice());
                 if combined.is_empty() {
                     combined = ensure_array(&value);
                 }
@@ -254,6 +267,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[allow(clippy::needless_pass_by_value)] // a by-value helper keeps the tests terse
     fn m(base: Value, patch: Value) -> Value {
         merged(&base, &patch, &MergeOptions::default())
     }
@@ -264,7 +278,11 @@ mod tests {
         let patch = json!({"dns": {"enable": true}});
         let out = m(base, patch);
         assert_eq!(out["dns"]["enable"], json!(true));
-        assert_eq!(out["dns"]["nameserver"], json!(["1.1.1.1"]), "sibling keys survive");
+        assert_eq!(
+            out["dns"]["nameserver"],
+            json!(["1.1.1.1"]),
+            "sibling keys survive"
+        );
         assert_eq!(out["mode"], json!("rule"), "untouched keys survive");
     }
 
@@ -313,7 +331,10 @@ mod tests {
         let objs = merged(
             &json!({"p": [{"name": "x"}]}),
             &json!({"p": [{"name": "x"}, {"name": "y"}]}),
-            &MergeOptions { default_array: ArrayStrategy::Union, ..Default::default() },
+            &MergeOptions {
+                default_array: ArrayStrategy::Union,
+                ..Default::default()
+            },
         );
         assert_eq!(objs["p"].as_array().unwrap().len(), 2);
     }
@@ -321,8 +342,14 @@ mod tests {
     #[test]
     fn scalars_and_type_changes_overwrite() {
         assert_eq!(m(json!({"a": 1}), json!({"a": "text"}))["a"], json!("text"));
-        assert_eq!(m(json!({"a": {"b": 1}}), json!({"a": [1]}))["a"], json!([1]));
-        assert_eq!(m(json!({"a": [1]}), json!({"a": {"b": 1}}))["a"], json!({"b": 1}));
+        assert_eq!(
+            m(json!({"a": {"b": 1}}), json!({"a": [1]}))["a"],
+            json!([1])
+        );
+        assert_eq!(
+            m(json!({"a": [1]}), json!({"a": {"b": 1}}))["a"],
+            json!({"b": 1})
+        );
     }
 
     #[test]
@@ -331,11 +358,7 @@ mod tests {
         // strategy must not turn its mapping into something else.
         let mut o = MergeOptions::default();
         o.set("rules", ArrayStrategy::Append);
-        let out = merged(
-            &json!({}),
-            &json!({"nested": {"rules": ["only"]}}),
-            &o,
-        );
+        let out = merged(&json!({}), &json!({"nested": {"rules": ["only"]}}), &o);
         assert_eq!(out["nested"]["rules"], json!(["only"]));
     }
 
@@ -367,7 +390,10 @@ mod tests {
             "mode": "global"
         });
         let (expanded, opts) = expand_directives(&patch, &MergeOptions::default());
-        assert!(expanded.get("prepend-rules").is_none(), "directive must be consumed");
+        assert!(
+            expanded.get("prepend-rules").is_none(),
+            "directive must be consumed"
+        );
         assert_eq!(expanded["mode"], json!("global"));
         assert_eq!(opts.strategy_for("rules"), ArrayStrategy::Prepend);
         assert_eq!(opts.strategy_for("proxies"), ArrayStrategy::Append);
@@ -377,7 +403,10 @@ mod tests {
             &expanded,
             &opts,
         );
-        assert_eq!(out["rules"], json!(["DOMAIN-SUFFIX,corp.example,DIRECT", "MATCH,DIRECT"]));
+        assert_eq!(
+            out["rules"],
+            json!(["DOMAIN-SUFFIX,corp.example,DIRECT", "MATCH,DIRECT"])
+        );
         assert_eq!(out["proxies"].as_array().unwrap().len(), 1);
     }
 

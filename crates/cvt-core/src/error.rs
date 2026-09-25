@@ -146,7 +146,10 @@ pub enum Error {
 impl Error {
     /// Attach a path to an [`std::io::Error`], producing [`Error::Io`].
     pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
-        Self::Io { path: path.into(), source }
+        Self::Io {
+            path: path.into(),
+            source,
+        }
     }
 
     /// Build a [`Error::Parse`] from any error type.
@@ -155,7 +158,11 @@ impl Error {
         path: impl Into<PathBuf>,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {
-        Self::Parse { kind, path: path.into(), source: Box::new(source) }
+        Self::Parse {
+            kind,
+            path: path.into(),
+            source: Box::new(source),
+        }
     }
 
     /// Build a [`Error::Serialize`] from any error type.
@@ -163,26 +170,35 @@ impl Error {
         kind: &'static str,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {
-        Self::Serialize { kind, source: Box::new(source) }
+        Self::Serialize {
+            kind,
+            source: Box::new(source),
+        }
     }
 
     /// Build a [`Error::Http`] from any error type.
-    pub fn http(url: impl Into<String>, source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Http { url: url.into(), source: Box::new(source) }
+    pub fn http(
+        url: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Http {
+            url: url.into(),
+            source: Box::new(source),
+        }
     }
 
     /// Build a [`Error::InvalidValue`] with a formatted reason.
     pub fn invalid(field: &'static str, reason: impl Into<String>) -> Self {
-        Self::InvalidValue { field, reason: reason.into() }
+        Self::InvalidValue {
+            field,
+            reason: reason.into(),
+        }
     }
 
     /// `true` when retrying the identical operation could plausibly succeed.
     #[must_use]
     pub fn is_transient(&self) -> bool {
-        matches!(
-            self,
-            Self::Http { .. } | Self::ControllerUnreachable { .. }
-        )
+        matches!(self, Self::Http { .. } | Self::ControllerUnreachable { .. })
     }
 
     /// A short, single-line rendering suitable for a TUI status bar.

@@ -4,12 +4,20 @@ use ratatui::widgets::*;
 pub fn smoke_render(f: &mut Frame, tick: u64) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(f.area());
     let tabs = Tabs::new(vec!["Home", "Proxies", "Logs"])
         .block(Block::bordered().title("cvt"))
         .select((tick % 3) as usize)
-        .highlight_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        );
     f.render_widget(tabs, chunks[0]);
     let rows: Vec<Row> = (0..3)
         .map(|i| Row::new(vec![Cell::from(format!("n{i}")), Cell::from("12 ms")]))
@@ -25,5 +33,6 @@ pub fn smoke_render(f: &mut Frame, tick: u64) {
     f.render_widget(g, chunks[2]);
     let _spark = Sparkline::default().data([1u64, 5, 3]);
     let _list = List::new(["a", "b"]).highlight_symbol(">> ");
-    let _p = Paragraph::new(Line::from(vec![Span::styled("x", Style::default())])).wrap(Wrap { trim: true });
+    let _p = Paragraph::new(Line::from(vec![Span::styled("x", Style::default())]))
+        .wrap(Wrap { trim: true });
 }

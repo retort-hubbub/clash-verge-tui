@@ -59,7 +59,10 @@ impl Config {
             Value::Null => Ok(Self::empty()),
             other => Err(Error::invalid(
                 "config",
-                format!("expected a mapping at the document root, found {}", type_name(&other)),
+                format!(
+                    "expected a mapping at the document root, found {}",
+                    type_name(&other)
+                ),
             )),
         }
     }
@@ -70,16 +73,12 @@ impl Config {
     /// [`Error::Parse`] on malformed YAML, [`Error::InvalidValue`] if the root
     /// is not a mapping.
     pub fn from_yaml(text: &str) -> Result<Self> {
-        let value: Value = serde_norway::from_str(text).map_err(|e| {
-            Error::Parse {
-                kind: "mihomo config",
-                path: std::path::PathBuf::from("<memory>"),
-                source: Box::new(e),
-            }
+        let value: Value = serde_norway::from_str(text).map_err(|e| Error::Parse {
+            kind: "mihomo config",
+            path: std::path::PathBuf::from("<memory>"),
+            source: Box::new(e),
         })?;
-        Self::from_value(value).map_err(|e| {
-            Error::invalid("config", format!("{e}"))
-        })
+        Self::from_value(value).map_err(|e| Error::invalid("config", format!("{e}")))
     }
 
     /// Render to YAML.
@@ -199,20 +198,24 @@ impl Config {
     /// The SOCKS5 port.
     #[must_use]
     pub fn socks_port(&self) -> Option<u16> {
-        self.get_u64("socks-port").and_then(|v| u16::try_from(v).ok())
+        self.get_u64("socks-port")
+            .and_then(|v| u16::try_from(v).ok())
     }
 
     /// The mixed HTTP+SOCKS port.
     #[must_use]
     pub fn mixed_port(&self) -> Option<u16> {
-        self.get_u64("mixed-port").and_then(|v| u16::try_from(v).ok())
+        self.get_u64("mixed-port")
+            .and_then(|v| u16::try_from(v).ok())
     }
 
     /// Which port a client should actually be pointed at, mirroring mihomo's
     /// own precedence: `mixed-port`, then `port`, then `socks-port`.
     #[must_use]
     pub fn effective_proxy_port(&self) -> Option<u16> {
-        self.mixed_port().or_else(|| self.port()).or_else(|| self.socks_port())
+        self.mixed_port()
+            .or_else(|| self.port())
+            .or_else(|| self.socks_port())
     }
 
     /// The controller address, e.g. `127.0.0.1:9090`.
@@ -236,7 +239,8 @@ impl Config {
     /// Log level, defaulting to `info`.
     #[must_use]
     pub fn log_level(&self) -> String {
-        self.get_str("log-level").unwrap_or_else(|| "info".to_owned())
+        self.get_str("log-level")
+            .unwrap_or_else(|| "info".to_owned())
     }
 
     // ------------------------------------------------------------- children
@@ -319,15 +323,16 @@ impl Config {
 
     /// Replace the `rules` list.
     pub fn set_rules(&mut self, rules: &[Rule]) {
-        let arr: Vec<Value> =
-            rules.iter().map(|r| Value::String(r.to_string())).collect();
+        let arr: Vec<Value> = rules.iter().map(|r| Value::String(r.to_string())).collect();
         self.root.insert("rules".to_owned(), Value::Array(arr));
     }
 
     /// Replace the `rules` list with raw strings, preserving comments.
     pub fn set_raw_rules<S: AsRef<str>>(&mut self, rules: &[S]) {
-        let arr: Vec<Value> =
-            rules.iter().map(|r| Value::String(r.as_ref().to_owned())).collect();
+        let arr: Vec<Value> = rules
+            .iter()
+            .map(|r| Value::String(r.as_ref().to_owned()))
+            .collect();
         self.root.insert("rules".to_owned(), Value::Array(arr));
     }
 
@@ -415,8 +420,7 @@ impl Config {
         let mut arr = Vec::with_capacity(items.len());
         for item in items {
             arr.push(
-                serde_json::to_value(item)
-                    .map_err(|e| Error::serialize("config list entry", e))?,
+                serde_json::to_value(item).map_err(|e| Error::serialize("config list entry", e))?,
             );
         }
         self.root.insert(key.to_owned(), Value::Array(arr));
@@ -513,7 +517,10 @@ rules:
         let again = Config::from_yaml(&rendered).unwrap();
         assert_eq!(c, again, "config must survive a YAML round-trip unchanged");
         assert_eq!(
-            again.get("some-future-key").and_then(|v| v.get("a")).and_then(Value::as_i64),
+            again
+                .get("some-future-key")
+                .and_then(|v| v.get("a"))
+                .and_then(Value::as_i64),
             Some(1),
             "unknown top-level keys must be preserved"
         );
@@ -557,7 +564,10 @@ rules:
     fn rejects_non_mapping_roots() {
         assert!(Config::from_yaml("- a\n- b\n").is_err());
         assert!(Config::from_yaml("just a string").is_err());
-        assert!(Config::from_yaml("").is_ok(), "an empty document is an empty config");
+        assert!(
+            Config::from_yaml("").is_ok(),
+            "an empty document is an empty config"
+        );
     }
 
     #[test]

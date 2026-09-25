@@ -22,6 +22,7 @@
 
 pub mod enhance;
 pub mod error;
+pub mod mihomo;
 pub mod model;
 pub mod paths;
 pub mod validate;

@@ -55,9 +55,7 @@ impl AppPaths {
             return Ok(Self::new(PathBuf::from(from_env)));
         }
         let base = dirs::data_dir().ok_or_else(|| Error::CoreUnavailable {
-            reason: format!(
-                "could not determine a data directory; set {HOME_ENV} or pass --home"
-            ),
+            reason: format!("could not determine a data directory; set {HOME_ENV} or pass --home"),
         })?;
         Ok(Self::new(base.join(APP_DIR_NAME)))
     }
@@ -197,11 +195,14 @@ impl AppPaths {
         }
         let tmp = path.with_extension(format!(
             "{}.tmp",
-            path.extension().and_then(std::ffi::OsStr::to_str).unwrap_or("out")
+            path.extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("out")
         ));
         {
             let mut f = std::fs::File::create(&tmp).map_err(|e| Error::io(&tmp, e))?;
-            f.write_all(contents.as_bytes()).map_err(|e| Error::io(&tmp, e))?;
+            f.write_all(contents.as_bytes())
+                .map_err(|e| Error::io(&tmp, e))?;
             f.sync_all().map_err(|e| Error::io(&tmp, e))?;
         }
         std::fs::rename(&tmp, path).map_err(|e| Error::io(path, e))?;

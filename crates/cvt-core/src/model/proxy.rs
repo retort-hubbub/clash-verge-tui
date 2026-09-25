@@ -106,7 +106,10 @@ impl GroupKind {
     /// Whether the group supports latency testing its members.
     #[must_use]
     pub fn is_testable(self) -> bool {
-        matches!(self, Self::UrlTest | Self::Fallback | Self::LoadBalance | Self::Smart)
+        matches!(
+            self,
+            Self::UrlTest | Self::Fallback | Self::LoadBalance | Self::Smart
+        )
     }
 }
 

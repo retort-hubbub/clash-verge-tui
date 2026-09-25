@@ -489,10 +489,14 @@ pub struct PathsReport {
     pub runtime_config: String,
     /// Previous generated configuration.
     pub runtime_config_previous: String,
-    /// Snapshots.
+    /// Snapshots: one generated document each.
     pub snapshots_dir: String,
+    /// Backups: the settings, the index, the profiles and the overrides.
+    pub backups_dir: String,
     /// The core binary and its data.
     pub core_dir: String,
+    /// The core's own working directory, passed to it as `-d`.
+    pub core_work_dir: String,
     /// The core's captured output.
     pub core_log: String,
     /// The application's own log.
@@ -515,7 +519,9 @@ impl Report for PathsReport {
             ("runtime config", self.runtime_config.as_str()),
             ("previous config", self.runtime_config_previous.as_str()),
             ("snapshots", self.snapshots_dir.as_str()),
+            ("backups", self.backups_dir.as_str()),
             ("core", self.core_dir.as_str()),
+            ("core work", self.core_work_dir.as_str()),
             ("core log", self.core_log.as_str()),
             ("app log", self.app_log.as_str()),
         ] {
@@ -536,7 +542,9 @@ fn path(ctx: &Ctx) -> Result<()> {
         runtime_config: paths.runtime_config().display().to_string(),
         runtime_config_previous: paths.runtime_config_previous().display().to_string(),
         snapshots_dir: paths.snapshots_dir().display().to_string(),
+        backups_dir: paths.backups_dir().display().to_string(),
         core_dir: paths.core_dir().display().to_string(),
+        core_work_dir: paths.core_work_dir().display().to_string(),
         core_log: paths.core_log().display().to_string(),
         app_log: paths.app_log().display().to_string(),
     })
@@ -656,13 +664,19 @@ mod tests {
             runtime_config: paths.runtime_config().display().to_string(),
             runtime_config_previous: paths.runtime_config_previous().display().to_string(),
             snapshots_dir: paths.snapshots_dir().display().to_string(),
+            backups_dir: paths.backups_dir().display().to_string(),
             core_dir: paths.core_dir().display().to_string(),
+            core_work_dir: paths.core_work_dir().display().to_string(),
             core_log: paths.core_log().display().to_string(),
             app_log: paths.app_log().display().to_string(),
         };
         let text = report.render(Output::new(false, 0, false));
         assert!(text.contains("runtime config"), "{text}");
         assert!(text.contains("core log"), "{text}");
+        // The two the command used to leave out, which are exactly the two a
+        // user asking "where did my backups go" is looking for.
+        assert!(text.contains("backups"), "{text}");
+        assert!(text.contains("core work"), "{text}");
         let value = output::to_value(&report).unwrap();
         assert_eq!(value["schema"], serde_json::json!("cvt.config.path.v1"));
         assert!(

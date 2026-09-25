@@ -611,16 +611,29 @@ pub fn test_defaults(ctx: &Ctx) -> (String, u32, usize) {
 
 /// `--url`, `--timeout` and `--concurrency`, falling back to settings.
 ///
-/// One function for every latency command, so `proxies test` and `test delay`
-/// cannot drift apart on what a missing flag means.
-#[must_use]
-pub fn node_options(ctx: &Ctx, args: &NodeTestArgs) -> (String, u32, usize) {
+/// One function for every latency command, and every *check* belongs here for
+/// the same reason the defaults do: `--url` is accepted by four commands and a
+/// guard put in the two somebody remembered is a guard that covers those two.
+/// The sixth review found the third command, and then the fourth, which is the
+/// pattern this codebase keeps repeating — so the check moved to the one place
+/// the flag is read.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when `--url` is neither a URL nor a configured
+/// target.
+pub fn node_options(ctx: &Ctx, args: &NodeTestArgs) -> Result<(String, u32, usize)> {
+    check_url_flag(ctx, args.url.as_deref())?;
     let (url, timeout, concurrency) = test_defaults(ctx);
-    (
+    // Clamped to the same ceiling the settings are held to. `--concurrency 600`
+    // went straight to `buffer_unordered` while `test.concurrency: 600` was
+    // refused with "would exhaust file descriptors" — one number, two answers,
+    // and the one that gets through is the one nobody validates.
+    let asked = args.concurrency.unwrap_or(concurrency);
+    Ok((
         resolve_url(ctx, args.url.as_deref()).unwrap_or(url),
         args.timeout.unwrap_or(timeout),
-        args.concurrency.unwrap_or(concurrency).max(1),
-    )
+        asked.clamp(1, cvt_core::settings::MAX_TEST_CONCURRENCY),
+    ))
 }
 
 /// `--url`, as a URL or as a name from `test.urls`.

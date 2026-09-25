@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `apply` waits for the configuration it wrote to be *live* before reporting
+  success. `/version` answering means the process is up, not that it has this
+  document: a reload rebuilds the groups in the background, and the very next
+  command failed with `no group named PROXY` after an apply that exited 0.
+- `--concurrency` is held to the same ceiling as `test.concurrency` in the
+  settings. `--concurrency 600` went straight to `buffer_unordered` while the
+  same number in `cvt.yaml` was refused with "would exhaust file descriptors" —
+  one limit, two answers, and the one that got through was the one nothing
+  validated. The check moved into `node_options`, the one function every
+  latency command reads its flags through, because the guard had already been
+  put in the two commands somebody remembered and the review found the third
+  and then the fourth.
 - A directory reached through a symbolic link is not copied into a backup, and
   a restore refuses to write through one. Reading one copies files from
   wherever the link points — a test put a `secret.yaml` in somebody else's

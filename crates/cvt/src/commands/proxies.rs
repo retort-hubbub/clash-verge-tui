@@ -272,7 +272,7 @@ async fn test(ctx: &Ctx, args: &TestArgs) -> Result<()> {
     // typo is a typo whichever command is handed one, and the two commands
     // share `--url`.
     check_url_flag(ctx, args.node.url.as_deref())?;
-    let (url, timeout, concurrency) = node_options(ctx, &args.node);
+    let (url, timeout, concurrency) = node_options(ctx, &args.node)?;
     let client = ctx.client()?;
     let proxies = client.proxies().await?;
     let target = proxies
@@ -301,7 +301,7 @@ async fn test(ctx: &Ctx, args: &TestArgs) -> Result<()> {
 }
 
 async fn test_all(ctx: &Ctx, args: &NodeTestArgs) -> Result<()> {
-    let (url, timeout, concurrency) = node_options(ctx, args);
+    let (url, timeout, concurrency) = node_options(ctx, args)?;
     let client = ctx.client()?;
     let groups = client.groups().await?;
     let targets = nodes_by_group(&groups);

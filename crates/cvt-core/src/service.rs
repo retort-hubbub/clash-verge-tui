@@ -638,9 +638,21 @@ impl Service {
         // was there *before* this apply, and the choices just read belong to
         // the profile that failed to apply. Replaying them would point a
         // restored configuration at members it may not have.
-        let selections_restored = match &reload {
-            ReloadOutcome::RolledBack { .. } => 0,
-            _ => self.restore_selections().await.unwrap_or(0),
+        let selections_restored = if let ReloadOutcome::RolledBack { .. } = &reload {
+            0
+        } else {
+            {
+                // Before the choices, and before this returns. `/version`
+                // answering means the *process* is up, not that it has this
+                // configuration: a reload rebuilds the groups in the
+                // background, and for a moment afterwards a group the document
+                // declares is not there. Reporting success in that window made
+                // `apply` mean "the file was written", while the very next
+                // command failed with `no group named PROXY` — so the wait is
+                // for the document, not for the process.
+                self.wait_for_document(&outcome.config).await;
+                self.restore_selections().await.unwrap_or(0)
+            }
         };
         Ok(ApplyReport {
             outcome,
@@ -1032,6 +1044,35 @@ impl Service {
         let pid = self.restart_core()?;
         self.wait_until_ready().await?;
         Ok(ReloadOutcome::Restarted { pid })
+    }
+
+    /// Wait until the core answers for the groups this document declares.
+    ///
+    /// Best effort and bounded: a group the core refuses to create is a
+    /// validation problem that has already been reported, and waiting for it
+    /// forever would turn a bad document into a hang.
+    async fn wait_for_document(&self, config: &Config) {
+        let Ok(client) = self.client() else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let groups = config.proxy_groups();
+        let names: Vec<&str> = groups.iter().map(|group| group.name.as_str()).collect();
+        for name in names {
+            if std::time::Instant::now() >= deadline {
+                return;
+            }
+            loop {
+                if client.group(name).await.is_ok() {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    tracing::debug!(group = name, "the core never served this group");
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
     }
 
     /// Wait for the controller to answer after a restart.

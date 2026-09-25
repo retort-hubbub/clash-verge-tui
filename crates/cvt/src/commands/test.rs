@@ -233,7 +233,7 @@ impl Report for TargetsReport {
 
 async fn delay(ctx: &Ctx, args: &DelayArgs) -> Result<()> {
     check_url_flag(ctx, args.node.url.as_deref())?;
-    let (url, timeout, concurrency) = node_options(ctx, &args.node);
+    let (url, timeout, concurrency) = node_options(ctx, &args.node)?;
     let client = ctx.client()?;
 
     let (scope, targets) = if args.all {

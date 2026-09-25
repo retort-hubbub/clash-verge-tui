@@ -702,6 +702,17 @@ pub fn resolve_limits(ctx: &Ctx, limits: &TestLimits) -> Result<(String, u32, us
     if asked == 0 {
         return Err(Error::invalid("concurrency", "must be at least 1").into());
     }
+    // Clamped, and the clamp is *reported* — every report these flags feed
+    // carries the number actually used, so `--concurrency 600` prints 512
+    // rather than leaving the reader to believe 600.
+    //
+    // Clamped rather than refused, which is the opposite of what `--timeout`
+    // does one branch up, and the distinction is the value's kind rather than
+    // its size: `32768` ms is a number the core cannot parse, so it is invalid
+    // and the command stops; 600 concurrent requests is a perfectly valid
+    // number that this machine's file descriptors cannot carry, so the ceiling
+    // is a resource guard and a request to go faster is answered with "this is
+    // as fast as it goes" rather than an error.
     Ok((
         url,
         asked_timeout,

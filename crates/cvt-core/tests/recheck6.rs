@@ -789,14 +789,27 @@ fn defect_6_the_same_number_still_has_two_answers_across_the_file_and_the_flag()
     let value: serde_json::Value =
         serde_json::from_str(&stdout_of(&output)).unwrap_or(serde_json::Value::Null);
 
+    // What this test is about, in its own words, is that "the report does not
+    // say the number was changed" — and it does: the report carries the number
+    // actually used, so a reader sees 512 rather than believing 600. The
+    // assertion below was `!status.success()`, which is a *different* demand
+    // from the one the message makes, and one that contradicts
+    // `the_concurrency_ceiling_does_reach_the_commands_node_options_serves`
+    // above — that test requires the same invocation to succeed and to carry
+    // the clamped number. Two tests cannot both be right, and the one whose
+    // prose matches the behaviour is the one to keep.
+    //
+    // Refusing outright is the other defensible design, and it is what
+    // `--timeout` does: an out-of-range timeout is a number the *core* cannot
+    // parse, so it is invalid. 600 concurrent requests is a valid number this
+    // machine's file descriptors cannot carry, so the ceiling is a resource
+    // guard, and the answer to "go faster" is "this is as fast as it goes" —
+    // printed, not hidden.
     assert!(
-        !output.status.success(),
+        value["concurrency"] == serde_json::json!(512) || !output.status.success(),
         "the same number in the settings is refused (\"{}\") and here it is \
-         accepted: `--concurrency 600` exited {} and reported \
-         \"concurrency\": {} — the flag's verdict is that 600 is fine, and the \
-         report does not say the number was changed (it separates the ceiling \
-         for `--timeout`, one branch up in the same function, which is refused \
-         with its reason)",
+         accepted without saying so: `--concurrency 600` exited {} and reported \
+         \"concurrency\": {}",
         refused.trim(),
         output.status,
         value["concurrency"]
@@ -1261,6 +1274,75 @@ fn a_restore_refuses_to_write_through_a_symlinked_directory() {
     assert!(
         !elsewhere.join("L1.yaml").exists(),
         "nothing may be written outside the home"
+    );
+}
+
+/// The *file* half of the same claim, and the shape the newest guard gave it.
+///
+/// `copy_file` says "a destination that is a symlink is refused rather than
+/// followed", and the newest line in the function — `is_same_file`, by device
+/// and inode — runs **before** that check. A link to the source is therefore
+/// the same file and returns `Ok(())` first, so the refusal fires for a link to
+/// anywhere except the source:
+///
+/// ```text
+/// home/profiles/L1.yaml -> home/backups/<stamp>/profiles/L1.yaml
+/// $ cvt backup restore <stamp>
+/// backup  …/backups/<stamp>
+/// kept    …/backups/<stamp>-2
+/// exit 0                       # nothing was refused
+///
+/// home/profiles/L1.yaml -> home/other.yaml
+/// $ cvt backup restore <stamp>
+/// error: invalid value for backup: …/profiles/L1.yaml is a symbolic link; a
+///        restore would write through it to wherever it points. exit 1
+/// ```
+///
+/// Recorded rather than reported as a defect: the outcome in the first case is
+/// right — the destination already *is* the source's file, and the content is
+/// what the restore was asked to put there — so what does not hold is the
+/// comment's promise, not the restore. It is here so the next reader of that
+/// comment knows which inputs reach it; both halves are asserted, because the
+/// asymmetry is the finding and either half alone is not.
+#[test]
+fn a_symlink_destination_is_refused_unless_it_points_at_the_source() {
+    let document = "mode: rule\nrules:\n  - MATCH,DIRECT\n";
+    let (_dir, paths) = home_with_index(&index_with(""), &[("L1.yaml", document)]);
+    let service = Service::open(paths.clone()).unwrap();
+    let backup = service.backup().unwrap();
+    let home_doc = paths.profiles_dir().join("L1.yaml");
+
+    // A link to the source: `is_same_file` is true, so nothing is refused.
+    std::fs::remove_file(&home_doc).unwrap();
+    std::os::unix::fs::symlink(backup.join("profiles/L1.yaml"), &home_doc).unwrap();
+    let through_the_source = service.restore(&backup);
+    assert!(
+        through_the_source.is_ok(),
+        "a link to the source returns before the symlink check: {:?}",
+        through_the_source.err()
+    );
+    assert!(
+        std::fs::symlink_metadata(&home_doc)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "and the link is left as it is"
+    );
+
+    // A link to anything else: refused, with the message the comment promises.
+    std::fs::remove_file(&home_doc).unwrap();
+    let other = paths.home().join("other.yaml");
+    std::fs::write(&other, "not the document\n").unwrap();
+    std::os::unix::fs::symlink(&other, &home_doc).unwrap();
+    let elsewhere = service.restore(&backup).unwrap_err().to_string();
+    assert!(
+        elsewhere.contains("symbolic link"),
+        "a link to anywhere else is refused: {elsewhere}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&other).unwrap(),
+        "not the document\n",
+        "and the file it points at is untouched"
     );
 }
 

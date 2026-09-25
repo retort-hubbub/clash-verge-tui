@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-26
+
+A fourth adversarial review checked 0.4.0's own code and found eleven
+problems. All of them are closed, and its 30 tests are kept
+(`crates/cvt-core/tests/regression_logs_and_subscriptions.rs`).
+
+The one worth naming is the fourth instance of the same pattern: the guard on
+a document's file name covered the field the previous review had named and not
+the arm of the same expression next to it, so an index entry that *omits*
+`file` carried a hostile `uid` into a path — a subscription refresh could write
+over a file outside `profiles/`, and `remove` could delete one. Both arms go
+through the same guard now, and the fallback no longer keeps the uid verbatim.
+
+### Fixed
+
+- `PrfItem::file_name`'s uid-derived fallback was unvalidated (above).
+- `start_core` rotated the live log before the "already running" check, so a
+  *refused* start moved the log of the core that was still running, which then
+  wrote into `.1` with nothing left to create `core.log`.
+- The `path&a=b` URL repair was dead code for its own shape: that shape is a
+  valid URL, so validating first never reached the repair. The shape is
+  detected now, narrowly — no query yet, and an `=` after the first `&`.
+- `prune_logs` deleted `core.log.0`, `.01` and `.+1`, none of which this module
+  writes, and returned at the first file it could not remove, leaving the pass
+  half done in an order-dependent way.
+- `logs.keep` was capped only on the way to disk, so `cvt.yaml` could hold a
+  hundred million and make every start probe that many paths.
+- A symlinked log was rotated by renaming the *link*, so the bytes it pointed
+  at stayed put and the log destination silently stopped receiving output. It
+  is copied and truncated now.
+- Two catch-alls in one `prepend` are refused, as the same patch written as an
+  `append` already was.
+- `IP-SUFFIX` and `SRC-IP-SUFFIX` were not checked, though the core refuses a
+  bare payload for all five CIDR-shaped kinds; and `W-CIDR-NO-PREFIX` said
+  "mihomo assumes a full-length mask", which the core contradicts — the rule
+  does not load. It is `E-CIDR-NO-PREFIX` and an error.
+- `name_from_url` decoded *after* choosing a segment, so
+  `%2e%2e%2f…%2fpasswd` came through as `../../etc/passwd`; it also offered the
+  host as a name for a URL with no path.
+- A quoted `filename` was cut at a `;` inside the quotes — and the unquoted
+  RFC 5987 spelling, which is the one that form actually uses, stopped being
+  read at all.
+
 ## [0.2.0] - 2026-09-26
 
 ### Added
@@ -248,6 +291,7 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[0.2.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.1
 [0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0
 [0.1.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

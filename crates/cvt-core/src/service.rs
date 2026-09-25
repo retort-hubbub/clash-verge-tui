@@ -346,6 +346,16 @@ impl Service {
                 problems: report.errors_iter().map(|d| d.message.clone()).collect(),
             });
         }
+        // Before the rotation, not after: `Supervisor::start` is where the
+        // "already running" check lives, and rotating first meant a *refused*
+        // start moved the log of the core that is still running — which then
+        // kept writing into `.1`, with nothing left to create `core.log`,
+        // because the start that would have opened it never happened.
+        if let CoreStatus::Running { pid, .. } = supervisor.status() {
+            return Err(Error::Unsupported(format!(
+                "the core is already running as pid {pid}; stop it first"
+            )));
+        }
         supervisor.validate_config(&binary, &config)?;
         // Logs are rotated here or never: the child holds its log open for as
         // long as it runs, so this is the only moment either file can be moved

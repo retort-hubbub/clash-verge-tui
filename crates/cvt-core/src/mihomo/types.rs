@@ -292,7 +292,7 @@ impl ProxyProviderInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProxyProvidersResponse {
     /// Name-keyed providers.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub providers: BTreeMap<String, ProxyProviderInfo>,
 }
 
@@ -321,7 +321,11 @@ pub struct RuleProviderInfo {
     #[serde(rename = "updatedAt", default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     /// Inline payload, present only for inline providers.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub payload: Vec<String>,
     /// Extra keys.
     #[serde(flatten)]
@@ -332,7 +336,7 @@ pub struct RuleProviderInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuleProvidersResponse {
     /// Name-keyed providers.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub providers: BTreeMap<String, RuleProviderInfo>,
 }
 
@@ -637,7 +641,11 @@ pub struct Connection {
     #[serde(default, deserialize_with = "null_as_default")]
     pub chains: Vec<String>,
     /// Provider chain, index-aligned with `chains`, empty where not applicable.
-    #[serde(rename = "providerChains", default)]
+    #[serde(
+        rename = "providerChains",
+        default,
+        deserialize_with = "null_as_default"
+    )]
     pub provider_chains: Vec<String>,
     /// Matched rule type in PascalCase, empty when nothing matched.
     #[serde(default)]

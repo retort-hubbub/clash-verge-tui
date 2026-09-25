@@ -464,11 +464,27 @@ fn remove_here(container: &mut Value, seg: &Segment) -> Option<Value> {
             Some(arr.remove(idx))
         }
         Segment::Selector { key, value } => {
+            // Every match goes, not just the first. "Remove the thing called
+            // A" is a statement about A, so running it twice has to mean the
+            // same as running it once — and with two entries called A the
+            // first-match version removed one and then the other, which made
+            // an overlay containing it a one-shot. Duplicate names are invalid
+            // in a configuration anyway, so the only documents where this
+            // differs are ones the validator already rejects.
             let arr = container.as_array_mut()?;
-            let idx = arr.iter().position(|e| {
-                e.get(key.as_str()).and_then(Value::as_str) == Some(value.as_str())
-            })?;
-            Some(arr.remove(idx))
+            let mut removed = None;
+            let mut kept = Vec::with_capacity(arr.len());
+            for element in arr.drain(..) {
+                let matches =
+                    element.get(key.as_str()).and_then(Value::as_str) == Some(value.as_str());
+                if matches {
+                    removed.get_or_insert(element);
+                } else {
+                    kept.push(element);
+                }
+            }
+            *arr = kept;
+            removed
         }
     }
 }

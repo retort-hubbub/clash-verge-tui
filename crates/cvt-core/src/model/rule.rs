@@ -36,15 +36,11 @@ pub struct Rule {
 }
 
 /// Rule types that take no payload, where the second field is the policy.
-const PAYLOADLESS: &[&str] = &["MATCH", "FINAL"];
-
-/// Flags a rule may carry after its policy.
 ///
-/// Anything else in that position is not a flag this knows about, and on a
-/// payload-less rule it is a payload by position — which is what
-/// `E-MATCH-WITH-PAYLOAD` reports. The list is deliberately short: it is what
-/// mihomo's own parser accepts, not everything a configuration might contain.
-pub const RULE_FLAGS: &[&str] = &["no-resolve"];
+/// `MATCH` alone. `FINAL` is not a mihomo rule kind — `mihomo -t` answers
+/// `[FINAL,DIRECT] error: format invalid` — and a validator that accepts it
+/// passes a configuration the core refuses to load.
+const PAYLOADLESS: &[&str] = &["MATCH"];
 
 impl Rule {
     /// Build a rule from its parts.
@@ -78,18 +74,21 @@ impl Rule {
         }
         let kind = parts[0].trim().to_ascii_uppercase();
         if PAYLOADLESS.contains(&kind.as_str()) {
-            // `MATCH,POLICY` and nothing else, apart from the flags a rule may
-            // carry. What follows the policy is kept rather than dropped: a
-            // parser that accepts an input and then changes it is the one
-            // thing a lossless round trip cannot survive, and dropping the
-            // field here is also what made `E-MATCH-WITH-PAYLOAD` unreachable.
-            let policy = parts.get(1).map_or("DIRECT", |s| s.trim()).to_owned();
+            // `MATCH,POLICY`. A bare `MATCH` is refused rather than filled in
+            // with `DIRECT`: the core answers it with `format invalid`, and
+            // inventing a policy made the round trip produce a rule the user
+            // did not write.
+            let policy = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty())?;
             return Some(Self {
                 kind,
                 payload: None,
-                policy,
-                // A bare `MATCH` has no policy field at all, so there is
-                // nothing after index 1 to look at.
+                policy: policy.to_owned(),
+                // What follows the policy is kept rather than dropped. The
+                // core ignores it for `MATCH`, but a parser that accepts an
+                // input and hands back a different one is the single thing a
+                // lossless round trip cannot survive — and dropping the field
+                // here is also what used to make the advisory about it
+                // unreachable.
                 params: parts
                     .get(2..)
                     .unwrap_or_default()

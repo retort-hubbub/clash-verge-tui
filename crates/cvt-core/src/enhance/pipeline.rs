@@ -337,9 +337,13 @@ impl Pipeline {
                         ));
                     }
                     let before = config.clone();
-                    let (patch, options) =
-                        merge::expand_directives(&patch, &MergeOptions::default());
-                    merge::deep_merge(&mut config, &patch, &options);
+                    // One pass usually, two when a key carries both a
+                    // `prepend-` and an `append-` directive.
+                    for (patch, options) in
+                        merge::directive_passes(&patch, &MergeOptions::default())
+                    {
+                        merge::deep_merge(&mut config, &patch, &options);
+                    }
                     let d = diff::diff_limited(&before, &config, 200);
                     // Naming the changed keys is far more useful in a profiles
                     // list than a bare count: "merged dns, rules" answers the
@@ -488,11 +492,20 @@ impl Pipeline {
             // *deletes* a protected section is not undone. `dns: null` in an
             // override is a deliberate act, and the warning below says nothing
             // about it.
+            // The doc's sentence, applied to the whole arm rather than to half
+            // of it: a key the base does not declare is not protected, whether
+            // the document *has* one or not. The first version guarded only the
+            // absent case, so a caller-supplied value for a section the base
+            // never had still overwrote what an enhancement put there — while
+            // the comment beside it said the opposite, and the warning claimed
+            // the base was protecting something it had never heard of.
+            if !base_declared.contains(key) {
+                continue;
+            }
             match config.get(*key) {
                 Some(current) if current == wanted => continue,
                 // Absent, and the base declared it: an enhancement deleted it,
                 // and putting it back is what the switch is for.
-                None if !base_declared.contains(key) => continue,
                 _ => {}
             }
             if let Some(object) = config.as_object_mut() {

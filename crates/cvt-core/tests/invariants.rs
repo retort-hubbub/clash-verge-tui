@@ -1617,12 +1617,50 @@ fn every_code_the_validator_produces_is_documented() {
 /// Deliberately textual. The alternative is for `validate.rs` to keep a list,
 /// which is the same hand-maintained list this exists to check.
 fn constructed_codes() -> Vec<String> {
-    // Up to the test module: a code named in `validate.rs`'s own tests is not a
-    // code the validator produces, and `E-CIDR-FAMILY` — retired, and named in
-    // a test asserting it is *not* produced — was read as one.
-    let whole = include_str!("../src/validate.rs");
-    let source = whole.split("#[cfg(test)]").next().unwrap_or(whole);
+    // Every source file, not `validate.rs` alone. A code produced from another
+    // module is produced by the validator too, and reading one file asked
+    // nothing about it — the same "the guard covers the file somebody named"
+    // shape as the six this project has recorded, one level up.
+    //
+    // The path is built from `CARGO_MANIFEST_DIR` rather than a working
+    // directory, which is what makes it reliable in a test.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found = Vec::new();
+    for path in source_files(&root) {
+        let Ok(whole) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // Up to the test module: a code named in a file's own tests is not one
+        // the library produces, and a retired code named in a test asserting it
+        // is *not* produced was read as one.
+        let source = whole.split("#[cfg(test)]").next().unwrap_or(&whole);
+        scan_into(source, &mut found);
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(source_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Collect every code-shaped literal in one file's source.
+fn scan_into(source: &str, found: &mut Vec<String>) {
     let bytes = source.as_bytes();
     let mut at = 0;
     while at < bytes.len() {
@@ -1649,10 +1687,22 @@ fn constructed_codes() -> Vec<String> {
     let mut rest = source;
     while let Some(at) = rest.find("concat!(") {
         rest = &rest[at + "concat!(".len()..];
+        // To the closing paren, not to the next quote. Splitting on commas ran
+        // past the `)` and swallowed whatever literal followed the macro, which
+        // joined a code out of two unrelated strings — and then reported it as
+        // produced when nothing produces it.
+        let end = rest.find(')').unwrap_or(rest.len());
         let mut joined = String::new();
-        for piece in rest.split(',') {
+        for piece in rest[..end].split(',') {
             let piece = piece.trim();
-            match piece.strip_prefix('"').and_then(|p| p.split('"').next()) {
+            // `r"..."` as well as `"..."`: `concat!` accepts both, and a raw
+            // literal is the spelling a code containing a quote would need.
+            let stripped = piece
+                .strip_prefix('r')
+                .unwrap_or(piece)
+                .strip_prefix('"')
+                .and_then(|p| p.split('"').next());
+            match stripped {
                 Some(literal) => joined.push_str(literal),
                 None => break,
             }
@@ -1661,9 +1711,58 @@ fn constructed_codes() -> Vec<String> {
             found.push(joined);
         }
     }
-    found.sort();
-    found.dedup();
-    found
+}
+
+/// The scan is textual, so a code a *macro* builds is invisible to it.
+///
+/// That is a limit rather than a bug, and the way to make it safe is not more
+/// text processing — a code assembled from a macro parameter is undecidable —
+/// but to assert that the validator does not do it. If a `macro_rules!` that
+/// mentions a code prefix ever appears in `validate.rs`, this fails and the
+/// scan has to be taught, rather than silently asking nothing about a code.
+#[test]
+fn every_diagnostic_is_built_from_a_literal() {
+    // The strong form, and the one that closes the whole class: the code must
+    // be a *string literal* at the construction site, so it cannot arrive
+    // through a macro, a `const`, a function or an expression. The scan is
+    // textual and those are all invisible to it — checking that no macro is
+    // *written here* only covered the shape somebody had named, and a macro
+    // defined one module over walked past it.
+    //
+    // The cost is real and worth stating: a code shared by two call sites has
+    // to be written twice. A validator with a few dozen codes can afford that,
+    // and the alternative is a code that nothing asks about.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    for path in source_files(&root) {
+        let Ok(whole) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let source = whole.split("#[cfg(test)]").next().unwrap_or(&whole);
+        let mut rest = source;
+        while let Some(at) = rest.find("Diagnostic::") {
+            rest = &rest[at + "Diagnostic::".len()..];
+            let Some(paren) = rest.find('(') else { break };
+            if !matches!(&rest[..paren], "error" | "warn" | "note" | "info") {
+                continue;
+            }
+            let after = rest[paren + 1..].trim_start();
+            if !after.starts_with('"') {
+                let shown: String = after.chars().take(40).collect();
+                offenders.push(format!(
+                    "{}: Diagnostic::{}({shown}",
+                    path.display(),
+                    &rest[..paren]
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these construction sites do not take a literal, so the code they \
+         produce is invisible to the scan:\n{}",
+        offenders.join("\n")
+    );
 }
 
 /// `E-SOMETHING`, `W-SOMETHING` or `I-SOMETHING`, in capitals.

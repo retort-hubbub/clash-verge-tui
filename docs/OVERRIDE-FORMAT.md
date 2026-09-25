@@ -91,17 +91,33 @@ run.
 
 Set `append_before_terminal: false` for the literal behaviour.
 
-**The exception to idempotence** is a removal by *position*:
+**The exception to idempotence** is an edit that addresses a list by
+*position*, and it has two forms. A removal by position:
 
 ```yaml
 remove: ["proxies[1]"]        # one-shot
 ```
 
 The first application removes whatever is at index 1; the second removes
-whatever has moved into that slot. It is supported because dropping the entry a
-subscription always puts first is a real thing to want, and the position is not
-stable, so the document cannot promise anything about it. Name the element
-(`proxies[name=A]`) or remove the value with a sequence patch instead.
+whatever has moved into that slot. And a `set` by position:
+
+```yaml
+set:
+  "rules[0]": DOMAIN-SUFFIX,mine.example,DIRECT
+append:
+  rules:
+    - DOMAIN-SUFFIX,mine.example,DIRECT
+```
+
+Here the append puts the new rule first and the `set` rewrites it — so the
+first application sets the rule the append just added, and the second sets
+whatever the *next* append moved into slot zero.
+
+Both are supported, because acting on the first element of a list a
+subscription controls is a real thing to want, and both are one-shot: the
+position is not stable, so the document cannot promise anything about it. Name
+the element (`proxies[name=A]`) or remove the value with a sequence patch
+instead.
 
 **Two operations cannot contradict each other.** An override that gives a path
 a *list* while a `set` needs it to be a *mapping* describes a document that

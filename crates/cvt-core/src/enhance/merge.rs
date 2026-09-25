@@ -173,7 +173,13 @@ fn merge_at(base: &mut Value, patch: &Value, options: &MergeOptions, key: Option
             // that appended them would otherwise introduce an element that no
             // configuration wants and the validator rejects.
             let additions = without_deletions_in(patch_arr);
-            *base_arr = strategy.apply(base_arr, &additions);
+            *base_arr = if strategy == ArrayStrategy::Append {
+                // Appending to `rules` keeps the terminal rule last, which is
+                // the one thing about this list that is not a matter of taste.
+                append_to_list(key.unwrap_or_default(), base_arr, &additions)
+            } else {
+                strategy.apply(base_arr, &additions)
+            };
         }
         (slot, patch_value) => {
             // A shape the base cannot absorb is replaced outright — and the
@@ -244,6 +250,82 @@ pub const DIRECTIVES: &[(&str, ArrayStrategy)] = &[
     ("prepend-proxy-groups", ArrayStrategy::Prepend),
     ("append-proxy-groups", ArrayStrategy::Append),
 ];
+
+/// The passes a merge document needs, in order.
+///
+/// Usually one. **Two** when a single key carries both a `prepend-` and an
+/// `append-`: one merge cannot express "these items first, those last", and
+/// folding them together let the strategy of whichever directive came last
+/// win — so `prepend-rules` written beside `append-rules` put the rule at the
+/// *end* of the list, after the base's own terminal `MATCH`, where it can
+/// never fire. The document said "this takes precedence" and the result was
+/// the opposite.
+///
+/// Returns the passes rather than one patch because the ordering that makes
+/// both directives true only exists once the base is in hand.
+#[must_use]
+pub fn directive_passes(patch: &Value, options: &MergeOptions) -> Vec<(Value, MergeOptions)> {
+    let Some(map) = patch.as_object() else {
+        return vec![(patch.clone(), options.clone())];
+    };
+    let prepends: Vec<&str> = DIRECTIVES
+        .iter()
+        .filter(|(name, strategy)| *strategy == ArrayStrategy::Prepend && map.contains_key(*name))
+        .map(|(name, _)| *name)
+        .collect();
+    let both = prepends
+        .iter()
+        .any(|name| map.contains_key(&format!("append-{}", name.trim_start_matches("prepend-"))));
+    if !both {
+        return vec![expand_directives(patch, options)];
+    }
+    // The prepends go in first, then everything else — including the appends,
+    // which land after whatever the base already had.
+    let mut first = map.clone();
+    let mut second = map.clone();
+    for (name, _) in DIRECTIVES {
+        if name.starts_with("prepend-") {
+            second.remove(*name);
+        } else {
+            first.remove(*name);
+        }
+    }
+    vec![
+        expand_directives(&Value::Object(first), options),
+        expand_directives(&Value::Object(second), options),
+    ]
+}
+
+/// Append to `rules`, keeping the list well-formed.
+///
+/// A rule appended *after* a terminal `MATCH` can never fire, which is the most
+/// common way a hand-written rule silently does nothing. The overlay has
+/// inserted before the terminal since it was written; the merge path did not,
+/// so `append-rules` — and `append: {rules: …}` — put the rule where it could
+/// not run, while the document said it had been added.
+///
+/// The terminal convention belongs to the rule list, so this is applied only
+/// there: nothing else has a rule that always matches.
+fn append_to_list(key: &str, base: &[Value], patch: &[Value]) -> Vec<Value> {
+    if key == "rules"
+        && let Some(at) = base.iter().position(is_terminal_rule)
+    {
+        let mut combined: Vec<Value> = base[..at].to_vec();
+        combined.extend(patch.iter().cloned());
+        combined.extend(base[at..].iter().cloned());
+        return combined;
+    }
+    let mut out = base.to_vec();
+    out.extend(patch.iter().cloned());
+    out
+}
+
+/// Whether a rule always matches, so nothing after it can ever run.
+fn is_terminal_rule(v: &Value) -> bool {
+    v.as_str()
+        .and_then(crate::model::rule::Rule::parse)
+        .is_some_and(|r| r.is_terminal())
+}
 
 /// A `prepend-`/`append-` key this build has no entry for, if there is one.
 ///

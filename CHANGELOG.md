@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `protect_dns` applies to the keys the base declared and to nothing else. The
+  doc said so and the code did not: a value supplied for a section the base had
+  never heard of still overwrote what an enhancement put there, while the
+  warning claimed the base was protecting it.
 - `external-ui` and `external-ui-url` are the control plane's. They decide what
   the core serves at `/ui`, which is the controller's own origin — the same
   door `external-controller-cors` opens, and the argument for excluding them

@@ -189,9 +189,17 @@ impl Backup {
 /// has never saved its settings or had an index still produces a backup, and a
 /// check demanding one particular file refuses the program's own output.
 fn looks_like_a_backup(dir: &Path) -> bool {
+    // `symlink_metadata`, not `exists`: that follows the link, so a directory
+    // whose entries are all links was admitted as a backup and then every
+    // copier skipped everything it held — a restore that did nothing at all and
+    // reported success. The admission test and the copiers have to agree about
+    // what a link means, and they now both say "not this program's".
     ["cvt.yaml", "profiles.yaml", "profiles", "overrides"]
         .iter()
-        .any(|name| dir.join(name).exists())
+        .any(|name| {
+            std::fs::symlink_metadata(dir.join(name))
+                .is_ok_and(|meta| !meta.file_type().is_symlink())
+        })
 }
 
 /// Copy the state a user would have to recreate by hand.

@@ -248,6 +248,32 @@ fn single_component(name: &str) -> Option<String> {
     Some(name.to_owned())
 }
 
+/// A group's remembered selection.
+///
+/// `clash-verge-rev` records the node a user picked, per profile, and replays
+/// it when that profile is applied again. It is the difference between "my
+/// choice survived the subscription update" and "I pick again every morning":
+/// a configuration reload rebuilds every group, and the core's own memory of
+/// the choice is keyed to the group it was made in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedNode {
+    /// The group the choice was made in.
+    pub name: String,
+    /// The member that was chosen.
+    pub now: String,
+}
+
+impl SelectedNode {
+    /// Record a choice.
+    #[must_use]
+    pub fn new(name: impl Into<String>, now: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            now: now.into(),
+        }
+    }
+}
+
 /// One entry in the profile index.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrfItem {
@@ -262,6 +288,9 @@ pub struct PrfItem {
     /// Free-form description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub desc: String,
+    /// The node choices made in this profile, newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected: Vec<SelectedNode>,
     /// The subscription's own page, as the panel advertised it.
     ///
     /// Recorded rather than guessed: a panel that sends
@@ -415,6 +444,7 @@ impl Default for PrfItem {
             kind: ProfileType::Local,
             name: String::new(),
             desc: String::new(),
+            selected: Vec::new(),
             home: None,
             url: None,
             file: None,

@@ -155,16 +155,85 @@ impl Executor {
             Effect::Refresh(screen) => self.refresh(screen, sink),
 
             // ---- everything that talks to the core is spawned
-            Effect::SelectNode { group, member } => self.spawn_net(
-                sink,
-                move |client| async move { client.select(&group, &member).await },
-                |()| Event::Data(Data::Notice("node selected".to_owned())),
-            ),
-            Effect::ClearNodePin { group } => self.spawn_net(
-                sink,
-                move |client| async move { client.clear_selection(&group).await },
-                |()| Event::Data(Data::Notice("selection cleared".to_owned())),
-            ),
+            // The two selection effects are hand-written rather than going
+            // through `spawn_net`, because they touch the profile index as well
+            // as the core: the choice is recorded so that the next apply, which
+            // rebuilds every group, does not throw it away.
+            Effect::SelectNode { group, member } => {
+                let service = Arc::clone(&self.service);
+                let sink = sink.clone();
+                tokio::spawn(async move {
+                    let client = {
+                        let guard = service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard.client()
+                    };
+                    let selected = match client {
+                        Ok(client) => client.select(&group, &member).await,
+                        Err(error) => Err(error),
+                    };
+                    match selected {
+                        Ok(()) => {
+                            let recorded = {
+                                let guard = service
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                guard.remember_selection(&group, &member)
+                            };
+                            let note = match recorded {
+                                Ok(()) => format!("{group}: {member}"),
+                                Err(error) => {
+                                    format!("{group}: {member} (not recorded: {})", error.short())
+                                }
+                            };
+                            let _ = sink.send(Event::Data(Data::Notice(note)));
+                        }
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error.short()));
+                        }
+                    }
+                });
+            }
+            Effect::ClearNodePin { group } => {
+                let service = Arc::clone(&self.service);
+                let sink = sink.clone();
+                tokio::spawn(async move {
+                    let client = {
+                        let guard = service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard.client()
+                    };
+                    let cleared = match client {
+                        Ok(client) => client.clear_selection(&group).await,
+                        Err(error) => Err(error),
+                    };
+                    match cleared {
+                        Ok(()) => {
+                            let forgotten = {
+                                let guard = service
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                guard.forget_selection(&group)
+                            };
+                            let note = match forgotten {
+                                Ok(()) => format!("{group}: automatic"),
+                                Err(error) => {
+                                    format!(
+                                        "{group}: automatic (still remembered: {})",
+                                        error.short()
+                                    )
+                                }
+                            };
+                            let _ = sink.send(Event::Data(Data::Notice(note)));
+                        }
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error.short()));
+                        }
+                    }
+                });
+            }
             Effect::CloseConnection { id } => self.spawn_net(
                 sink,
                 move |client| async move { client.close_connection(&id).await },

@@ -9,6 +9,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.5.0] - 2026-09-26
+
+### Added
+
+- The node chosen in a group is remembered on the profile and replayed after
+  every apply. A reload rebuilds every group, so without this the choice lasts
+  until the next configuration change — which, for a subscription that updates
+  on a schedule, is not long.
+- `cvt proxies select` and `unpin`, and the interface's equivalents, record and
+  forget the choice. The replay waits for a group to answer again before
+  choosing and then confirms the choice took: the core applies a reload in the
+  background, and the first version of this replayed into that window, where
+  the selection was silently discarded. It cost an afternoon of believing the
+  feature worked; the end-to-end check is what caught it.
+- The whole replay shares one deadline rather than taking one per group, so a
+  profile with many remembered groups and a core that has lost them all cannot
+  hold an apply for half a minute.
+
+### Changed
+
+- `ApplyReport` carries `selections_restored`, because a choice is something a
+  user made and one that could not be replayed is worth being able to see.
+
+## [0.4.1] - 2026-09-26
+
+A fourth adversarial review checked 0.4.0's own code and found eleven
+problems. All of them are closed, and its 30 tests are kept
+(`crates/cvt-core/tests/recheck3.rs`).
+
+The one worth naming is the fourth instance of the same pattern: the guard on
+a document's file name covered the field the previous review had named and not
+the arm of the same expression next to it, so an index entry that *omits*
+`file` carried a hostile `uid` into a path — a subscription refresh could write
+over a file outside `profiles/`, and `remove` could delete one. Both arms go
+through the same guard now, and the fallback no longer keeps the uid verbatim.
+
+### Fixed
+
+- `PrfItem::file_name`'s uid-derived fallback was unvalidated (above).
+- `start_core` rotated the live log before the "already running" check, so a
+  *refused* start moved the log of the core that was still running, which then
+  wrote into `.1` with nothing left to create `core.log`.
+- The `path&a=b` URL repair was dead code for its own shape: that shape is a
+  valid URL, so validating first never reached the repair. The shape is
+  detected now, narrowly — no query yet, and an `=` after the first `&`.
+- `prune_logs` deleted `core.log.0`, `.01` and `.+1`, none of which this module
+  writes, and returned at the first file it could not remove, leaving the pass
+  half done in an order-dependent way.
+- `logs.keep` was capped only on the way to disk, so `cvt.yaml` could hold a
+  hundred million and make every start probe that many paths.
+- A symlinked log was rotated by renaming the *link*, so the bytes it pointed
+  at stayed put and the log destination silently stopped receiving output. It
+  is copied and truncated now.
+- Two catch-alls in one `prepend` are refused, as the same patch written as an
+  `append` already was.
+- `IP-SUFFIX` and `SRC-IP-SUFFIX` were not checked, though the core refuses a
+  bare payload for all five CIDR-shaped kinds; and `W-CIDR-NO-PREFIX` said
+  "mihomo assumes a full-length mask", which the core contradicts — the rule
+  does not load. It is `E-CIDR-NO-PREFIX` and an error.
+- `name_from_url` decoded *after* choosing a segment, so
+  `%2e%2e%2f…%2fpasswd` came through as `../../etc/passwd`; it also offered the
+  host as a name for a URL with no path.
+- A quoted `filename` was cut at a `;` inside the quotes — and the unquoted
+  RFC 5987 spelling, which is the one that form actually uses, stopped being
+  read at all.
+
 ## [0.4.0] - 2026-09-26
 
 Three gaps from `docs/FEATURE-COVERAGE.md`, which was written by reading the
@@ -228,7 +294,9 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.4.0...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.5.0...develop
+[0.5.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.5.0
+[0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
 [0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
 [0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
 [0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0

@@ -311,6 +311,12 @@ pub enum ProxiesCommand {
         group: Option<String>,
     },
 
+    /// Show which proxies a proxy dials through, and where that ends
+    Chain {
+        /// Proxy name
+        node: String,
+    },
+
     /// Pin a group's selection to one of its nodes
     Select {
         /// Group name

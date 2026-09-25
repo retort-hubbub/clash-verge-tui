@@ -171,6 +171,20 @@ pub struct ProxyView {
 }
 
 impl ProxyView {
+    /// The proxy or group this one dials *through*, when it names one.
+    ///
+    /// The API reports the field — it is empty for a proxy that dials directly
+    /// — and the core validates the chain itself: a name that is neither a
+    /// proxy nor a group is refused, and so is any cycle.
+    #[must_use]
+    pub fn dialer_proxy(&self) -> Option<&str> {
+        self.extra
+            .get("dialer-proxy")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+
     /// `true` when this entry is a policy group rather than a node.
     #[must_use]
     pub fn is_group(&self) -> bool {

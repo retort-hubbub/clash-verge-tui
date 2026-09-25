@@ -27,6 +27,8 @@ a sentence is not one a reader can look up.
 | `E-CONTROLLER-FORMAT` | `external-controller` is not `host:port` | Fix it, or set `core.external_controller` in the settings |
 | `E-DANGLING-GROUP-MEMBER` | A group lists a member that is not a proxy, another group, or a built-in | Add the proxy, or remove the name |
 | `E-DANGLING-POLICY` | A rule points at a policy that does not exist | Add the group, or use `DIRECT`/`REJECT` |
+| `E-DANGLING-DIALER` | A proxy's `dialer-proxy` names something that is not a proxy or a group. The core refuses it: `` dialer-proxy [x] not found `` | Name a proxy or group that exists, or remove `dialer-proxy` |
+| `E-DIALER-CYCLE` | Following `dialer-proxy` from a proxy comes back to a name already in the chain — including a proxy dialling through itself. The core refuses it: `` has circular dialer-proxy dependency `` | Break the chain, or remove `dialer-proxy` from one of them |
 | `E-DANGLING-PROVIDER` | A group's `use:` names a provider that is not declared | Declare it under `proxy-providers` |
 | `E-DANGLING-RULE-SET` | A `RULE-SET` rule names a rule-provider that is not declared | Declare it under `rule-providers` |
 | `E-DNS-NO-NAMESERVER` | `dns.enable` is true but no nameserver is configured | Add `dns.nameserver`, or turn DNS off |

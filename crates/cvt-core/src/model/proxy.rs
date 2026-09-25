@@ -37,6 +37,26 @@ pub struct Proxy {
 }
 
 impl Proxy {
+    /// The proxy or group this one dials *through*, when it names one.
+    ///
+    /// Read out of `extra` rather than given a field. The model round-trips the
+    /// document, and one typed field for one of the many per-protocol keys is
+    /// the start of typing all of them; the validator only needs to read it,
+    /// which an accessor does.
+    ///
+    /// Settled against the core: `dialer-proxy: <another proxy>` and
+    /// `dialer-proxy: <a group>` are both accepted, `dialer-proxy: <itself>`
+    /// and any cycle are refused with "has circular dialer-proxy dependency",
+    /// and a name that is neither is refused with "dialer-proxy [x] not found".
+    #[must_use]
+    pub fn dialer_proxy(&self) -> Option<&str> {
+        self.extra
+            .get("dialer-proxy")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+
     /// `server:port`, or whichever half is known.
     #[must_use]
     pub fn endpoint(&self) -> String {

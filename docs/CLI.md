@@ -230,6 +230,29 @@ with `--concurrency` requests in flight. Defaults come from settings
 *JSON:* `cvt.proxies.list.v1`, `cvt.proxies.selection.v1`,
 `cvt.proxies.test.v1`.
 
+### `proxies chain`
+
+| Argument | Meaning |
+|---|---|
+| `<node>` | the proxy whose dialer chain to show |
+
+A `dialer-proxy` chain is how a subscription says "reach this node by first
+going through that one". It is invisible everywhere else — the core reports the
+field, and nothing draws the chain — so a loop, or a name that does not exist,
+is something the user meets as a core that will not start.
+
+```console
+$ cvt proxies chain a
+chain  a -> b
+$ cvt proxies chain solo
+chain  solo
+```
+
+*JSON:* `cvt.proxies.chain.v1`, with `chain` as a list and `circular` as a
+boolean. The validator reports the two shapes the core refuses:
+`E-DANGLING-DIALER` for a name that is neither a proxy nor a group, and
+`E-DIALER-CYCLE` for a chain that comes back to where it started.
+
 ### `connections`
 
 | Command | Effect |

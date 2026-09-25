@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cvt proxies chain <node>` draws a proxy's `dialer-proxy` chain and says
+  whether it loops. The core reports the field and nothing draws the chain, so
+  a loop, or a name that does not exist, is something the user meets as a core
+  that will not start.
+- `E-DANGLING-DIALER` and `E-DIALER-CYCLE`, for the two shapes `mihomo -t`
+  refuses: a `dialer-proxy` naming something that is neither a proxy nor a group
+  (`` dialer-proxy [x] not found ``), and any chain returning to a name already
+  in it, including a proxy dialling through itself (`` has circular dialer-proxy
+  dependency ``). A chain, and a *group* as the dialer, stay accepted — both
+  were checked against the core.
+
+## [0.10.0] - 2026-09-26
+
 ### Fixed
 
 - A restore **checks every destination before it writes anything**. A refusal
@@ -592,7 +607,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.0...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.10.0...develop
+[0.10.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.10.0
 [0.8.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.8.0
 [0.7.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.7.0
 [0.6.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.6.0

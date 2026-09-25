@@ -1391,6 +1391,14 @@ fn code_cases() -> &'static [(&'static str, &'static str)] {
             "rules: ['DOMAIN,a.test,DIRECT', 'DOMAIN,a.test,DIRECT', 'MATCH,DIRECT']\n",
         ),
         (
+            "E-DANGLING-DIALER",
+            "proxies: [{name: a, type: socks5, server: 1.2.3.4, port: 1, dialer-proxy: ghost}]\nrules: ['MATCH,a']\n",
+        ),
+        (
+            "E-DIALER-CYCLE",
+            "proxies: [{name: a, type: socks5, server: 1.2.3.4, port: 1, dialer-proxy: b}, {name: b, type: socks5, server: 5.6.7.8, port: 1, dialer-proxy: a}]\nrules: ['MATCH,a']\n",
+        ),
+        (
             "E-RULE-MALFORMED",
             "rules: ['no-commas-at-all', 'MATCH,DIRECT']\n",
         ),

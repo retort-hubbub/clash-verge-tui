@@ -776,19 +776,19 @@ async fn defect_8_the_new_commands_skip_the_check_every_other_timeout_flag_takes
         .send()
         .await;
     let asked = answering.asked();
-    // The premise, corrected twice. The first version asserted that nothing is
-    // asked and nothing answered with `Duration::ZERO`; the second, that the
-    // request fails. Both are wrong in this reqwest version: the request goes
-    // out and *succeeds*, so a zero timeout is not "ask nothing" at all — it is
-    // a timeout the client treats as no timeout. What the finding is actually
-    // about is that the *command* accepted a value with no meaning, which the
-    // assertion below still checks.
-    assert!(
-        !asked.is_empty(),
-        "the premise of this finding: a zero timeout still puts the request on \
-         the wire. `asked: {asked:?}`, request: {:?}",
-        expired.as_ref().err().map(std::string::ToString::to_string)
-    );
+    // The premise, and what is left of it. Three versions: "nothing is asked
+    // and nothing answered" (false), "the request fails" (false), and "the
+    // request goes out" (true — except when it does not).
+    //
+    // Observed across runs: `asked: ["/error-json"]` with the request
+    // succeeding, and `asked: []` with it failing before a request line. What
+    // reqwest does with a zero timeout is *timing-dependent*, so any assertion
+    // about it is a test that fails occasionally for a reason nobody can fix.
+    // The premise is recorded and not asserted; what the finding is about is
+    // that the command accepted a value with no meaning, which the assertion
+    // below still checks.
+    let _ = &asked;
+    let _ = expired;
 
     let Some(bin) = cli_binary() else {
         eprintln!("SKIP: no clash-verge-tui binary; run `cargo build -p cvt`");

@@ -398,6 +398,7 @@ pub fn check(config: &Config) -> Report {
 
     // -- relay cycles ------------------------------------------------------
     detect_relay_cycles(&groups, &mut report);
+    check_dialers(config, &mut report);
 
     // -- rules -------------------------------------------------------------
     if rules.is_empty() {
@@ -644,6 +645,68 @@ fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mu
             }
         }
         _ => {}
+    }
+}
+
+/// `dialer-proxy` chains, which the core validates and this did not read at all.
+///
+/// Settled with `mihomo -t`: a chain is accepted, a *group* as the dialer is
+/// accepted, a name that is neither is refused (`dialer-proxy [x] not found`),
+/// and any cycle — including a node dialling through itself — is refused
+/// (`has circular dialer-proxy dependency`). Both are errors here, because a
+/// document holding either does not load.
+fn check_dialers(config: &Config, report: &mut Report) {
+    let proxies = config.proxies();
+    let groups = config.proxy_groups();
+    let known = |name: &str| {
+        proxies.iter().any(|p| p.name == name) || groups.iter().any(|g| g.name == name)
+    };
+    for (index, proxy) in proxies.iter().enumerate() {
+        let Some(dialer) = proxy.dialer_proxy() else {
+            continue;
+        };
+        if !known(dialer) {
+            report.diagnostics.push(
+                Diagnostic::error(
+                    "E-DANGLING-DIALER",
+                    format!(
+                        "proxy `{}` dials through `{dialer}`, which is not a proxy or a group",
+                        proxy.name
+                    ),
+                )
+                .at(format!("proxies[{index}]"))
+                .fix("name a proxy or a group that exists, or remove `dialer-proxy`"),
+            );
+            continue;
+        }
+        // Walk the chain, bounded by the number of proxies: a cycle comes back
+        // to where it started, and anything longer than the whole list is one.
+        let mut seen = vec![proxy.name.as_str()];
+        let mut current = dialer;
+        while let Some(next) = proxies
+            .iter()
+            .find(|p| p.name == current)
+            .and_then(crate::model::proxy::Proxy::dialer_proxy)
+        {
+            if seen.contains(&next) {
+                report.diagnostics.push(
+                    Diagnostic::error(
+                        "E-DIALER-CYCLE",
+                        format!(
+                            "proxy `{}` dials through `{dialer}`, and the chain returns to \
+                             `{next}` — the core refuses it with `has circular dialer-proxy \
+                             dependency`",
+                            proxy.name
+                        ),
+                    )
+                    .at(format!("proxies[{index}]"))
+                    .fix("break the chain, or remove `dialer-proxy` from one of them"),
+                );
+                break;
+            }
+            seen.push(next);
+            current = next;
+        }
     }
 }
 
@@ -1168,6 +1231,51 @@ rules: [MATCH,DIRECT]
             "{}",
             fixed_report.render()
         );
+    }
+
+    #[test]
+    fn dialer_proxy_chains_are_checked_against_what_the_core_refuses() {
+        // Every shape here was settled with `mihomo -t`: the two rejected ones
+        // are refused by the core with the messages quoted in the diagnostics,
+        // and the two accepted ones must stay accepted.
+        let rejected = [
+            (
+                "proxies: [{name: a, type: socks5, server: 1.2.3.4, port: 1, dialer-proxy: a}]\nrules: ['MATCH,a']\n",
+                "E-DIALER-CYCLE",
+            ),
+            (
+                "proxies: [{name: a, type: socks5, server: 1.2.3.4, port: 1, dialer-proxy: b}, {name: b, type: socks5, server: 5.6.7.8, port: 1, dialer-proxy: a}]\nrules: ['MATCH,a']\n",
+                "E-DIALER-CYCLE",
+            ),
+            (
+                "proxies: [{name: a, type: socks5, server: 1.2.3.4, port: 1, dialer-proxy: ghost}]\nrules: ['MATCH,a']\n",
+                "E-DANGLING-DIALER",
+            ),
+        ];
+        for (yaml, expected) in rejected {
+            let report = check(&cfg(yaml));
+            assert!(
+                codes(&report).contains(&expected),
+                "the core refuses this and the code should be {expected}: {}",
+                report.render()
+            );
+        }
+
+        let accepted = [
+            // A chain of two.
+            "proxies: [{name: a, type: socks5, server: 1.2.3.4, port: 1, dialer-proxy: b}, {name: b, type: socks5, server: 5.6.7.8, port: 1}]\nrules: ['MATCH,a']\n",
+            // A *group* as the dialer, which the core accepts.
+            "proxies: [{name: a, type: socks5, server: 1.2.3.4, port: 1, dialer-proxy: g}]\nproxy-groups: [{name: g, type: select, proxies: [a, DIRECT]}]\nrules: ['MATCH,g']\n",
+        ];
+        for yaml in accepted {
+            let report = check(&cfg(yaml));
+            assert!(
+                !codes(&report).contains(&"E-DIALER-CYCLE")
+                    && !codes(&report).contains(&"E-DANGLING-DIALER"),
+                "the core loads this: {}",
+                report.render()
+            );
+        }
     }
 
     #[test]

@@ -164,33 +164,52 @@ impl Overlay {
                 ));
             }
         }
+        // Two catch-alls in one append list contradict each other: only one
+        // can be last, and the other is a rule the user wrote that will never
+        // run. Refusing says so; appending both produces a document the
+        // validator rejects, and appending one produces a list that quietly
+        // names fewer rules than the patch did.
+        for (raw, items) in &self.append {
+            let parsed = Path::parse(raw)?;
+            let catch_alls = items.iter().filter(|item| is_terminal_rule(item)).count();
+            if is_rules_list(&parsed) && catch_alls > 1 {
+                return Err(Error::invalid(
+                    "override",
+                    format!(
+                        "`{raw}` appends {catch_alls} catch-all rules; only the last could \
+                         ever run, so write the one you mean"
+                    ),
+                ));
+            }
+        }
         self.check_targets_do_not_contradict()
     }
 
-    /// Refuse an overlay whose entries cannot all hold at once.
+    /// Refuse an overlay whose entries cannot both hold.
     ///
     /// `prepend` and `append` *replace* whatever is at their path with a list —
-    /// that is deliberate, it is how an override grows a list the base document
-    /// never had. A `set` below that same path needs a mapping. The two cannot
-    /// both be true, so one of them wins in the first pass and the other finds
-    /// the wrong shape on the second: the overlay applies once and then fails,
-    /// which is the opposite of the idempotence this module promises.
+    /// deliberately, since that is how an override grows a list the base
+    /// document never had. A `set` entering or leaving that same path may need
+    /// it to be a *mapping* instead, and then one of the two wins in the first
+    /// pass and the other finds the wrong shape: the overlay applies once and
+    /// fails the next time, which is the opposite of the idempotence this
+    /// module promises.
     ///
-    /// Refusing it up front names the contradiction instead of leaving the user
-    /// to work out why the second apply of the same document behaves
-    /// differently from the first.
+    /// Only the genuine disagreement is refused. A `set` that reaches *into*
+    /// the list (`dns.nameserver[0]`) is consistent with it being a list, and
+    /// is allowed; a `set` that has to walk through it as a mapping
+    /// (`dns.nameserver.foo`) is not.
     fn check_targets_do_not_contradict(&self) -> Result<()> {
         for list in self.prepend.keys().chain(self.append.keys()) {
-            for scalar in self.set.keys() {
-                let inside = scalar.len() > list.len()
-                    && scalar.starts_with(list.as_str())
-                    && matches!(scalar.as_bytes().get(list.len()), Some(b'.' | b'['),);
-                if inside || scalar == list {
+            let list = Path::parse(list)?;
+            for (raw_set, value) in &self.set {
+                let set = Path::parse(raw_set)?;
+                if let Some(why) = shape_conflict(&list, &set, value) {
                     return Err(Error::invalid(
                         "override",
                         format!(
-                            "`{list}` is given a list while `{scalar}` is set inside it; \
-                             a path cannot be a list and a mapping at once"
+                            "`{list}` is given a list while `{raw_set}` {why}; a path cannot \
+                             be a list and a mapping at once"
                         ),
                     ));
                 }
@@ -256,6 +275,21 @@ impl Overlay {
         // behaves exactly like one read from a file — including refusing to
         // start work it cannot finish.
         self.validate()?;
+        // Worked on a copy. An overlay is a list of operations and the later
+        // ones can fail where the earlier ones succeeded, so without this a
+        // rejected overlay left the part that had already landed behind — and
+        // half an override is worse than none, because the half that landed
+        // looks like intent. The copy costs one document; the alternative
+        // costs the user a configuration nobody wrote.
+        let mut candidate = config.clone();
+        let log = self.apply_in_place(&mut candidate)?;
+        *config = candidate;
+        Ok(log)
+    }
+
+    /// The operations, in order, on a document the caller has already
+    /// committed to replacing.
+    fn apply_in_place(&self, config: &mut Value) -> Result<Vec<String>> {
         let mut log = Vec::new();
 
         for raw in &self.remove {
@@ -326,33 +360,42 @@ fn append_items(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    // Where appended rules go, and it depends on what they are.
+    // Where an appended rule goes depends on what it is, and the position is
+    // recomputed for every item: inserting one moves the catch-all, so a
+    // position captured before the loop pointed at the wrong rule for the next
+    // append and silently overwrote what the previous one had just added.
     //
-    // A rule that is *not* terminal has to land above the catch-all, or it
-    // could never match anything. A rule that *is* terminal takes the
-    // catch-all's place instead of stacking above it: two terminal rules in
-    // one list is a document the validator rejects, and the second one can
-    // never fire — so leaving the old one behind would mean this overlay
-    // produced a configuration that is both invalid and misleading about which
-    // rule is in charge.
-    let existing_terminal = if before_terminal && is_rules_list(p) {
-        existing.iter().position(is_terminal_rule)
-    } else {
-        None
-    };
+    // A rule that is *not* terminal lands above the catch-all, or it could
+    // never match anything. A rule that *is* terminal takes the catch-all's
+    // place rather than stacking above it: two terminal rules in one list is a
+    // document the validator rejects, and the second can never fire.
+    let tracks_terminal = before_terminal && is_rules_list(p);
 
     let mut added = 0usize;
     for item in items {
         if is_noise(item) {
             continue;
         }
-        let replaces_the_catch_all = existing_terminal.is_some() && is_terminal_rule(item);
-        if replaces_the_catch_all {
-            if existing.contains(item) {
-                // The same catch-all is already there; nothing to do.
+        let terminal = if tracks_terminal {
+            existing.iter().position(is_terminal_rule)
+        } else {
+            None
+        };
+        let Some(position) = terminal else {
+            // No catch-all to work around, so nothing constrains the order.
+            if contains_item(&existing, item) {
                 continue;
             }
-            let position = existing_terminal.unwrap_or(existing.len());
+            existing.push(item.clone());
+            added += 1;
+            continue;
+        };
+        if is_terminal_rule(item) {
+            // The catch-all is replaced, never duplicated — including the case
+            // where the replacement is the one that is already there.
+            if existing[position] == *item {
+                continue;
+            }
             existing[position] = item.clone();
             added += 1;
             continue;
@@ -360,8 +403,7 @@ fn append_items(
         if contains_item(&existing, item) {
             continue;
         }
-        let insert_at = existing_terminal.unwrap_or(existing.len());
-        existing.insert(insert_at, item.clone());
+        existing.insert(position, item.clone());
         added += 1;
     }
     if added == 0 {
@@ -369,6 +411,34 @@ fn append_items(
     }
     replace_list(config, p, existing)?;
     Ok(vec![format!("appended {added} item(s) to {raw}")])
+}
+
+/// Whether a `set` and a list edit disagree about a path's shape.
+///
+/// Returns the reason when they do. Exactly one of the two can be right about
+/// any given path: a list edit makes it a list, and a `set` that has to *walk
+/// through* it needs a mapping. Walking through a list is possible with an
+/// index or a selector (`a.b[0]`, `a[name=x]`), which is why those are not a
+/// disagreement — that is how an element of a list is addressed at all.
+fn shape_conflict(list: &Path, set: &Path, value: &Value) -> Option<String> {
+    let list = list.segments();
+    let set = set.segments();
+    if list == set {
+        return (!value.is_array())
+            .then(|| "replaces it with something that is not a list".to_owned());
+    }
+    let (shorter, longer) = if list.len() < set.len() {
+        (list, set)
+    } else {
+        (set, list)
+    };
+    if longer[..shorter.len()] != *shorter {
+        return None; // Unrelated paths; neither can decide the other's shape.
+    }
+    longer[shorter.len()..]
+        .iter()
+        .any(|segment| matches!(segment, path::Segment::Key(_)))
+        .then(|| "needs to walk through it as a mapping".to_owned())
 }
 
 /// Whether this path targets the routing rule list.

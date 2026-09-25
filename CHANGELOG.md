@@ -5,6 +5,83 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-26
+
+### Fixed
+
+- `apply` waits for the configuration it wrote to be *live* before reporting
+  success. `/version` answering means the process is up, not that it has this
+  document: a reload rebuilds the groups in the background, and the very next
+  command failed with `no group named PROXY` after an apply that exited 0.
+- `--concurrency` is held to the same ceiling as `test.concurrency` in the
+  settings. `--concurrency 600` went straight to `buffer_unordered` while the
+  same number in `cvt.yaml` was refused with "would exhaust file descriptors" —
+  one limit, two answers, and the one that got through was the one nothing
+  validated. The check moved into `node_options`, the one function every
+  latency command reads its flags through, because the guard had already been
+  put in the two commands somebody remembered and the review found the third
+  and then the fourth.
+- A directory reached through a symbolic link is not copied into a backup, and
+  a restore refuses to write through one. Reading one copies files from
+  wherever the link points — a test put a `secret.yaml` in somebody else's
+  directory and it arrived in the backup — and writing one puts files there.
+  The two directions answer differently on purpose: a source that is a link is
+  skipped, because a user with `profiles/` on another disk should still be able
+  to take a backup, and a destination that is a link is refused, because a
+  restore that silently writes outside the home is not recoverable.
+- `cvt test urls` reports its rows in the order the URLs are configured in.
+  `buffer_unordered` yields as each measurement finishes, so the rows came back
+  in completion order — a report whose rows move between runs is one nobody can
+  diff.
+- `cvt test urls --node typo` emits the report with every row carrying the
+  reason, and exits non-zero. It used to print `reachable: 0` and exit 0, which
+  is the honest answer for a node that exists and reaches nothing — the two are
+  worth telling apart, and only one is worth retrying. The report is still
+  printed so a `--json` consumer parses one shape whatever happens.
+- `cvt proxies test --url typo` refuses a value that is neither a URL nor a
+  configured target, as `cvt test delay` already did.
+- `backup()` could prune the backup it had just taken, and return a path to a
+  directory that no longer existed — which is what `restore` builds its safety
+  copy with, so restoring the wrong backup was not undoable. Pruning is now
+  ordered by `(second, sequence)` and never through the new directory.
+- The selection replay polls the groups that have not come back *together*
+  rather than waiting on each in turn. Six groups a subscription has removed
+  cost six waits, which spends the whole budget, and the seventh choice — the
+  one that would have worked — is never reached.
+- `--url https://example.com/` is a URL even when a test target is *named*
+  `https://example.com/`. A name that shadows the thing it looks like is the one
+  way a name could fetch somewhere the user did not ask for.
+- A partial `test:` block in `cvt.yaml` is loadable again. Adding `urls` put
+  the new entry struct in front of `TestSettings` and took the section's
+  `#[serde(default, deny_unknown_fields)]` with it, so
+  `test: {timeout_ms: 3000}` was refused with "missing field `url`". Found by
+  the sixth review before it shipped.
+- `prune_backups` kept a different set depending on the order backups were
+  made in. Two backups in the same second share a timestamp, and sorting on
+  the timestamp alone left their order to `read_dir`.
+- A symlink in `backups/` is no longer listed as a backup — `is_dir` follows
+  the link — and is removed rather than followed when the directory is pruned.
+- A restore no longer writes *through* a symlink. `std::fs::copy` opens the
+  destination for writing, which follows it, so a home whose
+  `profiles/L1.yaml` was a link into a dotfiles directory had that file
+  overwritten by a restore.
+
+### Added
+
+- `docs/DIAGNOSTICS.md`, and two tests that keep it honest: every code the
+  validator constructs must appear in the reachability table and in the
+  documentation, and neither may list a code that no longer exists.
+
+### Changed
+
+- `every_code_the_validator_produces_is_in_the_table` is new, and it found two
+  codes that were produced and had never been checked for reachability
+  (`E-RULE-MALFORMED`, `W-RULE-KIND`).
+- One assertion in `invariants.rs` was `!codes.contains(&"E-MATCH-WITH-PAYLOAD")`
+  — a code constructed nowhere in the library, so it was true of every input
+  and checked nothing. Replaced by a severity assertion, which then failed and
+  showed that the document it tested named a policy that does not exist.
+
 ## [0.3.0] - 2026-09-26
 
 ### Added
@@ -377,6 +454,7 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[0.3.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.1
 [0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
 [0.2.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.1
 [0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0

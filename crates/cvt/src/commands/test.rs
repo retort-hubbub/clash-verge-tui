@@ -116,31 +116,83 @@ async fn urls(ctx: &Ctx, args: &UrlsArgs) -> Result<()> {
     let concurrency = args.concurrency.unwrap_or(defaults.concurrency).max(1);
     let client = ctx.client()?;
 
-    let rows: Vec<UrlRow> = futures_util::stream::iter(targets.into_iter().map(|target| {
-        let client = client.clone();
-        let node = node.clone();
-        async move {
-            match client.proxy_delay(&node, &target.url, timeout, None).await {
-                Ok(delay_ms) => UrlRow {
-                    target: target.name,
-                    url: target.url,
-                    ok: true,
-                    delay_ms: Some(u32::from(delay_ms)),
-                    error: None,
-                },
-                Err(error) => UrlRow {
+    // A node the controller does not know is a mistake in the command, not a
+    // node that reached nothing. Without this the report said `reachable: 0`
+    // for `--node no-such-node`, which is exactly what a node that exists and
+    // cannot reach anything looks like — the two are worth telling apart, and
+    // only one of them is worth retrying.
+    //
+    // Looked for in both places a name can be: the controller's own map, and
+    // the member lists of its groups. A real core lists every proxy at the top
+    // level; a minimal controller may list only groups and their members, and
+    // refusing a node for not being in the first place would be this program
+    // deciding a name does not exist because it asked the wrong question.
+    let known = client.proxies().await?;
+    let named = known.proxies.contains_key(&node)
+        || known
+            .proxies
+            .values()
+            .any(|proxy| proxy.members().iter().any(|member| member == &node));
+    if !named {
+        // The report is still emitted, with every row carrying the reason, and
+        // the exit code is what says it failed. A `--json` consumer parses one
+        // shape whatever happens; printing nothing and exiting 1 makes the
+        // machine-readable mode the one that cannot be read.
+        let reason = format!("no node named `{node}`");
+        ctx.out().emit(&UrlsReport {
+            node: node.clone(),
+            timeout_ms: timeout,
+            reachable: 0,
+            rows: targets
+                .into_iter()
+                .map(|target| UrlRow {
                     target: target.name,
                     url: target.url,
                     ok: false,
                     delay_ms: None,
-                    error: Some(error.short()),
-                },
+                    error: Some(reason.clone()),
+                })
+                .collect(),
+            summary: reason.clone(),
+        })?;
+        return Err(Exit::failure(reason).into());
+    }
+
+    // Measured concurrently, reported in configuration order. `buffer_unordered`
+    // yields as each finishes, so the rows came back in whatever order the
+    // measurements happened to complete — a report whose rows move between runs
+    // is a report nobody can diff, and the order the user wrote the list in is
+    // the only one with meaning.
+    let measured: Vec<(usize, UrlRow)> =
+        futures_util::stream::iter(targets.into_iter().enumerate().map(|(index, target)| {
+            let client = client.clone();
+            let node = node.clone();
+            async move {
+                let row = match client.proxy_delay(&node, &target.url, timeout, None).await {
+                    Ok(delay_ms) => UrlRow {
+                        target: target.name,
+                        url: target.url,
+                        ok: true,
+                        delay_ms: Some(u32::from(delay_ms)),
+                        error: None,
+                    },
+                    Err(error) => UrlRow {
+                        target: target.name,
+                        url: target.url,
+                        ok: false,
+                        delay_ms: None,
+                        error: Some(error.short()),
+                    },
+                };
+                (index, row)
             }
-        }
-    }))
-    .buffer_unordered(concurrency)
-    .collect()
-    .await;
+        }))
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+    let mut measured = measured;
+    measured.sort_by_key(|(index, _)| *index);
+    let rows: Vec<UrlRow> = measured.into_iter().map(|(_, row)| row).collect();
 
     let reachable = rows.iter().filter(|row| row.ok).count();
     let summary = format!(
@@ -181,7 +233,7 @@ impl Report for TargetsReport {
 
 async fn delay(ctx: &Ctx, args: &DelayArgs) -> Result<()> {
     check_url_flag(ctx, args.node.url.as_deref())?;
-    let (url, timeout, concurrency) = node_options(ctx, &args.node);
+    let (url, timeout, concurrency) = node_options(ctx, &args.node)?;
     let client = ctx.client()?;
 
     let (scope, targets) = if args.all {

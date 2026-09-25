@@ -28,6 +28,13 @@ use crate::paths::AppPaths;
 /// larger is rejected with `400 Body invalid`.
 pub const MAX_TEST_TIMEOUT_MS: u32 = 32_767;
 
+/// The most nodes this program will measure at once.
+///
+/// Shared with the command line rather than written twice. The flag and the
+/// setting are the same number in two places, and a ceiling that only guards
+/// the one in the settings file is one somebody can walk around by typing it.
+pub const MAX_TEST_CONCURRENCY: usize = 512;
+
 /// How the core process is managed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -91,7 +98,11 @@ impl Default for UiSettings {
     }
 }
 
-/// Latency testing.
+/// One URL a node can be tested against.
+///
+/// `default` on both fields so an entry that names only one of them is a
+/// validation error rather than a parse error: the message can then say which
+/// entry is wrong, which a parse failure cannot.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TestTarget {
@@ -136,6 +147,14 @@ impl TestSettings {
     /// node problem rather than a typo.
     #[must_use]
     pub fn resolve(&self, given: &str) -> Option<&str> {
+        // A URL is a URL, whatever a target happens to be called. Without this
+        // a target *named* `https://example.com/` made `--url https://example.com/`
+        // fetch the target's URL instead — a name that shadows the thing it
+        // looks like, which is the one way a name could be used to fetch
+        // somewhere the user did not ask for.
+        if given.starts_with("http://") || given.starts_with("https://") {
+            return None;
+        }
         self.urls
             .iter()
             .find(|target| target.name == given)
@@ -143,8 +162,9 @@ impl TestSettings {
     }
 }
 
-/// How a node is probed.
+/// Latency testing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct TestSettings {
     /// URL probed for latency. Must return 204 without a body to measure
     /// connection setup rather than transfer.
@@ -387,7 +407,7 @@ impl Settings {
         if self.test.concurrency == 0 {
             return Err(Error::invalid("test.concurrency", "must be at least 1"));
         }
-        if self.test.concurrency > 512 {
+        if self.test.concurrency > MAX_TEST_CONCURRENCY {
             return Err(Error::invalid(
                 "test.concurrency",
                 format!(
@@ -453,6 +473,41 @@ mod tests {
         // treated as one — the caller refuses it and lists what there is.
         assert_eq!(settings.test.resolve("googl"), None);
         assert_eq!(settings.test.resolve("https://example.com/"), None);
+    }
+
+    #[test]
+    fn the_concurrency_ceiling_is_one_number() {
+        // The flag and the setting are the same limit, so the ceiling is
+        // exported and both use it. A test either side of it: `--concurrency`
+        // used to be passed straight through while the same number in
+        // `cvt.yaml` was refused.
+        let mut settings = Settings::default();
+        settings.test.concurrency = MAX_TEST_CONCURRENCY;
+        assert!(settings.validate().is_ok(), "the ceiling itself is allowed");
+
+        settings.test.concurrency = MAX_TEST_CONCURRENCY + 1;
+        let error = settings.validate().unwrap_err().to_string();
+        assert!(error.contains("file descriptors"), "{error}");
+    }
+
+    #[test]
+    fn a_target_name_cannot_shadow_a_url() {
+        let mut settings = Settings::default();
+        settings.test.urls = vec![
+            TestTarget::new("mirror", "https://mirror.example/"),
+            TestTarget::new("https://example.com/", "https://attacker.example/"),
+        ];
+        // The shape is accepted, so `resolve` is what has to tell them apart.
+        assert!(settings.validate().is_ok());
+        assert_eq!(
+            settings.test.resolve("https://example.com/"),
+            None,
+            "a URL the user typed is a URL, whatever a target is called"
+        );
+        assert_eq!(
+            settings.test.resolve("mirror"),
+            Some("https://mirror.example/")
+        );
     }
 
     #[test]

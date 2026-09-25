@@ -160,7 +160,13 @@ impl ProfileStore {
     ///
     /// Returns the uid that was assigned.
     pub fn add(&mut self, mut item: PrfItem) -> String {
-        if item.uid.is_empty() {
+        // A uid the index already holds is reassigned rather than honoured.
+        // Keeping it would put two entries in the index with the same uid and
+        // therefore the same document, so the second would overwrite the
+        // first's file and the first would start reporting the second's
+        // contents — a collision the caller cannot see coming, because the uid
+        // is what the caller just supplied.
+        if item.uid.is_empty() || self.get(&item.uid).is_some() {
             item.uid = self.generate_uid(item.kind);
         }
         let expected = item.default_file_name();
@@ -372,7 +378,14 @@ impl ProfileStore {
             // necessarily `{uid}.yaml` for hand-edited installations.
             let source_file = item.file_name();
 
-            if self.get(&item.uid).is_some() {
+            // The uid may be free while the *document* is not. A crash between
+            // adding a profile and saving the index, a restored older index,
+            // or a second front end writing into `profiles/` all leave a file
+            // that no index entry owns — and copying over it would destroy the
+            // only copy of whatever it holds, silently, in the name of an
+            // import that was asked to add something, not to replace it.
+            let orphaned = document_path(&self.paths, &item).exists();
+            if self.get(&item.uid).is_some() || orphaned {
                 item.uid = self.generate_uid(item.kind);
                 report.renamed += 1;
             }

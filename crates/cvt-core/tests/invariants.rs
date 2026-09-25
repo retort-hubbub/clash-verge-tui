@@ -1577,24 +1577,26 @@ fn claim9_importing_twice_leaves_the_first_copy_intact() {
 }
 
 #[test]
-#[ignore = "finding F7: `add` accepts an explicit uid that is already present"]
-fn f7_add_returns_a_uid_that_is_already_in_the_index() {
+fn adding_a_profile_whose_uid_is_taken_reassigns_it() {
     let (dir, mut store) = store_fixture();
     let first = store.add(PrfItem::local("L1", "one"));
     let second = store.add(PrfItem::local("L1", "two"));
     assert_ne!(first, second, "the second add must be given a fresh uid");
     assert_eq!(store.items().len(), 2);
-    assert_eq!(
+    assert_ne!(
         store.items()[0].uid,
         store.items()[1].uid,
-        "documents would collide"
+        "two index entries sharing a uid would share one document, so the \
+         second would overwrite the first and the first would report the \
+         second's contents"
     );
+    // The reassigned uid is the one the caller gets back, so it can be used.
+    assert_eq!(store.get(&second).unwrap().name, "two");
     drop(dir);
 }
 
 #[test]
-#[ignore = "finding F8: import_from overwrites a document whose uid is not in the index"]
-fn f8_import_overwrites_an_orphan_document() {
+fn importing_leaves_a_document_the_index_does_not_know_about_alone() {
     let (dir, mut store) = store_fixture();
     // A document with no index entry: what a crash between `add` and `save`,
     // a restored older `profiles.yaml`, or a second front-end writing into
@@ -1614,12 +1616,23 @@ fn f8_import_overwrites_an_orphan_document() {
     .unwrap();
     std::fs::write(foreign.join("profiles/Rabc.yaml"), "incoming: true\n").unwrap();
 
-    store.import_from(&foreign).unwrap();
+    let report = store.import_from(&foreign).unwrap();
     let after = std::fs::read_to_string(store.paths().profiles_dir().join("Rabc.yaml")).unwrap();
-    assert_eq!(
-        after, "precious: true\n",
-        "an existing document was overwritten"
-    );
+    assert_eq!(after, "precious: true\n", "the orphan was overwritten");
+
+    // The import still happened — it was asked to add, so it adds, under a uid
+    // that does not collide with anything on disk.
+    assert_eq!(report.imported, 1);
+    assert_eq!(report.renamed, 1, "the collision was noticed and reported");
+    let imported = store
+        .items()
+        .iter()
+        .find(|item| item.name == "A")
+        .expect("the imported profile is in the index");
+    assert_ne!(imported.uid, "Rabc");
+    let copied =
+        std::fs::read_to_string(store.paths().profiles_dir().join(imported.file_name())).unwrap();
+    assert_eq!(copied, "incoming: true\n");
     drop(dir);
 }
 

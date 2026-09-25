@@ -24,7 +24,9 @@
 //! exercisable in tests through a small injection point rather than a real
 //! core.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use chrono::Utc;
 
 use crate::enhance::pipeline::{Outcome, Pipeline};
 use crate::error::{Error, Result};
@@ -35,19 +37,84 @@ use crate::model::config::Config;
 use crate::paths::AppPaths;
 use crate::profile::store::ProfileStore;
 use crate::settings::Settings;
-/// How long a reloaded group may take to reappear, and how long a selection
-/// may take to take effect.
+/// How long one group may take, how long the whole replay may take, and how
+/// often to look.
 ///
-/// Generous by the standards of a local API and small by the standards of a
-/// person: the whole wait is bounded so a core that is reloading cannot make
-/// an apply hang.
-const REPLAY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
-const REPLAY_STEP: std::time::Duration = std::time::Duration::from_millis(50);
+/// Two budgets rather than one, and the first version had neither right. A
+/// deadline per group is a deadline that multiplies — twenty groups that are
+/// gone cost twenty times the wait. A deadline for the whole replay, which is
+/// what replaced it, hands the entire budget to the *first* group that is
+/// gone: `grp-urltest` would consume it, the loop would break, and every choice
+/// after it would be silently dropped. One group costs one group's budget, and
+/// the total is still bounded.
+const REPLAY_PER_GROUP: std::time::Duration = std::time::Duration::from_millis(250);
+const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(800);
+const REPLAY_TOTAL: std::time::Duration = std::time::Duration::from_millis(4000);
+const REPLAY_STEP: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// How long this group may take, given how much of the total is left.
+fn group_budget(overall: std::time::Instant, limit: std::time::Duration) -> std::time::Instant {
+    (std::time::Instant::now() + limit).min(overall)
+}
+
+/// Point a group at a member and make sure it took.
+async fn replay_one(
+    client: &Client,
+    name: &str,
+    member: &str,
+    deadline: std::time::Instant,
+) -> bool {
+    if !select_within(client, name, member, deadline).await {
+        return false;
+    }
+    confirm_selection(client, name, member, deadline).await
+}
+
+/// Choose a member, without letting the call outlive the budget.
+///
+/// The reads were given a deadline and this was not, which is the same mistake
+/// one call further down: a core that answers `GET /group/…` and never answers
+/// the `PUT` costs the *client's* timeout — five seconds from the settings —
+/// which is not the replay's budget and cannot be enforced from here.
+async fn select_within(
+    client: &Client,
+    name: &str,
+    member: &str,
+    deadline: std::time::Instant,
+) -> bool {
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    if left.is_zero() {
+        return false;
+    }
+    matches!(
+        tokio::time::timeout(left, client.select(name, member)).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Read a group, without letting one slow request outlive the budget.
+///
+/// The client has its own timeout, which is the *settings'* and can be seconds;
+/// a deadline this function cannot enforce is a deadline in name only.
+async fn read_group(
+    client: &Client,
+    group: &str,
+    deadline: std::time::Instant,
+) -> Option<crate::mihomo::types::ProxyView> {
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    if left.is_zero() {
+        return None;
+    }
+    tokio::time::timeout(left, client.group(group))
+        .await
+        .ok()?
+        .ok()
+}
 
 /// Wait until the core answers for a group again.
 async fn wait_for_group(client: &Client, group: &str, deadline: std::time::Instant) -> bool {
     loop {
-        if client.group(group).await.is_ok() {
+        if read_group(client, group, deadline).await.is_some() {
             return true;
         }
         if std::time::Instant::now() >= deadline {
@@ -58,6 +125,12 @@ async fn wait_for_group(client: &Client, group: &str, deadline: std::time::Insta
 }
 
 /// Wait until the core reports the member that was asked for.
+///
+/// A `select` group reports the choice as `now`. A `url-test` or `fallback`
+/// group *pins* it instead and reports `fixed`, keeping `now` for whatever the
+/// test last picked — so checking only `now` reported a pin that had taken as a
+/// failure, which is how the first version of this managed to apply a choice
+/// and count zero. Either field is the choice having taken.
 async fn confirm_selection(
     client: &Client,
     group: &str,
@@ -65,18 +138,116 @@ async fn confirm_selection(
     deadline: std::time::Instant,
 ) -> bool {
     loop {
-        match client.group(group).await {
-            Ok(view) if view.now.as_deref() == Some(member) => return true,
-            // A group that has gone means this document no longer has it, and
-            // the next attempt would fail the same way.
-            Err(_) => return false,
-            Ok(_) => {}
+        match read_group(client, group, deadline).await {
+            Some(view)
+                if view.now.as_deref() == Some(member) || view.fixed.as_deref() == Some(member) =>
+            {
+                return true;
+            }
+            // Not there at all: this document does not have the group, and the
+            // next look would fail the same way.
+            None if std::time::Instant::now() >= deadline => return false,
+            _ => {}
         }
         if std::time::Instant::now() >= deadline {
             return false;
         }
         tokio::time::sleep(REPLAY_STEP).await;
     }
+}
+
+/// How many backups to keep before the oldest is deleted.
+///
+/// Five is a working week at one a day, which is the cadence a person actually
+/// keeps; a backup taken before every experiment would fill a disk with
+/// versions of the same file.
+pub const BACKUP_LIMIT: usize = 5;
+
+/// One directory of saved state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backup {
+    /// Where it is.
+    pub path: PathBuf,
+    /// Unix timestamp of when it was taken.
+    pub created: i64,
+    /// How many entries it holds, for a report.
+    pub items: usize,
+}
+
+impl Backup {
+    /// The name, which is the timestamp.
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// Copy the state a user would have to recreate by hand.
+///
+/// Two directories rather than an [`AppPaths`] and a directory, because the
+/// same function runs in both directions: a backup reads the home and writes a
+/// backup directory, a restore reads a backup directory and writes the home.
+/// One shape for both directions is what makes it obvious that they agree about
+/// which files matter.
+fn copy_state(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to).map_err(|e| Error::io(to, e))?;
+    for name in ["cvt.yaml", "profiles.yaml"] {
+        let source = from.join(name);
+        if source.is_file() {
+            let destination = to.join(name);
+            copy_file(&source, &destination)?;
+        }
+    }
+    for name in ["profiles", "overrides"] {
+        copy_dir(&from.join(name), &to.join(name))?;
+    }
+    Ok(())
+}
+
+/// Copy one file, refusing to copy it onto itself.
+///
+/// The guard is here and not only at the entry points, because this is the
+/// function that would do the truncating and a caller added later would not know
+/// to check. `std::fs::copy` opens the destination for writing before it reads
+/// the source, so a file copied onto itself comes back empty and the call
+/// reports success.
+fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+    let same = std::fs::canonicalize(source).ok();
+    if same.is_some() && same == std::fs::canonicalize(destination).ok() {
+        return Ok(());
+    }
+    std::fs::copy(source, destination).map_err(|e| Error::io(destination, e))?;
+    Ok(())
+}
+
+/// Copy a directory of files, skipping anything that is not a regular file.
+///
+/// Written out rather than pulled from a crate: these are two directories of
+/// small text files, and the cases worth stating — a missing directory, a
+/// symlink — are clearer here than in a configuration.
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    if !from.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(to).map_err(|e| Error::io(to, e))?;
+    let entries = std::fs::read_dir(from).map_err(|e| Error::io(from, e))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Only regular files. A symlink here is not something this program
+        // writes, and following one would copy a file from wherever the link
+        // points — including out of the home entirely.
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        copy_file(&path, &to.join(name))?;
+    }
+    Ok(())
 }
 
 /// How a configuration change should reach the core.
@@ -419,13 +590,160 @@ impl Service {
         // A reload rebuilds every group, so the choice a user made this morning
         // is gone by the afternoon. It is replayed here rather than at each
         // caller, because "apply" is the operation that discards it.
-        let selections_restored = self.restore_selections().await.unwrap_or(0);
+        //
+        // Not after a rollback, though: the core is running the document that
+        // was there *before* this apply, and the choices just read belong to
+        // the profile that failed to apply. Replaying them would point a
+        // restored configuration at members it may not have.
+        let selections_restored = match &reload {
+            ReloadOutcome::RolledBack { .. } => 0,
+            _ => self.restore_selections().await.unwrap_or(0),
+        };
         Ok(ApplyReport {
             outcome,
             reload: Some(reload),
             written: true,
             selections_restored,
         })
+    }
+
+    /// Copy the user's own state into a timestamped directory.
+    ///
+    /// What is copied is what a person would have to recreate by hand if it
+    /// were lost: the settings, the profile index, the profile documents and
+    /// the overrides. Not the generated configuration, which is derived and is
+    /// already snapshotted by the pipeline, and not the core's working
+    /// directory or the logs, which are large and reproducible.
+    ///
+    /// # Errors
+    /// [`Error::Io`] when a file cannot be read or written, and
+    /// [`Error::InvalidValue`] when two backups would land in the same second.
+    pub fn backup(&self) -> Result<PathBuf> {
+        // Named by the second it was taken, and given a suffix when that
+        // second is taken. Refusing the second one instead — which is what
+        // this did first — made `restore` impossible to use directly after a
+        // backup, because restore takes a safety backup first and the two
+        // land in the same second whenever a person is doing it by hand.
+        let destination = self.free_backup_path(Utc::now().timestamp());
+        copy_state(self.paths.home(), &destination)?;
+        self.prune_backups(BACKUP_LIMIT)?;
+        Ok(destination)
+    }
+
+    /// A backup name that is not already taken.
+    fn free_backup_path(&self, stamp: i64) -> PathBuf {
+        let dir = self.paths.backups_dir();
+        let first = dir.join(stamp.to_string());
+        if !first.exists() {
+            return first;
+        }
+        for n in 2..1000 {
+            let candidate = dir.join(format!("{stamp}-{n}"));
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+        dir.join(format!("{stamp}-overflow"))
+    }
+
+    /// Every backup, newest first.
+    ///
+    /// # Errors
+    /// [`Error::Io`] when the directory cannot be read.
+    pub fn backups(&self) -> Result<Vec<Backup>> {
+        let dir = self.paths.backups_dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Ok(Vec::new());
+        };
+        let mut found: Vec<Backup> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                // `1790363784` or `1790363784-2` when that second was taken.
+                let created = name
+                    .split('-')
+                    .next()
+                    .and_then(|stamp| stamp.parse::<i64>().ok())?;
+                let items = std::fs::read_dir(entry.path())
+                    .map(|inner| inner.flatten().count())
+                    .unwrap_or(0);
+                Some(Backup {
+                    path: entry.path(),
+                    created,
+                    items,
+                })
+            })
+            .collect();
+        found.sort_by_key(|backup| std::cmp::Reverse(backup.created));
+        Ok(found)
+    }
+
+    /// Put a backup back, keeping the state it replaces.
+    ///
+    /// **Additive, not destructive.** The files the backup holds are written
+    /// back; a file that appeared after it was taken stays where it is. So this
+    /// is "put back what was saved", not "make the home identical to the
+    /// backup", and the difference matters for a directory full of profile
+    /// documents: a document no entry in the restored index mentions is an
+    /// orphan, and this program preserves orphans rather than deleting them —
+    /// that is what the import path was fixed to do, for the same reason.
+    /// Anything a restore should not keep, a person can delete.
+    ///
+    /// The state being replaced is copied to a fresh backup first, so restoring
+    /// the wrong one is itself undoable. That is why this is a method rather
+    /// than a directory copy: the moment somebody needs it is the moment they
+    /// are least sure which one they want.
+    ///
+    /// # Errors
+    /// [`Error::InvalidValue`] when the directory is not a backup of this home,
+    /// and [`Error::Io`] when a file cannot be copied.
+    pub fn restore(&self, from: &Path) -> Result<PathBuf> {
+        // Before anything else, because `std::fs::copy(x, x)` truncates: the
+        // destination is opened for writing before a byte is read, and the copy
+        // reports success having written nothing. Restoring a home onto itself
+        // therefore emptied the index, the settings and every document — and it
+        // *succeeded*, which is the worst way to lose data.
+        //
+        // Compared by canonical path, so `…/`, `…/.` and a symlink to it are
+        // all recognised as the same place. A directory that cannot be
+        // canonicalised is not there, and is refused by the check below.
+        let same = std::fs::canonicalize(from).ok();
+        if same.is_some() && same == std::fs::canonicalize(self.paths.home()).ok() {
+            return Err(Error::invalid(
+                "backup",
+                format!(
+                    "{} is this home; a restore copies over its own source and would \
+                     empty it",
+                    from.display()
+                ),
+            ));
+        }
+        if !from.join("profiles.yaml").is_file() {
+            return Err(Error::invalid(
+                "backup",
+                format!(
+                    "{} holds no profiles.yaml, so it is not a backup of this home",
+                    from.display()
+                ),
+            ));
+        }
+        let safety = self.backup()?;
+        copy_state(from, self.paths.home())?;
+        Ok(safety)
+    }
+
+    /// Keep the newest `keep` backups and delete the rest.
+    ///
+    /// # Errors
+    /// [`Error::Io`] when a directory exists and cannot be removed.
+    pub fn prune_backups(&self, keep: usize) -> Result<usize> {
+        let mut removed = 0;
+        for backup in self.backups()?.into_iter().skip(keep) {
+            std::fs::remove_dir_all(&backup.path).map_err(|e| Error::io(&backup.path, e))?;
+            removed += 1;
+        }
+        Ok(removed)
     }
 
     /// Record a node choice on the current profile.
@@ -463,32 +781,46 @@ impl Service {
             return Ok(0);
         }
         let client = self.client()?;
-        // One deadline for the whole replay, not one per group. A deadline per
-        // group is a deadline that multiplies: a profile with twenty remembered
-        // groups and a core that has lost them all would hold an apply for half
-        // a minute, and the user would see a program that had stopped
-        // responding rather than one that was waiting for something.
-        let deadline = std::time::Instant::now() + REPLAY_TIMEOUT;
+        let overall = std::time::Instant::now() + REPLAY_TOTAL;
         let mut applied = 0;
+        let mut late = Vec::new();
+
+        // Two passes, and both are load-bearing.
+        //
+        // A group that is not there yet is not necessarily gone: a reload
+        // rebuilds every group and the core applies it in the background, so
+        // the whole reason for waiting is that the window is real. But a group
+        // the subscription has *removed* is also not there, and it never will
+        // be — and one pass with a budget per group let it spend that budget
+        // and starve every choice after it. So the ones that are present are
+        // replayed first, and only what is left is waited for.
         for selection in selections {
-            if std::time::Instant::now() >= deadline {
-                tracing::debug!("giving up on the rest of the remembered selections");
+            if std::time::Instant::now() >= overall {
+                tracing::debug!("the replay budget is spent");
                 break;
             }
-            // A reload is applied by the core *in the background*: for a
-            // moment the group is not there at all, and a selection made in
-            // that window is silently discarded — which is exactly what the
-            // first version of this did, so the choice appeared to be replayed
-            // and was not. Wait for the group, choose, then confirm.
+            let deadline = group_budget(overall, REPLAY_PER_GROUP);
+            match read_group(&client, &selection.name, deadline).await {
+                Some(_) => {
+                    if replay_one(&client, &selection.name, &selection.now, deadline).await {
+                        applied += 1;
+                    }
+                }
+                None => late.push(selection),
+            }
+        }
+
+        for selection in late {
+            if std::time::Instant::now() >= overall {
+                tracing::debug!("the replay budget is spent before the second pass finished");
+                break;
+            }
+            let deadline = group_budget(overall, REPLAY_WAIT);
             if !wait_for_group(&client, &selection.name, deadline).await {
                 tracing::debug!(group = %selection.name, "the group is not there to replay into");
                 continue;
             }
-            if let Err(error) = client.select(&selection.name, &selection.now).await {
-                tracing::debug!(group = %selection.name, error = %error, "replay refused");
-                continue;
-            }
-            if confirm_selection(&client, &selection.name, &selection.now, deadline).await {
+            if replay_one(&client, &selection.name, &selection.now, deadline).await {
                 applied += 1;
             } else {
                 tracing::debug!(
@@ -498,6 +830,7 @@ impl Service {
                 );
             }
         }
+
         Ok(applied)
     }
     /// Hand the already-written runtime configuration to the core.
@@ -853,6 +1186,86 @@ rules:
         let f = fixture();
         f.seed();
         assert_eq!(f.service.restore_selections().await.unwrap(), 0);
+    }
+
+    #[test]
+    fn a_backup_holds_what_a_person_would_have_to_recreate() {
+        let f = fixture();
+        f.seed();
+        // A home that has never saved its settings has no settings file to
+        // copy, which is correct — the defaults are implied — so the realistic
+        // case is the one worth asserting on.
+        f.service.save_settings().unwrap();
+        let outcome = f.service.generate().unwrap();
+        f.service.pipeline().commit(&outcome, false).unwrap();
+
+        let path = f.service.backup().unwrap();
+        for name in ["cvt.yaml", "profiles.yaml", "profiles", "overrides"] {
+            assert!(
+                path.join(name).exists(),
+                "{name} is missing from the backup"
+            );
+        }
+        // Derived, large and reproducible: not the point of a backup, and the
+        // reason the two directories are documented as different things.
+        assert!(!path.join("runtime").exists());
+        assert!(!path.join("logs").exists());
+        assert_eq!(f.service.backups().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn restoring_puts_the_state_back_and_keeps_what_it_replaced() {
+        let f = fixture();
+        let uid = f.seed();
+        let taken = f.service.backup().unwrap();
+        std::fs::write(
+            f.service.paths().profiles_dir().join("tail.yaml"),
+            "later\n",
+        )
+        .unwrap();
+
+        let safety = f.service.restore(&taken).unwrap();
+        // The state being replaced is kept, so restoring the wrong backup is
+        // itself undoable: `tail.yaml` is in the safety copy…
+        assert!(safety.join("profiles").join("tail.yaml").exists());
+        // …and it is still where it was, because a restore is additive. It is
+        // now a document no index entry mentions, which this program preserves
+        // on purpose — see the method's documentation.
+        assert!(f.service.paths().profiles_dir().join("tail.yaml").exists());
+        assert!(f.service.store().unwrap().get(&uid).is_some());
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_backup_is_refused() {
+        let f = fixture();
+        f.seed();
+        let elsewhere = tempfile::TempDir::new().unwrap();
+        let error = f.service.restore(elsewhere.path()).unwrap_err();
+        assert!(
+            error.to_string().contains("not a backup"),
+            "a restore has to say why it refused: {error}"
+        );
+    }
+
+    #[test]
+    fn only_the_newest_backups_are_kept() {
+        let f = fixture();
+        f.seed();
+        // Five is the limit, and the directories are named by the second they
+        // were taken, so this has to stand on one per second to make five
+        // distinct ones.
+        for _ in 0..BACKUP_LIMIT + 2 {
+            // Never fails: a second backup in the same second is given a
+            // suffixed name rather than refused.
+            f.service.backup().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        }
+        let kept = f.service.backups().unwrap();
+        assert_eq!(kept.len(), BACKUP_LIMIT, "the oldest two should be gone");
+        assert!(
+            !kept.iter().any(|backup| backup.name().is_empty()),
+            "a backup with no name could not be restored by name"
+        );
     }
 
     #[test]

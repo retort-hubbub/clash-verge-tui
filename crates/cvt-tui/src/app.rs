@@ -738,6 +738,19 @@ impl Filterable for SettingRow {
 const REFRESH_PRESETS: &[i64] = &[250, 500, 1000, 2000, 5000];
 const TIMEOUT_PRESETS: &[i64] = &[1000, 2000, 5000, 10_000, 30_000];
 const CONCURRENCY_PRESETS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
+
+/// Log sizes a person might actually pick, in bytes.
+///
+/// Zero is first because it is the off switch, and the rest step by a factor of
+/// four: a log that is being rotated too often and one that is never rotated are
+/// both obvious from the file, unlike a wrong refresh interval.
+const LOG_SIZE_PRESETS: &[i64] = &[0, 64 * 1024, 256 * 1024, 1024 * 1024, 8 * 1024 * 1024];
+
+/// How many rotated copies to keep. The validator refuses more than 64.
+const LOG_KEEP_PRESETS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
+
+/// How long a rotated copy may sit before it is deleted.
+const LOG_DAYS_PRESETS: &[i64] = &[0, 1, 3, 7, 14, 30, 90];
 const TTL_PRESETS: &[i64] = &[0, 300, 900, 1800, 3600, 86_400];
 const LOG_LEVELS: &[&str] = &["silent", "error", "warning", "info", "debug"];
 
@@ -841,6 +854,34 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             help: "how long a single measurement may take",
             kind: SettingKind::Number {
                 presets: TIMEOUT_PRESETS,
+            },
+        },
+        SettingRow {
+            key: "logs.max_size_bytes",
+            label: "rotate a log after",
+            value: crate::state::human_bytes(settings.logs.max_size_bytes),
+            help: "the core's log and this program's are rotated when the core is \
+                   started; zero turns rotation off",
+            kind: SettingKind::Number {
+                presets: LOG_SIZE_PRESETS,
+            },
+        },
+        SettingRow {
+            key: "logs.keep",
+            label: "rotated copies kept",
+            value: settings.logs.keep.to_string(),
+            help: "how many older copies to keep per log, oldest dropped first",
+            kind: SettingKind::Number {
+                presets: LOG_KEEP_PRESETS,
+            },
+        },
+        SettingRow {
+            key: "logs.keep_days",
+            label: "delete copies after",
+            value: format!("{} days", settings.logs.keep_days),
+            help: "rotated copies older than this are removed; zero keeps them all",
+            kind: SettingKind::Number {
+                presets: LOG_DAYS_PRESETS,
             },
         },
         SettingRow {
@@ -997,6 +1038,33 @@ fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
                 forward,
             );
             settings.test.timeout_ms = u32::try_from(next).unwrap_or(settings.test.timeout_ms);
+            true
+        }
+        "logs.max_size_bytes" => {
+            let next = step_number(
+                i64::try_from(settings.logs.max_size_bytes).unwrap_or(i64::MAX),
+                LOG_SIZE_PRESETS,
+                forward,
+            );
+            settings.logs.max_size_bytes = u64::try_from(next).unwrap_or(0);
+            true
+        }
+        "logs.keep" => {
+            let next = step_number(
+                i64::try_from(settings.logs.keep).unwrap_or(i64::MAX),
+                LOG_KEEP_PRESETS,
+                forward,
+            );
+            settings.logs.keep = usize::try_from(next).unwrap_or(1);
+            true
+        }
+        "logs.keep_days" => {
+            let next = step_number(
+                i64::try_from(settings.logs.keep_days).unwrap_or(i64::MAX),
+                LOG_DAYS_PRESETS,
+                forward,
+            );
+            settings.logs.keep_days = u64::try_from(next).unwrap_or(0);
             true
         }
         "test.concurrency" => {
@@ -4138,7 +4206,7 @@ mod tests {
     fn every_setting_row_can_be_cycled_from_the_keyboard() {
         let mut a = loaded();
         goto(&mut a, Screen::Settings);
-        assert_eq!(a.settings_rows.len(), 21);
+        assert_eq!(a.settings_rows.len(), 24);
         a.settings_rows
             .select_by_key("ui.color".to_owned(), |row| row.key.to_owned());
         assert_eq!(press(&mut a, KeyCode::Enter), Vec::new());

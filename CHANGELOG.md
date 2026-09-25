@@ -5,6 +5,92 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-26
+
+### Added
+
+- `test.urls` names the URLs a node can be measured against, and `cvt test urls
+  --node N` measures every one through a node. A delay says a socket opened to
+  one host — the same host for every node — so a node that cannot reach
+  anything useful still reports a healthy number. Naming the three places
+  people actually ask about (`google`, `github`, `youtube`) answers the
+  question they are asking instead.
+- `--url` accepts one of those names wherever it accepts a URL. A value that is
+  neither is refused with the list in the message, because fetching a typo
+  fails and looks like a node problem rather than a mistake.
+- `cvt test urls --list`, and `--json` shapes `cvt.test.urls.v1` and
+  `cvt.test.targets.v1`.
+
+### Note
+
+The default `youtube` target is `https://www.youtube.com/robots.txt` rather
+than the front page: a robots file is a few hundred bytes, it is served over
+the same TLS connection, and fetching a video page to measure latency would be
+a strange thing for a monitoring tool to do.
+
+### Backup and Restore System
+
+A fifth adversarial review, of the newest work. It found twelve problems: eight
+in what it was sent to check, and four more that opened while it ran, because
+the author was fixing the first eight in the working tree beside it.
+
+Two of them are worth the space.
+
+**The hot-reload path could never work.** The generated configuration lives in
+`<home>/runtime/`, the core is started with `-d <home>/core/work`, and mihomo
+refuses any `path` that is not under its own home — `400 path is not subpath of
+home directory or SAFE_PATHS`. So `--mode hot` always failed, and `--mode auto`,
+the default, always fell back to a **restart**: the one thing the reload design
+exists to avoid, because a restart drops every live connection. It survived four
+reviews of the API client because the contract test serves a fake controller,
+and a fake controller cannot tell an allowed path from a refused one. The fix is
+`SAFE_PATHS` on the child, verified against the real core.
+
+**A restore could empty the home it was restoring.** `std::fs::copy(x, x)`
+truncates: the destination is opened for writing before a byte is read, and the
+call reports success having written nothing. `restore(<home>)` therefore left
+the index, the settings and every document 0 bytes long, and exited 0. It is
+refused now, and the per-file copy refuses to copy a file onto itself whatever
+calls it.
+
+### Added
+
+- `cvt backup create|list|restore`, over the profiles, the profile index, the
+  settings and the overrides. A restore is additive and keeps the state it
+  replaces.
+
+### Fixed
+
+- The hot reload now tells the core which directory the document is in, so the
+  API path works and an apply no longer restarts the core.
+- `Service::restore` refuses a source that is the destination.
+- The replay waits for a group with a budget of its own *and* a total: one
+  group that no longer exists no longer spends the whole budget and starves
+  every choice after it, and a reload window longer than one group's budget no
+  longer loses the choice.
+- `client.select` is inside the budget like every read; a core that answers
+  reads and never answers writes used to cost five seconds against a two-second
+  budget.
+- A pinned `url-test` or `fallback` group is confirmed by its `fixed` field. A
+  pin that had taken was reported as a failure, because `now` is not where a
+  pinned group reports it.
+- An empty group name in an imported index no longer sends the replay after
+  `/group/`.
+- A `selected` entry from the reference project no longer makes the whole index
+  unreadable: both fields are optional there, and `now: null` is what it writes
+  for a group nobody has chosen in.
+- The sanitised fallback name is injective — `a/b` and `a.b` no longer share one
+  document.
+- `E-CIDR-FAMILY` is **removed**. It was introduced by 0.4.1's own fix and
+  rejects rules the core loads and activates: `IP-CIDR,2001:db8::/32,DIRECT`
+  appears in `GET /rules` on a running core.
+- `E-GROUP-EMPTY`: a group with neither `proxies` nor `use` is refused by the
+  core and was accepted here.
+- `cvt proxies select` reports whether the choice was recorded, in `--json`
+  (`recorded`) and on stderr, instead of only under `-v`.
+- A rolled-back apply no longer replays the choices of the configuration that
+  failed to apply.
+
 ## [0.2.1] - 2026-09-26
 
 A fourth adversarial review checked 0.4.0's own code and found eleven
@@ -291,6 +377,7 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
 [0.2.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.1
 [0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0
 [0.1.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.1

@@ -92,12 +92,66 @@ impl Default for UiSettings {
 }
 
 /// Latency testing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct TestTarget {
+    /// The name to ask for it by, as in `--url google`.
+    pub name: String,
+    /// The URL to fetch.
+    pub url: String,
+}
+
+impl TestTarget {
+    /// A target, for a test or a default.
+    #[must_use]
+    pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            url: url.into(),
+        }
+    }
+}
+
+/// What `test.urls` is by default.
+///
+/// The three places a person actually wants to know about: a site that is
+/// reachable everywhere and useful as a baseline, one that is the reason most
+/// people are here, and one that is blocked often enough to be worth its own
+/// line. A delay to *anything* only says a socket opened; which thing it opened
+/// to is the part that decides whether a node is any use.
+fn default_targets() -> Vec<TestTarget> {
+    vec![
+        TestTarget::new("google", "https://www.gstatic.com/generate_204"),
+        TestTarget::new("github", "https://github.com/robots.txt"),
+        TestTarget::new("youtube", "https://www.youtube.com/robots.txt"),
+    ]
+}
+
+impl TestSettings {
+    /// The URL for a name, or the literal string when it is not a name.
+    ///
+    /// `--url google` and `--url https://…` are the same flag, and the reason is
+    /// that both are things a person types. A name that does not exist is *not*
+    /// silently treated as a URL: it would be fetched, fail, and look like a
+    /// node problem rather than a typo.
+    #[must_use]
+    pub fn resolve(&self, given: &str) -> Option<&str> {
+        self.urls
+            .iter()
+            .find(|target| target.name == given)
+            .map(|target| target.url.as_str())
+    }
+}
+
+/// How a node is probed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestSettings {
     /// URL probed for latency. Must return 204 without a body to measure
     /// connection setup rather than transfer.
     pub url: String,
+    /// Named URLs, for asking about a particular site rather than a socket.
+    #[serde(default = "default_targets")]
+    pub urls: Vec<TestTarget>,
     /// Per-request timeout in milliseconds.
     pub timeout_ms: u32,
     /// How many nodes are tested at once.
@@ -112,6 +166,7 @@ impl Default for TestSettings {
     fn default() -> Self {
         Self {
             url: "https://www.gstatic.com/generate_204".to_owned(),
+            urls: default_targets(),
             timeout_ms: 5000,
             concurrency: 16,
             expected_status: "*".to_owned(),
@@ -300,6 +355,35 @@ impl Settings {
                 ),
             ));
         }
+        for (index, target) in self.test.urls.iter().enumerate() {
+            if target.name.trim().is_empty() {
+                return Err(Error::invalid(
+                    "settings",
+                    format!("test.urls[{index}] has an empty name, so it cannot be asked for"),
+                ));
+            }
+            if self
+                .test
+                .urls
+                .iter()
+                .take(index)
+                .any(|earlier| earlier.name == target.name)
+            {
+                return Err(Error::invalid(
+                    "settings",
+                    format!("test.urls has two entries called `{}`", target.name),
+                ));
+            }
+            if !target.url.starts_with("http://") && !target.url.starts_with("https://") {
+                return Err(Error::invalid(
+                    "settings",
+                    format!(
+                        "test.urls `{}` is `{}`, which is not an http(s) URL",
+                        target.name, target.url
+                    ),
+                ));
+            }
+        }
         if self.test.concurrency == 0 {
             return Err(Error::invalid("test.concurrency", "must be at least 1"));
         }
@@ -355,6 +439,41 @@ mod tests {
         let p = AppPaths::new(dir.path());
         p.ensure_dirs().unwrap();
         (dir, p)
+    }
+
+    #[test]
+    fn a_test_url_can_be_asked_for_by_name() {
+        let settings = Settings::default();
+        assert_eq!(
+            settings.test.resolve("google"),
+            Some("https://www.gstatic.com/generate_204"),
+            "the default list has the three places a person actually asks about"
+        );
+        // A name that is not in the list is not a URL, and is not silently
+        // treated as one — the caller refuses it and lists what there is.
+        assert_eq!(settings.test.resolve("googl"), None);
+        assert_eq!(settings.test.resolve("https://example.com/"), None);
+    }
+
+    #[test]
+    fn a_target_list_that_cannot_be_asked_for_is_refused() {
+        let mut settings = Settings::default();
+        settings.test.urls = vec![TestTarget::new("", "https://x.example/")];
+        assert!(
+            settings.validate().is_err(),
+            "an empty name is a target nobody can ask for"
+        );
+
+        settings.test.urls = vec![
+            TestTarget::new("a", "https://x.example/"),
+            TestTarget::new("a", "https://y.example/"),
+        ];
+        let error = settings.validate().unwrap_err().to_string();
+        assert!(error.contains("two entries"), "{error}");
+
+        settings.test.urls = vec![TestTarget::new("a", "ftp://x.example/")];
+        let error = settings.validate().unwrap_err().to_string();
+        assert!(error.contains("not an http(s) URL"), "{error}");
     }
 
     #[test]

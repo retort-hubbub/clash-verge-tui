@@ -245,6 +245,24 @@ pub struct Supervisor {
     paths: AppPaths,
 }
 
+/// The directories the core may read a configuration from, besides its own.
+///
+/// The document's own directory, so every `-f` this program passes is a path
+/// the core will accept back through `PUT /configs?path=…`. A `-f` already
+/// inside the core's home needs nothing, but saying so anyway is cheaper than
+/// working out whether it does.
+fn safe_path_for(config: &Path) -> std::ffi::OsString {
+    let mut value = config
+        .parent()
+        .map_or_else(|| config.to_path_buf(), std::path::Path::to_path_buf);
+    if let Some(existing) = std::env::var_os("SAFE_PATHS") {
+        // Whatever the user already had stays; this only adds to it.
+        value.push(":");
+        value.push(existing);
+    }
+    value.into_os_string()
+}
+
 impl Supervisor {
     /// Bind a supervisor to an application home.
     #[must_use]
@@ -387,6 +405,19 @@ impl Supervisor {
             .arg(self.paths.core_work_dir())
             .arg("-f")
             .arg(config)
+            // The generated configuration lives outside the core's own home,
+            // and mihomo refuses any `path` that is not under it:
+            //
+            //   400 path is not subpath of home directory or SAFE_PATHS: …
+            //       allowed paths: […/core/work]
+            //
+            // So `PUT /configs?path=…` — the whole hot-reload path — could
+            // never succeed: `--mode hot` always failed, and `--mode auto`, the
+            // default, always fell back to a *restart*, which is the one thing
+            // the reload design exists to avoid because a restart drops every
+            // live connection. `SAFE_PATHS` is how the core is told which other
+            // directories it may read a configuration from.
+            .env("SAFE_PATHS", safe_path_for(config))
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))

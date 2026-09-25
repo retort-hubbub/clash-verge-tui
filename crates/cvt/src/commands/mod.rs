@@ -8,6 +8,7 @@
 //! can write the profile index is [`Ctx::edit_store`], so a command that never
 //! calls it is read-only.
 
+pub mod backup;
 pub mod config;
 pub mod connections;
 pub mod core;
@@ -26,6 +27,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use cvt_core::enhance::diff::{Change, Diff};
 use cvt_core::enhance::pipeline::{AppliedProfile, Outcome};
+use cvt_core::error::Error;
 use cvt_core::mihomo::client::Client;
 use cvt_core::mihomo::supervisor::CoreStatus;
 use cvt_core::model::config::ConfigStats;
@@ -52,6 +54,7 @@ pub async fn dispatch(ctx: &Ctx, command: &Command) -> Result<()> {
             Err(Exit::failure("internal error: doctor must run before the home is opened").into())
         }
         Command::Profiles { command } => profiles::run(ctx, command).await,
+        Command::Backup { command } => backup::run(ctx, command).await,
         Command::Config { command } => config::run(ctx, command).await,
         Command::Proxies { command } => proxies::run(ctx, command).await,
         Command::Connections { command } => connections::run(ctx, command).await,
@@ -614,10 +617,65 @@ pub fn test_defaults(ctx: &Ctx) -> (String, u32, usize) {
 pub fn node_options(ctx: &Ctx, args: &NodeTestArgs) -> (String, u32, usize) {
     let (url, timeout, concurrency) = test_defaults(ctx);
     (
-        args.url.clone().unwrap_or(url),
+        resolve_url(ctx, args.url.as_deref()).unwrap_or(url),
         args.timeout.unwrap_or(timeout),
         args.concurrency.unwrap_or(concurrency).max(1),
     )
+}
+
+/// `--url`, as a URL or as a name from `test.urls`.
+///
+/// `None` when the flag was not given, so the caller can fall back. A name that
+/// is not in the list is returned unchanged rather than refused: it may be a URL
+/// the user typed, and telling those apart is the *caller's* business — the
+/// commands that need to refuse a typo do so, with the list in the message.
+#[must_use]
+pub fn resolve_url(ctx: &Ctx, given: Option<&str>) -> Option<String> {
+    let given = given?;
+    if let Some(url) = ctx.settings().test.resolve(given) {
+        return Some(url.to_owned());
+    }
+    Some(given.to_owned())
+}
+
+/// Refuse a `--url` that is neither a URL nor one of the configured names.
+///
+/// A name that does not exist must not be silently fetched: it would fail, and
+/// it would look like a node problem rather than a typo. The message lists what
+/// there is, because that is what the person needs to know.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when the value is neither.
+pub fn check_url_flag(ctx: &Ctx, given: Option<&str>) -> Result<()> {
+    let Some(given) = given else {
+        return Ok(());
+    };
+    if given.starts_with("http://") || given.starts_with("https://") {
+        return Ok(());
+    }
+    if ctx.settings().test.resolve(given).is_some() {
+        return Ok(());
+    }
+    let known: Vec<&str> = ctx
+        .settings()
+        .test
+        .urls
+        .iter()
+        .map(|target| target.name.as_str())
+        .collect();
+    Err(Error::invalid(
+        "url",
+        if known.is_empty() {
+            format!("`{given}` is not an http(s) URL, and no test targets are configured")
+        } else {
+            format!(
+                "`{given}` is not an http(s) URL, and no test target is called that; \
+                 there is {}",
+                known.join(", ")
+            )
+        },
+    )
+    .into())
 }
 
 #[cfg(test)]

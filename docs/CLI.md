@@ -234,11 +234,30 @@ Exactly one of `<id>` and `--all` is required; passing both is a usage error.
 | Command | Effect |
 |---|---|
 | `delay --group G` / `delay --all` | Measure a group, or every group. One of the two is required. |
+| `urls --node N` / `urls --list` | Measure every configured URL through one node, or list them. |
 | `dns <name> [--type A]` | Resolve a name through the core's DNS. |
 
 `delay` accepts `--url`, `--timeout` and `--concurrency` like `proxies test`.
 
-*JSON:* `cvt.test.delay.v1`, `cvt.test.dns.v1`.
+`urls` measures `test.urls` from `cvt.yaml` — `google`, `github` and `youtube`
+out of the box — through a single node. The point is not the latency but
+*which sites a node can reach*: a delay probe says a socket opened to one host,
+and the host is the same for every node, so a node that cannot reach anything
+useful still reports a healthy number.
+
+`--url` accepts one of those names wherever it accepts a URL:
+
+```console
+$ cvt test delay --group PROXY --url youtube
+$ cvt test delay --group PROXY --url https://example.com/generate_204
+```
+
+A value that is neither an http(s) URL nor a configured name is refused, with
+the list in the message. Fetching a typo would fail, and it would look like a
+node problem rather than a mistake.
+
+*JSON:* `cvt.test.delay.v1`, `cvt.test.dns.v1`, `cvt.test.urls.v1`,
+`cvt.test.targets.v1`.
 
 ### `core`
 

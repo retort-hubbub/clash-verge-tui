@@ -1371,8 +1371,8 @@ fn claim8_every_documented_code_is_reachable() {
             "rules: ['IP-CIDR,10.0.0.0,DIRECT', 'MATCH,DIRECT']\n",
         ),
         (
-            "E-CIDR-FAMILY",
-            "rules: ['IP-CIDR6,10.0.0.0/8,DIRECT', 'MATCH,DIRECT']\n",
+            "E-GROUP-EMPTY",
+            "proxy-groups: [{name: g, type: select}]\nrules: ['MATCH,g']\n",
         ),
         (
             "W-DOMAIN-WILDCARD",

@@ -65,6 +65,13 @@ pub enum Command {
         command: ProfilesCommand,
     },
 
+    /// Save or restore the profiles, settings and overrides
+    Backup {
+        /// Which backup operation to run
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+
     /// Work with the generated runtime configuration
     Config {
         /// Which configuration operation to run
@@ -194,6 +201,22 @@ pub struct ChainArgs {
     /// Drop the explicit chain and go back to the automatic order
     #[arg(long, conflicts_with = "uids")]
     pub clear: bool,
+}
+
+/// Backup operations.
+#[derive(Debug, Subcommand)]
+pub enum BackupCommand {
+    /// Copy the profiles, settings and overrides into a timestamped directory
+    Create,
+
+    /// List the backups, newest first
+    List,
+
+    /// Put a backup back, keeping a copy of what it replaces
+    Restore {
+        /// The backup's name, from `backup list`; the newest when omitted
+        name: Option<String>,
+    },
 }
 
 /// Configuration operations.
@@ -380,6 +403,9 @@ pub enum TestCommand {
     /// Measure latency for a group, or for every group
     Delay(DelayArgs),
 
+    /// Test one node against every configured URL, or list them
+    Urls(UrlsArgs),
+
     /// Resolve a name through the core's DNS
     Dns(DnsArgs),
 }
@@ -399,6 +425,26 @@ pub struct DelayArgs {
     /// Which arguments apply to a node test
     #[command(flatten)]
     pub node: NodeTestArgs,
+}
+
+/// Arguments of `test urls`.
+#[derive(Debug, Args)]
+pub struct UrlsArgs {
+    /// The node to test every URL through
+    #[arg(long, value_name = "NODE")]
+    pub node: Option<String>,
+
+    /// Just list the configured URLs
+    #[arg(long)]
+    pub list: bool,
+
+    /// Per-URL timeout in milliseconds
+    #[arg(long, value_name = "MS")]
+    pub timeout: Option<u32>,
+
+    /// How many URLs to test at once
+    #[arg(long, value_name = "N")]
+    pub concurrency: Option<usize>,
 }
 
 /// Arguments of `test dns`.

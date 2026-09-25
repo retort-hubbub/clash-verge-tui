@@ -195,6 +195,13 @@ pub struct SelectionReport {
     pub group: String,
     /// Node that was pinned, absent when the selection was cleared.
     pub node: Option<String>,
+    /// Whether the choice was recorded in the index.
+    ///
+    /// The core's selection and the recorded one are two different things: the
+    /// first is live until the configuration changes, the second is what
+    /// survives that change. A caller that only reads `detail` would see a
+    /// success and lose the choice at the next apply.
+    pub recorded: bool,
     /// What the change means.
     pub detail: &'static str,
 }
@@ -216,21 +223,26 @@ async fn select(ctx: &Ctx, group: &str, node: &str) -> Result<()> {
     ctx.client()?.select(group, node).await?;
     // Remembered so that the next apply, which rebuilds every group, does not
     // throw the choice away. Recorded after the core accepted it, and a failure
-    // to record is reported rather than fatal: the selection is live either
-    // way, and saying so is more useful than pretending neither happened.
-    if let Err(error) = ctx.service().remember_selection(group, node) {
-        ctx.out().verbose(
-            1,
-            format!(
-                "selected, but the choice could not be recorded: {}",
-                error.short()
-            ),
-        );
+    // to record is **not** fatal — the selection is live either way — but it is
+    // reported: the whole point of recording it is that it survives the next
+    // apply, and a choice that will not survive is a different outcome from one
+    // that will. Reporting it only under `-v` meant `--json` said nothing.
+    let recorded = ctx.service().remember_selection(group, node);
+    if let Err(error) = &recorded {
+        ctx.out().warn(format!(
+            "the choice could not be recorded: {}",
+            error.short()
+        ));
     }
     ctx.out().emit(&SelectionReport {
         group: group.to_owned(),
         node: Some(node.to_owned()),
-        detail: "the selection is pinned until it is cleared or the configuration changes",
+        recorded: recorded.is_ok(),
+        detail: if recorded.is_ok() {
+            "the selection is pinned until it is cleared, and remembered across applies"
+        } else {
+            "the selection is pinned until it is cleared, but will be lost by the next apply"
+        },
     })
 }
 
@@ -248,6 +260,7 @@ async fn unpin(ctx: &Ctx, group: &str) -> Result<()> {
     ctx.out().emit(&SelectionReport {
         group: group.to_owned(),
         node: None,
+        recorded: true,
         detail: "the group is free to pick by its own strategy again",
     })
 }
@@ -403,6 +416,7 @@ mod tests {
         let pinned = SelectionReport {
             group: "PROXY".into(),
             node: Some("JP 01".into()),
+            recorded: true,
             detail: "x",
         };
         assert_eq!(
@@ -412,6 +426,7 @@ mod tests {
         let cleared = SelectionReport {
             group: "PROXY".into(),
             node: None,
+            recorded: true,
             detail: "x",
         };
         assert!(

@@ -314,6 +314,25 @@ pub fn check(config: &Config) -> Report {
                     .at(format!("proxy-groups[{i}]")),
             );
         }
+        // `mihomo -t` answers a group with neither with
+        // `proxy group[0]: g: \`use\` or \`proxies\` missing`, and refuses the
+        // document. A group fed by a provider (`use:`) and one listing members
+        // are the two ways to have any.
+        let has_members = !g.proxies.is_empty();
+        let uses_providers = !g.use_providers.is_empty();
+        if !has_members && !uses_providers {
+            report.diagnostics.push(
+                Diagnostic::error(
+                    "E-GROUP-EMPTY",
+                    format!(
+                        "proxy group `{}` lists no members and uses no provider",
+                        g.name
+                    ),
+                )
+                .at(format!("proxy-groups[{i}]"))
+                .fix("give it `proxies:`, or a provider with `use:`"),
+            );
+        }
         if g.group_kind() == crate::model::proxy::GroupKind::Unknown {
             report.diagnostics.push(
                 Diagnostic::error(
@@ -600,34 +619,17 @@ fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mu
                             "`{rule}` has no prefix length, and mihomo refuses a rule without one"
                         ),
                     )
-                    .at(loc.clone())
+                    .at(loc)
                     .fix("write the prefix, e.g. `1.2.3.0/24`"),
                 );
             }
-            // The family check stays with the three kinds whose name states
-            // one. `IP-SUFFIX` takes the same payload shape but its accepted
-            // families are not something a single probe settles, and reporting
-            // a valid document as broken is the mistake this project keeps
-            // making.
-            if !matches!(rule.kind.as_str(), "IP-CIDR" | "IP-CIDR6" | "SRC-IP-CIDR") {
-                return;
-            }
-            let want_v6 = rule.kind == "IP-CIDR6";
-            let looks_v6 = payload.contains(':');
-            if want_v6 != looks_v6 {
-                report.diagnostics.push(
-                    Diagnostic::error(
-                        "E-CIDR-FAMILY",
-                        format!("`{rule}` uses the wrong address family for `{}`", rule.kind),
-                    )
-                    .at(loc)
-                    .fix(if want_v6 {
-                        "use `IP-CIDR` for IPv4, `IP-CIDR6` for IPv6"
-                    } else {
-                        "use `IP-CIDR6` for IPv6 addresses"
-                    }),
-                );
-            }
+            // There is deliberately no family check. It used to compare the
+            // address in the payload against the kind's name and report
+            // `E-CIDR-FAMILY` for `IP-CIDR,2001:db8::/32,DIRECT` — which
+            // `mihomo -t` accepts, and which a running core reports back
+            // through `GET /rules` and matches traffic with. The core does not
+            // care that the name says IPv4 and the address is IPv6, and a
+            // validator that does is refusing a document that works.
         }
         "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" => {
             if payload.starts_with('.') || payload.starts_with("*.") {
@@ -1169,16 +1171,26 @@ rules: [MATCH,DIRECT]
     }
 
     #[test]
-    fn detects_cidr_family_mismatch() {
+    fn does_not_police_the_address_family_of_a_cidr_rule() {
+        // It used to, and the core does not: `mihomo -t` accepts
+        // `IP-CIDR,2001:db8::/32,DIRECT`, and a running core reports it through
+        // `GET /rules` and matches traffic with it. The check was refusing a
+        // document that works.
         let c = cfg(r#"
 mixed-port: 7890
 external-controller: 127.0.0.1:9090
 rules:
+  - IP-CIDR,2001:db8::/32,DIRECT
   - IP-CIDR6,10.0.0.0/8,DIRECT
   - MATCH,DIRECT
 "#);
         let report = check(&c);
-        assert!(codes(&report).contains(&"E-CIDR-FAMILY"));
+        assert!(
+            !codes(&report).contains(&"E-CIDR-FAMILY"),
+            "the core loads both of these: {}",
+            report.render()
+        );
+        assert!(report.is_ok(), "{}", report.render());
     }
 
     #[test]

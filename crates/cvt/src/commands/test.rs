@@ -7,13 +7,15 @@
 
 use anyhow::Result;
 use cvt_core::error::Error;
+use futures_util::stream::StreamExt as _;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::cli::{DelayArgs, DnsArgs, TestCommand};
-use crate::commands::{DelayReport, measure_nodes, node_options, nodes_by_group};
+use crate::cli::{DelayArgs, DnsArgs, TestCommand, UrlsArgs};
+use crate::commands::{DelayReport, check_url_flag, measure_nodes, node_options, nodes_by_group};
 use crate::context::Ctx;
-use crate::output::{Output, Report};
+use crate::exit::Exit;
+use crate::output::{Output, Report, Table};
 
 /// Run one `test` subcommand.
 ///
@@ -23,10 +25,162 @@ pub async fn run(ctx: &Ctx, command: &TestCommand) -> Result<()> {
     match command {
         TestCommand::Delay(args) => delay(ctx, args).await,
         TestCommand::Dns(args) => dns(ctx, args).await,
+        TestCommand::Urls(args) => urls(ctx, args).await,
+    }
+}
+
+/// One URL's result, through one node.
+#[derive(Debug, Serialize)]
+pub struct UrlRow {
+    /// The name the URL is configured under.
+    pub target: String,
+    /// The URL that was fetched.
+    pub url: String,
+    /// Whether the fetch came back at all.
+    pub ok: bool,
+    /// Round trip in milliseconds, when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<u32>,
+    /// Why it did not, when it did not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The result of `test urls`.
+#[derive(Debug, Serialize)]
+pub struct UrlsReport {
+    /// The node everything was measured through.
+    pub node: String,
+    /// Per-URL timeout in milliseconds.
+    pub timeout_ms: u32,
+    /// How many came back.
+    pub reachable: usize,
+    /// One per configured URL, in configuration order.
+    pub rows: Vec<UrlRow>,
+    /// The library's one-line summary.
+    pub summary: String,
+}
+
+impl Report for UrlsReport {
+    fn schema(&self) -> &'static str {
+        "cvt.test.urls.v1"
+    }
+
+    fn render(&self, out: Output) -> String {
+        let mut table = Table::new(["target", "delay", "result"]);
+        for row in &self.rows {
+            let (delay, result) = match (row.delay_ms, &row.error) {
+                (Some(ms), _) => (format!("{ms} ms"), "ok".to_owned()),
+                (None, Some(error)) => ("-".to_owned(), error.clone()),
+                (None, None) => ("-".to_owned(), "no answer".to_owned()),
+            };
+            table.push([
+                row.target.clone(),
+                out.paint_stdout(if row.ok { "\u{1b}[32m" } else { "\u{1b}[31m" }, &delay),
+                result,
+            ]);
+        }
+        table.render()
+    }
+}
+
+/// `test urls`: every configured URL, through one node.
+///
+/// The point is not a latency; it is *which* sites a node can reach. A delay
+/// probe says a socket opened to one host, and the host is the same for every
+/// node, so a node that cannot reach anything useful still reports a healthy
+/// number.
+async fn urls(ctx: &Ctx, args: &UrlsArgs) -> Result<()> {
+    let targets = ctx.settings().test.urls.clone();
+    if args.list || args.node.is_none() {
+        if args.list {
+            return ctx.out().emit(&TargetsReport {
+                summary: format!("{} configured URL(s)", targets.len()),
+                rows: targets,
+            });
+        }
+        return Err(Exit::failure(
+            "name a node with `--node NODE`, or list the URLs with `--list`",
+        )
+        .into());
+    }
+    if targets.is_empty() {
+        return Err(
+            Exit::failure("no test URLs are configured; add `test.urls` to cvt.yaml").into(),
+        );
+    }
+
+    let node = args.node.clone().unwrap_or_default();
+    let defaults = ctx.settings().test.clone();
+    let timeout = args.timeout.unwrap_or(defaults.timeout_ms);
+    let concurrency = args.concurrency.unwrap_or(defaults.concurrency).max(1);
+    let client = ctx.client()?;
+
+    let rows: Vec<UrlRow> = futures_util::stream::iter(targets.into_iter().map(|target| {
+        let client = client.clone();
+        let node = node.clone();
+        async move {
+            match client.proxy_delay(&node, &target.url, timeout, None).await {
+                Ok(delay_ms) => UrlRow {
+                    target: target.name,
+                    url: target.url,
+                    ok: true,
+                    delay_ms: Some(u32::from(delay_ms)),
+                    error: None,
+                },
+                Err(error) => UrlRow {
+                    target: target.name,
+                    url: target.url,
+                    ok: false,
+                    delay_ms: None,
+                    error: Some(error.short()),
+                },
+            }
+        }
+    }))
+    .buffer_unordered(concurrency)
+    .collect()
+    .await;
+
+    let reachable = rows.iter().filter(|row| row.ok).count();
+    let summary = format!(
+        "{reachable} of {} URL(s) reached through {node}",
+        rows.len()
+    );
+    ctx.out().emit(&UrlsReport {
+        node,
+        timeout_ms: timeout,
+        reachable,
+        rows,
+        summary,
+    })
+}
+
+/// The result of `test urls --list`.
+#[derive(Debug, Serialize)]
+pub struct TargetsReport {
+    /// Every configured URL, in configuration order.
+    pub rows: Vec<cvt_core::settings::TestTarget>,
+    /// The library's one-line summary.
+    pub summary: String,
+}
+
+impl Report for TargetsReport {
+    fn schema(&self) -> &'static str {
+        "cvt.test.targets.v1"
+    }
+
+    fn render(&self, _out: Output) -> String {
+        let mut table = Table::new(["name", "url"]);
+        for row in &self.rows {
+            table.push([row.name.clone(), row.url.clone()]);
+        }
+        table.render()
     }
 }
 
 async fn delay(ctx: &Ctx, args: &DelayArgs) -> Result<()> {
+    check_url_flag(ctx, args.node.url.as_deref())?;
     let (url, timeout, concurrency) = node_options(ctx, &args.node);
     let client = ctx.client()?;
 

@@ -90,6 +90,8 @@ homes it found.
 
 - [`docs/CLI.md`](docs/CLI.md) — every subcommand, every flag, the `--json`
   schema names, and the exit codes.
+- [`docs/OVERRIDE-FORMAT.md`](docs/OVERRIDE-FORMAT.md) — how to write an
+  override, a merge or a sequence patch, and what each of them cannot do.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the three crates fit
   together and why.
 - [`docs/adr/`](docs/adr/) — the decisions behind the design, with the

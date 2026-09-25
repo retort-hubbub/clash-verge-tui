@@ -38,6 +38,24 @@
 //! named `pre_fix_*` assert the shape the code *used to* have, on a
 //! reconstruction of it, and are there to show a test would have caught it.
 //!
+//! # Where each finding stands
+//!
+//! The author was fixing them as they were reported, so a `defect_*` test that
+//! failed an hour ago may pass now. Each doc comment carries the commit it was
+//! taken at and the output that was observed; this is the summary, as of
+//! `fbf3d85`:
+//!
+//! ```text
+//! defect_1  --concurrency not bounded in `test urls`   FIXED c76fdac (guard)
+//! defect_2  --timeout held to the core's int16         FIXED c76fdac (guard)
+//! defect_3  copy_file's path guard vs a hard link      FIXED in the working
+//!                                                      tree, then c76fdac
+//! defect_4  `<stamp>-overflow` parsed back as seq 1    FIXED c76fdac (guard)
+//! defect_5  `backup create` reported epoch/0 items     FIXED c76fdac (guard)
+//! defect_6  the same number, two verdicts              DESIGN, see 12a83c1
+//! defect_7  the clamp is not reported by `test urls`   OPEN
+//! ```
+//!
 //! Nothing here modifies a source file.
 
 #![allow(
@@ -813,6 +831,81 @@ fn defect_6_the_same_number_still_has_two_answers_across_the_file_and_the_flag()
         refused.trim(),
         output.status,
         value["concurrency"]
+    );
+}
+
+/// CLAIM (`12a83c1`, the comment added beside the clamp in `resolve_limits`):
+/// "Clamped, and the clamp is *reported* — every report these flags feed carries
+/// the number actually used, so `--concurrency 600` prints 512 rather than
+/// leaving the reader to believe 600."
+///
+/// That sentence is the whole argument for clamping rather than refusing, and
+/// it is true of three of the four commands the flags are now flattened into.
+/// Both flags live in one `TestLimits`, flattened into `NodeTestArgs` —
+/// `proxies test`, `proxies test-all`, `test delay` — and into `UrlsArgs` —
+/// `cvt test urls`. The first three feed `DelayReport`, which has
+///
+/// ```text
+/// pub concurrency: usize,   /// How many nodes were tested at once.
+/// ```
+///
+/// and prints it. The fourth feeds `UrlsReport`, whose fields are `node`,
+/// `timeout_ms`, `reachable`, `rows` and `summary`: the **timeout is reported
+/// and the concurrency is not**, so the flag is reduced and nothing in the
+/// output says so — in the one command this whole line of fixes kept finding
+/// things in.
+///
+/// ```text
+/// $ cvt test urls --node node-a --concurrency 600 --json
+/// { "node": "node-a", "timeout_ms": 5000, "reachable": 3, "rows": [ … ] }
+///
+/// $ cvt proxies test-all --concurrency 600 --json | grep concurrency
+///       "concurrency": 512,
+/// ```
+///
+/// The `--timeout` branch of the same function *refuses* rather than clamps, so
+/// for `test urls` the reader is told about one of the two flags and not the
+/// other; for the other three commands both are.
+#[test]
+fn defect_7_the_clamp_is_reported_in_three_of_the_four_reports() {
+    let Some(bin) = cli_binary() else {
+        eprintln!("SKIP: no clash-verge-tui binary; run `cargo build -p cvt`");
+        return;
+    };
+    let runtime = panel_runtime();
+    let panel = runtime.block_on(async { core_with(&[("PROXY", "select")]) });
+    let (_dir, paths) = cli_home(&panel.endpoint());
+
+    let output = run_cli(
+        &bin,
+        paths.home(),
+        &[
+            "test",
+            "urls",
+            "--node",
+            "node-a",
+            "--concurrency",
+            "600",
+            "--json",
+        ],
+    );
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(&output))
+        .unwrap_or_else(|e| panic!("`test urls --json` printed {e}:\n{}", stdout_of(&output)));
+
+    assert!(
+        output.status.success(),
+        "the control: the command runs and is clamped rather than refused: {}",
+        stderr_of(&output)
+    );
+    assert_eq!(
+        value["concurrency"],
+        serde_json::json!(MAX_TEST_CONCURRENCY),
+        "`resolve_limits` clamps `--concurrency 600` to {MAX_TEST_CONCURRENCY}, \
+         and the comment beside the clamp says every report these flags feed \
+         carries the number actually used. `UrlsReport` has no `concurrency` \
+         field at all — it reports the `timeout_ms` it was given and not the \
+         concurrency — so here the flag is silently reduced and no line of the \
+         output says so: {value}"
     );
 }
 

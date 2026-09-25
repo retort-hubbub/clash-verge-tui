@@ -30,6 +30,7 @@ pub async fn run(ctx: &Ctx, command: &ProfilesCommand) -> Result<()> {
         ProfilesCommand::Add(args) => add(ctx, args).await,
         ProfilesCommand::Remove { uid } => remove(ctx, uid),
         ProfilesCommand::Rename { uid, name } => rename(ctx, uid, name),
+        ProfilesCommand::EditUrl { uid, url, no_fetch } => edit_url(ctx, uid, url, *no_fetch).await,
         ProfilesCommand::Switch { uid } => switch(ctx, uid),
         ProfilesCommand::Update(args) => update(ctx, args).await,
         ProfilesCommand::Import { dir } => import(ctx, dir),
@@ -275,6 +276,57 @@ fn rename(ctx: &Ctx, uid: &str, name: &str) -> Result<()> {
         name: name.to_owned(),
         detail: "the uid and the document are unchanged".to_owned(),
     })
+}
+
+/// Change a subscription's URL, and by default fetch from the new one.
+///
+/// Fetching by default because a URL that has been changed and not fetched is
+/// the *old* provider's document with the new provider's address beside it in
+/// the index — an inconsistency that looks like a working profile until the
+/// next update quietly replaces it. `--no-fetch` exists for the case where the
+/// new provider is not reachable yet, and says what it left behind.
+async fn edit_url(ctx: &Ctx, uid: &str, url: &str, no_fetch: bool) -> Result<()> {
+    let url = url.trim().to_owned();
+    if url.is_empty() {
+        return Err(Error::invalid("url", "the subscription URL is empty").into());
+    }
+    let previous = ctx.edit_store(|store| {
+        let previous = store.get(uid).and_then(|item| item.url.clone());
+        store.set_url(uid, &url)?;
+        Ok(previous)
+    })?;
+
+    if no_fetch {
+        ctx.out().warn(format!(
+            "`{uid}` now points at {url}, but its document is still the one fetched from {}; \
+             run `clash-verge-tui profiles update {uid}` before the next generate",
+            previous.as_deref().unwrap_or("its previous URL")
+        ));
+        return ctx.out().emit(&ProfileChangeReport {
+            action: "url changed",
+            uid: uid.to_owned(),
+            name: url,
+            detail: "not fetched; the document is still the previous provider's".to_owned(),
+        });
+    }
+
+    let result = fetch_one(ctx, uid).await;
+    let ok = result.ok;
+    ctx.out().emit(&AddReport {
+        action: "url changed",
+        uid: uid.to_owned(),
+        url,
+        ok,
+        result,
+    })?;
+    if !ok {
+        return Err(Exit::failure(format!(
+            "`{uid}` points at the new URL but could not be downloaded from it; retry with \
+             `clash-verge-tui profiles update {uid}`"
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 fn switch(ctx: &Ctx, uid: &str) -> Result<()> {

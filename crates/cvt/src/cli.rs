@@ -150,6 +150,18 @@ pub enum ProfilesCommand {
         name: String,
     },
 
+    /// Point a remote profile at a different subscription URL
+    EditUrl {
+        /// Profile uid
+        uid: String,
+        /// The new subscription URL
+        url: String,
+
+        /// Change the URL without fetching it
+        #[arg(long)]
+        no_fetch: bool,
+    },
+
     /// Make a profile the base of the generated configuration
     Switch {
         /// Profile uid

@@ -229,7 +229,7 @@ fn defect_2_a_target_name_that_is_a_url_silently_replaces_that_url() {
 #[test]
 fn an_explicitly_empty_url_list_is_coherent_and_round_trips() {
     let (_dir, paths) = home();
-    let text = "test:\n  url: https://example.com/generate_204\n  urls: []\n  timeout_ms: 5000\n  concurrency: 16\n  expected_status: \"*\"\n  cache_ttl_secs: 1800\n";
+    let text = "test:\n  url: https://example.com/generate_204\n  urls: []\n  timeout_ms: 5000\n  concurrency: 16\n  expected_status: \"*\"\n";
     std::fs::write(paths.settings_file(), text).unwrap();
     let settings = Settings::load(&paths).unwrap();
     assert!(

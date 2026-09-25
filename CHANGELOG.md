@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cvt profiles edit-url <uid> <url>` changes a subscription's address and
+  nothing else: the uid, the name and the document stay where they are, so a
+  chain naming the profile keeps working and a `config generate` between the
+  change and the next fetch still finds a document. It fetches from the new URL
+  by default, because a URL that has been changed and not fetched is the old
+  provider's document with the new provider's address beside it in the index —
+  an inconsistency that looks like a working profile until the next update
+  quietly replaces it. `--no-fetch` is for when the new provider is not
+  reachable yet, and it says what it left behind.
+
+### Removed
+
+- **`test.cache_ttl_secs`, which nothing read.** The settings screen showed and
+  edited "result cache lifetime" and no code path consulted it: ten references
+  in the tree, all of them the field, its default, or the screen that drew it.
+  A setting that does nothing is worse than no setting, because it is a promise
+  in a file the user edits. The premise does not hold for this architecture
+  either — the CLI measures once and exits, so there is nothing to reuse a
+  result across.
+
+  **This is a breaking change to a settings file**: `cvt.yaml` that sets
+  `cache_ttl_secs` will no longer load, because the settings struct refuses
+  unknown keys. Delete the line.
+
 ### Fixed
+
+- The clamp on `--concurrency` is reported by `cvt test urls` too. Three of the
+  four commands that take the flags carry the number actually used and the
+  fourth did not — the member-versus-class shape one level up, in the *report*
+  rather than in the guard, and found by falsifying the comment that claimed
+  otherwise.
+- `MAX_TEST_TIMEOUT_MS` is written once. The settings had the constant and the
+  API client had two copies of `32_767` beside it.
+- `free_backup_path` checks its last-resort name, so the thousand-and-first
+  backup in one second does not write into the thousandth's directory.
 
 - `--timeout` and `--concurrency` are read in one place and held to the
   ceilings the settings are. `test.concurrency: 600` was refused with "would

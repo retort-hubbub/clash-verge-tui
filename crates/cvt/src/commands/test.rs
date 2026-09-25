@@ -55,6 +55,16 @@ pub struct UrlsReport {
     pub node: String,
     /// Per-URL timeout in milliseconds.
     pub timeout_ms: u32,
+    /// How many were measured at once.
+    ///
+    /// Reported for the same reason the timeout is. `--concurrency` is held to
+    /// a ceiling, and a ceiling nobody can see is a number that was silently
+    /// changed: the other three commands that take these flags have carried
+    /// this field since they were written, and this one did not — which made
+    /// the clamp visible in three reports out of four. That is the
+    /// member-versus-class shape one level up, in the report rather than in
+    /// the guard, and the fix for it is the same: report it everywhere.
+    pub concurrency: usize,
     /// How many came back.
     pub reachable: usize,
     /// One per configured URL, in configuration order.
@@ -144,6 +154,7 @@ async fn urls(ctx: &Ctx, args: &UrlsArgs) -> Result<()> {
         ctx.out().emit(&UrlsReport {
             node: node.clone(),
             timeout_ms: timeout,
+            concurrency,
             reachable: 0,
             rows: targets
                 .into_iter()
@@ -204,6 +215,7 @@ async fn urls(ctx: &Ctx, args: &UrlsArgs) -> Result<()> {
     ctx.out().emit(&UrlsReport {
         node,
         timeout_ms: timeout,
+        concurrency,
         reachable,
         rows,
         summary,

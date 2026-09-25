@@ -245,12 +245,18 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     if is_same_file(source, destination) {
         return Ok(());
     }
-    // A destination that is a *symlink* is refused rather than followed.
-    // `std::fs::copy` opens the destination for writing, which follows the link
-    // — so a home whose `profiles/L1.yaml` is a link into somebody's dotfiles
-    // made a restore overwrite that file, outside the home, silently. The link
-    // is the user's arrangement and is not this function's to replace, so it
-    // says so and stops.
+    // A destination that is a *symlink* is refused rather than followed, with
+    // one exception that comes before this: a link pointing at the *source*
+    // returns early above, because the destination already is the source's
+    // file and there is nothing to do. That is deliberate rather than an
+    // oversight — the alternative is refusing a restore that would have
+    // succeeded — but it means this comment is about every other link.
+    //
+    // The reason for the refusal: `std::fs::copy` opens the destination for
+    // writing, which follows the link, so a home whose `profiles/L1.yaml` is a
+    // link into somebody's dotfiles had a restore overwrite that file, outside
+    // the home, silently. The link is the user's arrangement and is not this
+    // function's to replace.
     if std::fs::symlink_metadata(destination).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(Error::invalid(
             "backup",
@@ -740,7 +746,20 @@ impl Service {
         // their order went back to `read_dir`'s, which is the whole thing the
         // sequence was added to stop. `u32::MAX` sorts last, and last is what
         // an overflow is.
-        dir.join(format!("{stamp}-{}", u32::MAX))
+        let last = dir.join(format!("{stamp}-{}", u32::MAX));
+        if !last.exists() {
+            return last;
+        }
+        // A thousand and one backups in one second: give up on the second and
+        // use the nanosecond, which cannot collide with a name this program
+        // writes and is still parseable as a name.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::from(d.subsec_nanos()));
+        dir.join(format!(
+            "{stamp}-{}",
+            u32::MAX - u32::try_from(nanos % 1000).unwrap_or(0)
+        ))
     }
 
     /// Every backup, newest first.

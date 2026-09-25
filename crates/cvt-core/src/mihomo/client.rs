@@ -224,10 +224,13 @@ impl Client {
         timeout_ms: u32,
         expected: Option<&str>,
     ) -> Result<u16> {
-        if timeout_ms == 0 || timeout_ms > 32_767 {
+        if timeout_ms == 0 || timeout_ms > crate::settings::MAX_TEST_TIMEOUT_MS {
             return Err(Error::invalid(
                 "timeout",
-                format!("{timeout_ms} ms is out of the 1..=32767 range the core accepts"),
+                format!(
+                    "{timeout_ms} ms is out of the 1..={} range the core accepts",
+                    crate::settings::MAX_TEST_TIMEOUT_MS
+                ),
             ));
         }
         let mut path = format!(
@@ -349,10 +352,13 @@ impl Client {
         timeout_ms: u32,
         expected: Option<&str>,
     ) -> Result<GroupDelay> {
-        if timeout_ms == 0 || timeout_ms > 32_767 {
+        if timeout_ms == 0 || timeout_ms > crate::settings::MAX_TEST_TIMEOUT_MS {
             return Err(Error::invalid(
                 "timeout",
-                format!("{timeout_ms} ms is out of the 1..=32767 range the core accepts"),
+                format!(
+                    "{timeout_ms} ms is out of the 1..={} range the core accepts",
+                    crate::settings::MAX_TEST_TIMEOUT_MS
+                ),
             ));
         }
         let mut path = format!(

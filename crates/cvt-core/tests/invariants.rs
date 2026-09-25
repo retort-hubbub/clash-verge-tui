@@ -503,7 +503,6 @@ fn claim2_the_documented_shapes_round_trip() {
     for text in [
         "DOMAIN-SUFFIX,google.com,PROXY",
         "MATCH,DIRECT",
-        "FINAL,PROXY",
         "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
         "AND,((DOMAIN,a.example),(NETWORK,udp)),PROXY",
         "OR,((DOMAIN,a.example),(DOMAIN,b.example)),PROXY",
@@ -522,7 +521,16 @@ fn claim2_the_documented_shapes_round_trip() {
 fn a_payload_less_rule_keeps_its_flags_and_reports_a_stray_payload() {
     // F10: the parser used to discard everything after the policy on a
     // payload-less rule, which made the round trip lossy for an input it
-    // accepted and left the validator's payload check unreachable.
+    // accepted and left the validator's payload check unreachable. A bare
+    // `MATCH` is now refused as well: `mihomo -t` answers it with
+    // `format invalid`, and filling in `DIRECT` gave back a rule nobody wrote.
+    assert!(Rule::parse("MATCH").is_none(), "a bare MATCH is not a rule");
+    // `FINAL` is not a mihomo rule kind either — `[FINAL,DIRECT] error: format
+    // invalid` — so it is no longer accepted as a payload-less one.
+    assert!(
+        Rule::parse("FINAL,PROXY").is_none(),
+        "there is no FINAL rule"
+    );
     let rule = Rule::parse("MATCH,DIRECT,no-resolve").unwrap();
     assert_eq!(rule.params, vec!["no-resolve"], "params must be preserved");
     assert_eq!(rule.to_string(), "MATCH,DIRECT,no-resolve");
@@ -536,9 +544,17 @@ fn a_payload_less_rule_keeps_its_flags_and_reports_a_stray_payload() {
         .iter()
         .map(|d| d.code)
         .collect();
+    // A warning, not an error: `mihomo -t` accepts `MATCH,DIRECT,src` and
+    // discards everything after the policy, so rejecting it would refuse a
+    // configuration the core loads. Saying nothing would be the other mistake
+    // — the field a user wrote does nothing.
     assert!(
-        codes.contains(&"E-MATCH-WITH-PAYLOAD"),
-        "`MATCH,GHOST,extra` carries a field MATCH does not take, but check() produced {codes:?}"
+        codes.contains(&"W-MATCH-WITH-PAYLOAD"),
+        "`MATCH,GHOST,extra` carries a field MATCH ignores, but check() produced {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"E-MATCH-WITH-PAYLOAD"),
+        "the core loads this, so it cannot be an error: {codes:?}"
     );
 }
 

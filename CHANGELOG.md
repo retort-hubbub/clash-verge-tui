@@ -33,6 +33,15 @@ input.
   validator rejects. `Overlay::default()` disagreed with an overlay parsed from
   an empty document. A `null` nested in a subtree that did not exist yet
   survived the merge instead of deleting.
+- A named `remove` deleted one element per application, so two entries
+  sharing a name made an overlay a one-shot. Every match goes now. `Overlay`
+  also works on a copy, so a refused overlay leaves the document untouched
+  rather than half-applied.
+- Appending a list holding a rule *and* a catch-all lost one of them while the
+  log said both had been added. `type: relay` was accepted although this core
+  version removed it; so was `FINAL` as a rule kind, and a bare `MATCH` was
+  filled in with a policy nobody wrote. A case-mismatched policy target
+  (`MATCH,direct`) passed validation and was refused by the core.
 - `SeqPatch::prepend` duplicated a value named twice in one patch, and
   `apply_values` compared the base by name while comparing the patch by
   identity. `Model::parse` discarded everything after the policy on a
@@ -48,9 +57,24 @@ input.
 
 ### Changed
 
-- An `Overlay` that gives a path a list while setting a key inside that same
-  path is refused when the document is read, instead of applying once and
-  failing the next time.
+- An `Overlay` that gives a path a list while a `set` needs it to be a mapping
+  is refused when the document is read, instead of applying once and failing
+  the next time. A `set` that reaches *into* the list is allowed, because that
+  is how an element of one is addressed.
+- An append list naming two catch-all rules is refused: only one of them could
+  ever run.
+- `E-MATCH-WITH-PAYLOAD` became `W-MATCH-WITH-PAYLOAD`. A core accepts a field
+  after a payload-less rule's policy and ignores it, so rejecting the line
+  would refuse a configuration that loads; the warning says the field does
+  nothing. A new `W-RULE-KIND` reports a rule type this build does not know,
+  and `E-RULE-MALFORMED` reports a line that is not a rule at all.
+
+### Security
+
+- `ProfileStore::import_from` took the `uid` from another installation and
+  used it as a file name, so `uid: "../profiles"` wrote the imported document
+  over the profile index itself. A uid that is not one plain path component is
+  now replaced, at the import and in `add`.
 
 ## [0.1.0] - 2026-09-25
 

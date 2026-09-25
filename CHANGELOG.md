@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A directory reached through a symbolic link is not copied into a backup, and
+  a restore refuses to write through one. Reading one copies files from
+  wherever the link points — a test put a `secret.yaml` in somebody else's
+  directory and it arrived in the backup — and writing one puts files there.
+  The two directions answer differently on purpose: a source that is a link is
+  skipped, because a user with `profiles/` on another disk should still be able
+  to take a backup, and a destination that is a link is refused, because a
+  restore that silently writes outside the home is not recoverable.
+- `cvt test urls` reports its rows in the order the URLs are configured in.
+  `buffer_unordered` yields as each measurement finishes, so the rows came back
+  in completion order — a report whose rows move between runs is one nobody can
+  diff.
+- `cvt test urls --node typo` emits the report with every row carrying the
+  reason, and exits non-zero. It used to print `reachable: 0` and exit 0, which
+  is the honest answer for a node that exists and reaches nothing — the two are
+  worth telling apart, and only one is worth retrying. The report is still
+  printed so a `--json` consumer parses one shape whatever happens.
+- `cvt proxies test --url typo` refuses a value that is neither a URL nor a
+  configured target, as `cvt test delay` already did.
 - `backup()` could prune the backup it had just taken, and return a path to a
   directory that no longer existed — which is what `restore` builds its safety
   copy with, so restoring the wrong backup was not undoable. Pruning is now

@@ -243,6 +243,35 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
 /// small text files, and the cases worth stating — a missing directory, a
 /// symlink — are clearer here than in a configuration.
 fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    // A directory reached *through a symlink* is not this home's. Reading one
+    // copies files from wherever the link points — the test that found this
+    // put a `secret.yaml` in somebody else's directory and it arrived in the
+    // backup — and writing one puts files there, which is a restore escaping
+    // the home.
+    //
+    // The two directions answer differently and the asymmetry is deliberate. A
+    // source that is a link is *skipped*: a backup that quietly omits something
+    // is recoverable, and refusing would mean a user with `profiles/` symlinked
+    // to another disk can never take one at all. A destination that is a link
+    // is *refused*: a restore that silently writes outside the home is not
+    // recoverable, and one that silently does nothing would be a lie.
+    if std::fs::symlink_metadata(from).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        tracing::warn!(
+            path = %from.display(),
+            "skipping a directory reached through a symbolic link"
+        );
+        return Ok(());
+    }
+    if std::fs::symlink_metadata(to).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(Error::invalid(
+            "backup",
+            format!(
+                "{} is a symbolic link; writing through it would put the files \
+                 outside the home. Remove the link, or restore by hand.",
+                to.display()
+            ),
+        ));
+    }
     if !from.is_dir() {
         return Ok(());
     }
@@ -1294,7 +1323,7 @@ rules:
                 .service
                 .paths()
                 .backups_dir()
-                .join((future + offset as i64).to_string());
+                .join((future + i64::try_from(offset).unwrap_or(i64::MAX)).to_string());
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("profiles.yaml"), "current: L1\nitems: []\n").unwrap();
         }
@@ -1332,7 +1361,7 @@ rules:
                 .service
                 .paths()
                 .backups_dir()
-                .join((future + offset as i64).to_string());
+                .join((future + i64::try_from(offset).unwrap_or(i64::MAX)).to_string());
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("profiles.yaml"), "current: L1\nitems: []\n").unwrap();
         }

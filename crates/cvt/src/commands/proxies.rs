@@ -10,7 +10,9 @@ use cvt_core::mihomo::types::ProxyView;
 use serde::Serialize;
 
 use crate::cli::{NodeTestArgs, ProxiesCommand, TestArgs};
-use crate::commands::{DelayReport, ProxyDelayReport, measure_nodes, node_options, nodes_by_group};
+use crate::commands::{
+    DelayReport, ProxyDelayReport, check_url_flag, measure_nodes, node_options, nodes_by_group,
+};
 use crate::context::Ctx;
 use crate::output::{self, Output, Report, Table};
 
@@ -266,6 +268,10 @@ async fn unpin(ctx: &Ctx, group: &str) -> Result<()> {
 }
 
 async fn test(ctx: &Ctx, args: &TestArgs) -> Result<()> {
+    // The same check `test delay` makes, and it has to be in both places: a
+    // typo is a typo whichever command is handed one, and the two commands
+    // share `--url`.
+    check_url_flag(ctx, args.node.url.as_deref())?;
     let (url, timeout, concurrency) = node_options(ctx, &args.node);
     let client = ctx.client()?;
     let proxies = client.proxies().await?;

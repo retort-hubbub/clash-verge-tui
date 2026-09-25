@@ -7,7 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+Everything below came out of an adversarial audit of this codebase by a
+separate agent, whose report listed eighteen findings. The report is a working
+document about the code rather than part of it, so it is not in this
+repository; what *is* here is the outcome. Every counterexample it produced
+was preserved as a disabled test at the time, and **none of them is disabled
+any more**.
+
+One of these contradicts something already released: 0.1.0 claimed that an
+edit's push semantics were atomic, and that claim was false for one class of
+input.
+
+- `enhance::path::push` materialised the keys it needed and only then checked
+  that the leaf was a list, so a call that reported failure had still changed
+  the document. It now settles every checkable thing before the first write.
+- `enhance::diff` reported "no changes" for a pure reorder of a named list, and
+  derived the set of changed top-level keys from the (capped) list of entries —
+  so a large diff under-reported which keys had changed at all.
+- `Service::reload` reported rollback bookkeeping instead of the reason a
+  restart failed. `validate` called the built-in `GLOBAL` and `PASS-RULE`
+  policies dangling, rejecting configurations the core accepts and runs.
+- `Overlay::append` left two terminal rules in a list, producing a document the
+  validator rejects. `Overlay::default()` disagreed with an overlay parsed from
+  an empty document. A `null` nested in a subtree that did not exist yet
+  survived the merge instead of deleting.
+- `SeqPatch::prepend` duplicated a value named twice in one patch, and
+  `apply_values` compared the base by name while comparing the patch by
+  identity. `Model::parse` discarded everything after the policy on a
+  payload-less rule, which also made `E-MATCH-WITH-PAYLOAD` unreachable.
+- `ProfileStore::add` accepted a uid already in the index, so two entries
+  shared one document; `import_from` overwrote a document no index entry
+  owned. `GroupKind` offered a `smart` group type mihomo does not have, and
+  the validator suggested it. The wire types rejected `null` for most list
+  fields and a numeric port.
+- `mihomo::client::Client::probe` answered "is the upgrade endpoint present?"
+  by *calling* it, starting a geodata download. A sequence-patch note printed
+  its two sizes in the order `(new -> old)`.
+
+### Changed
+
+- An `Overlay` that gives a path a list while setting a key inside that same
+  path is refused when the document is read, instead of applying once and
+  failing the next time.
 
 ## [0.1.0] - 2026-09-25
 

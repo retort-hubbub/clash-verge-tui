@@ -57,6 +57,16 @@ pub struct DiffEntry {
     pub path: String,
     /// What changed.
     pub change: Change,
+    /// The top-level key this entry lives under.
+    ///
+    /// Carried rather than recovered from `path`, because a top-level key may
+    /// itself contain the separator: for `{"my.key": 1}` the path is `my.key`,
+    /// and splitting it would name `my`, which is not a key of anything.
+    ///
+    /// `None` when the documents are lists rather than mappings, so there is
+    /// no key to name. An empty string is *not* used for that: `""` is a legal
+    /// key.
+    pub root: Option<String>,
 }
 
 /// A complete diff, possibly truncated.
@@ -66,6 +76,13 @@ pub struct Diff {
     pub entries: Vec<DiffEntry>,
     /// `true` when the entry limit was reached and more differences exist.
     pub truncated: bool,
+    /// Top-level keys the walk reached, in the order it reached them.
+    ///
+    /// Recorded as the walk goes rather than read back off `entries`, because
+    /// the entry limit is a limit on *detail*: a document with seven hundred
+    /// changed rules and a changed `mode` must still report both keys, or the
+    /// note the interface shows says less than the truth.
+    touched: Vec<String>,
 }
 
 impl Diff {
@@ -124,28 +141,21 @@ impl Diff {
     /// Entries touching a given top-level key.
     #[must_use]
     pub fn for_top_level(&self, key: &str) -> Vec<&DiffEntry> {
+        // Entries only: a truncated diff holds fewer of them than there were
+        // changes, so this is not a summary. `touched_keys` is the summary.
         self.entries
             .iter()
-            .filter(|e| e.path == key || e.path.starts_with(&format!("{key}.")))
+            .filter(|e| e.root.as_deref() == Some(key))
             .collect()
     }
 
     /// Top-level keys that changed, in document order.
+    ///
+    /// Complete even when [`Diff::truncated`] is set: the cap limits how many
+    /// entries are described, not which keys are known to have changed.
     #[must_use]
     pub fn touched_keys(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for e in &self.entries {
-            let key = e
-                .path
-                .split(['.', '['])
-                .next()
-                .unwrap_or(&e.path)
-                .to_owned();
-            if !out.contains(&key) {
-                out.push(key);
-            }
-        }
-        out
+        self.touched.clone()
     }
 }
 
@@ -184,7 +194,7 @@ pub fn diff(before: &Value, after: &Value) -> Diff {
 #[must_use]
 pub fn diff_limited(before: &Value, after: &Value, limit: usize) -> Diff {
     let mut out = Diff::default();
-    walk(before, after, String::new(), &mut out, limit);
+    walk(before, after, String::new(), None, &mut out, limit);
     if out.entries.len() >= limit {
         out.truncated = true;
         out.entries.truncate(limit);
@@ -192,12 +202,15 @@ pub fn diff_limited(before: &Value, after: &Value, limit: usize) -> Diff {
     out
 }
 
-fn full(out: &Diff) -> bool {
-    out.truncated
-}
-
-fn walk(before: &Value, after: &Value, path: String, out: &mut Diff, limit: usize) {
-    if full(out) || before == after {
+fn walk(
+    before: &Value,
+    after: &Value,
+    path: String,
+    root: Option<&str>,
+    out: &mut Diff,
+    limit: usize,
+) {
+    if before == after {
         return;
     }
     match (before, after) {
@@ -209,22 +222,47 @@ fn walk(before: &Value, after: &Value, path: String, out: &mut Diff, limit: usiz
                 }
             }
             for key in keys {
-                if full(out) {
-                    return;
-                }
                 let child = join_key(&path, key);
+                // At the top level the child *is* the root; below it, the root
+                // is whatever was carried down.
+                // `root.is_none()` rather than `path.is_empty()`: a top-level
+                // key may *be* the empty string, and testing the path would
+                // then treat that key's children as top-level keys of their
+                // own.
+                let child_root = if root.is_none() {
+                    Some(key.clone())
+                } else {
+                    root.map(str::to_owned)
+                };
                 match (b.get(key), a.get(key)) {
-                    (None, Some(v)) => push(out, child, Change::Added(v.clone()), limit),
-                    (Some(v), None) => push(out, child, Change::Removed(v.clone()), limit),
-                    (Some(x), Some(y)) => walk(x, y, child, out, limit),
+                    (None, Some(v)) => {
+                        push(
+                            out,
+                            child,
+                            child_root.as_deref(),
+                            Change::Added(v.clone()),
+                            limit,
+                        );
+                    }
+                    (Some(v), None) => {
+                        push(
+                            out,
+                            child,
+                            child_root.as_deref(),
+                            Change::Removed(v.clone()),
+                            limit,
+                        );
+                    }
+                    (Some(x), Some(y)) => walk(x, y, child, child_root.as_deref(), out, limit),
                     (None, None) => {}
                 }
             }
         }
-        (Value::Array(b), Value::Array(a)) => walk_arrays(b, a, path, out, limit),
+        (Value::Array(b), Value::Array(a)) => walk_arrays(b, a, path, root, out, limit),
         _ => push(
             out,
             path,
+            root,
             Change::Changed {
                 from: before.clone(),
                 to: after.clone(),
@@ -234,31 +272,64 @@ fn walk(before: &Value, after: &Value, path: String, out: &mut Diff, limit: usiz
     }
 }
 
-fn walk_arrays(before: &[Value], after: &[Value], path: String, out: &mut Diff, limit: usize) {
+fn walk_arrays(
+    before: &[Value],
+    after: &[Value],
+    path: String,
+    root: Option<&str>,
+    out: &mut Diff,
+    limit: usize,
+) {
     // Shape 1: named mappings (proxies, proxy-groups, rule-providers entries).
     if let (Some(b), Some(a)) = (named(before), named(after)) {
+        // Indexing by name drops a repeated name before anything is compared.
+        // For a document that holds one that is data loss in the *index*, not
+        // in the document, and the per-name diff below would report the two
+        // lists as identical — so the whole list is reported instead.
+        if b.len() != before.len() || a.len() != after.len() {
+            push(
+                out,
+                path,
+                root,
+                Change::Changed {
+                    from: Value::Array(before.to_vec()),
+                    to: Value::Array(after.to_vec()),
+                },
+                limit,
+            );
+            return;
+        }
+
         for (name, item) in &a {
-            if full(out) {
-                return;
-            }
             let child = join_selector(&path, name);
             match b.get(name) {
-                None => push(out, child, Change::Added(item.clone()), limit),
-                Some(old) => walk(old, item, child, out, limit),
+                None => {
+                    push(out, child, root, Change::Added(item.clone()), limit);
+                }
+                Some(old) => walk(old, item, child, root, out, limit),
             }
         }
         for (name, item) in &b {
-            if full(out) {
-                return;
-            }
             if !a.contains_key(name) {
                 push(
                     out,
                     join_selector(&path, name),
+                    root,
                     Change::Removed(item.clone()),
                     limit,
                 );
             }
+        }
+
+        // The loops above match by name, so a pure reorder is invisible to
+        // them: the two documents would compare as unchanged while differing
+        // in the one way that matters here. Order *is* content in this
+        // program — it decides which member a group prefers and which rule
+        // matches first — so it is reported.
+        let kept_before: Vec<&String> = b.keys().filter(|name| a.contains_key(*name)).collect();
+        let kept_after: Vec<&String> = a.keys().filter(|name| b.contains_key(*name)).collect();
+        if kept_before != kept_after {
+            push(out, path, root, Change::Reordered, limit);
         }
         return;
     }
@@ -270,20 +341,26 @@ fn walk_arrays(before: &[Value], after: &[Value], path: String, out: &mut Diff, 
         let added: Vec<&Value> = after.iter().filter(|v| !before_set.contains(v)).collect();
         let removed: Vec<&Value> = before.iter().filter(|v| !after.contains(v)).collect();
         if added.is_empty() && removed.is_empty() {
-            push(out, path, Change::Reordered, limit);
+            push(out, path, root, Change::Reordered, limit);
             return;
         }
         for v in added {
-            if full(out) {
-                return;
-            }
-            push(out, format!("{path}[+]"), Change::Added(v.clone()), limit);
+            push(
+                out,
+                format!("{path}[+]"),
+                root,
+                Change::Added(v.clone()),
+                limit,
+            );
         }
         for v in removed {
-            if full(out) {
-                return;
-            }
-            push(out, format!("{path}[-]"), Change::Removed(v.clone()), limit);
+            push(
+                out,
+                format!("{path}[-]"),
+                root,
+                Change::Removed(v.clone()),
+                limit,
+            );
         }
         return;
     }
@@ -292,6 +369,7 @@ fn walk_arrays(before: &[Value], after: &[Value], path: String, out: &mut Diff, 
     push(
         out,
         path,
+        root,
         Change::Changed {
             from: Value::Array(before.to_vec()),
             to: Value::Array(after.to_vec()),
@@ -317,12 +395,23 @@ fn is_scalar(v: &Value) -> bool {
     !v.is_array() && !v.is_object()
 }
 
-fn push(out: &mut Diff, path: String, change: Change, limit: usize) {
+fn push(out: &mut Diff, path: String, root: Option<&str>, change: Change, limit: usize) {
+    // Recorded before the cap is consulted: the key changed whether or not
+    // there is room left to describe how.
+    if let Some(root) = root
+        && !out.touched.iter().any(|k| k == root)
+    {
+        out.touched.push(root.to_owned());
+    }
     if out.entries.len() >= limit {
         out.truncated = true;
         return;
     }
-    out.entries.push(DiffEntry { path, change });
+    out.entries.push(DiffEntry {
+        path,
+        change,
+        root: root.map(str::to_owned),
+    });
 }
 
 fn join_key(path: &str, key: &str) -> String {

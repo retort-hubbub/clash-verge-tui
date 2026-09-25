@@ -36,10 +36,18 @@
 //! Set [`Overlay::append_before_terminal`] to `false` for the literal
 //! behaviour.
 //!
-//! **Applying an override is idempotent.** `prepend` and `append` never
-//! introduce a duplicate, comparing structurally for mappings and by
-//! `name` for the named lists. Re-running the pipeline with an unchanged
-//! subscription produces an unchanged configuration.
+//! **Applying an override is idempotent — except for one case, and it is
+//! worth knowing which.** `set`, `prepend`, `append` and every removal that
+//! names its target (`proxy-groups[name=PROXY]`, `dns.fallback`) can be
+//! applied any number of times: `prepend` and `append` never introduce a
+//! duplicate, comparing structurally for mappings and by `name` for the named
+//! lists, so re-running the pipeline with an unchanged subscription produces
+//! an unchanged configuration. A removal by *position* (`proxies[1]`) cannot
+//! make that promise, because the position is not stable: the second
+//! application removes whatever has moved into the slot. It is supported
+//! anyway — dropping a rule the subscription always puts first is a real
+//! thing to want — but an override that uses it is one-shot, and a
+//! subscription update can change what it means.
 
 use std::collections::BTreeMap;
 
@@ -156,6 +164,57 @@ impl Overlay {
                 ));
             }
         }
+        // Two catch-alls in one append list contradict each other: only one
+        // can be last, and the other is a rule the user wrote that will never
+        // run. Refusing says so; appending both produces a document the
+        // validator rejects, and appending one produces a list that quietly
+        // names fewer rules than the patch did.
+        for (raw, items) in &self.append {
+            let parsed = Path::parse(raw)?;
+            let catch_alls = items.iter().filter(|item| is_terminal_rule(item)).count();
+            if is_rules_list(&parsed) && catch_alls > 1 {
+                return Err(Error::invalid(
+                    "override",
+                    format!(
+                        "`{raw}` appends {catch_alls} catch-all rules; only the last could \
+                         ever run, so write the one you mean"
+                    ),
+                ));
+            }
+        }
+        self.check_targets_do_not_contradict()
+    }
+
+    /// Refuse an overlay whose entries cannot both hold.
+    ///
+    /// `prepend` and `append` *replace* whatever is at their path with a list —
+    /// deliberately, since that is how an override grows a list the base
+    /// document never had. A `set` entering or leaving that same path may need
+    /// it to be a *mapping* instead, and then one of the two wins in the first
+    /// pass and the other finds the wrong shape: the overlay applies once and
+    /// fails the next time, which is the opposite of the idempotence this
+    /// module promises.
+    ///
+    /// Only the genuine disagreement is refused. A `set` that reaches *into*
+    /// the list (`dns.nameserver[0]`) is consistent with it being a list, and
+    /// is allowed; a `set` that has to walk through it as a mapping
+    /// (`dns.nameserver.foo`) is not.
+    fn check_targets_do_not_contradict(&self) -> Result<()> {
+        for list in self.prepend.keys().chain(self.append.keys()) {
+            let list = Path::parse(list)?;
+            for (raw_set, value) in &self.set {
+                let set = Path::parse(raw_set)?;
+                if let Some(why) = shape_conflict(&list, &set, value) {
+                    return Err(Error::invalid(
+                        "override",
+                        format!(
+                            "`{list}` is given a list while `{raw_set}` {why}; a path cannot \
+                             be a list and a mapping at once"
+                        ),
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -212,6 +271,25 @@ impl Overlay {
     /// [`Error::InvalidValue`] when a `set` path cannot be resolved. List
     /// edits never fail on an absent list: they create it.
     pub fn apply(&self, config: &mut Value) -> Result<Vec<String>> {
+        // The same checks a parsed document gets, so an `Overlay` built in code
+        // behaves exactly like one read from a file — including refusing to
+        // start work it cannot finish.
+        self.validate()?;
+        // Worked on a copy. An overlay is a list of operations and the later
+        // ones can fail where the earlier ones succeeded, so without this a
+        // rejected overlay left the part that had already landed behind — and
+        // half an override is worse than none, because the half that landed
+        // looks like intent. The copy costs one document; the alternative
+        // costs the user a configuration nobody wrote.
+        let mut candidate = config.clone();
+        let log = self.apply_in_place(&mut candidate)?;
+        *config = candidate;
+        Ok(log)
+    }
+
+    /// The operations, in order, on a document the caller has already
+    /// committed to replacing.
+    fn apply_in_place(&self, config: &mut Value) -> Result<Vec<String>> {
         let mut log = Vec::new();
 
         for raw in &self.remove {
@@ -282,22 +360,50 @@ fn append_items(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    // Insert before the catch-all so an appended rule can actually fire.
-    let mut insert_at = if before_terminal
-        && is_rules_list(p)
-        && let Some(position) = existing.iter().position(is_terminal_rule)
-    {
-        position
-    } else {
-        existing.len()
-    };
+    // Where an appended rule goes depends on what it is, and the position is
+    // recomputed for every item: inserting one moves the catch-all, so a
+    // position captured before the loop pointed at the wrong rule for the next
+    // append and silently overwrote what the previous one had just added.
+    //
+    // A rule that is *not* terminal lands above the catch-all, or it could
+    // never match anything. A rule that *is* terminal takes the catch-all's
+    // place rather than stacking above it: two terminal rules in one list is a
+    // document the validator rejects, and the second can never fire.
+    let tracks_terminal = before_terminal && is_rules_list(p);
+
     let mut added = 0usize;
     for item in items {
-        if is_noise(item) || contains_item(&existing, item) {
+        if is_noise(item) {
             continue;
         }
-        existing.insert(insert_at, item.clone());
-        insert_at += 1;
+        let terminal = if tracks_terminal {
+            existing.iter().position(is_terminal_rule)
+        } else {
+            None
+        };
+        let Some(position) = terminal else {
+            // No catch-all to work around, so nothing constrains the order.
+            if contains_item(&existing, item) {
+                continue;
+            }
+            existing.push(item.clone());
+            added += 1;
+            continue;
+        };
+        if is_terminal_rule(item) {
+            // The catch-all is replaced, never duplicated — including the case
+            // where the replacement is the one that is already there.
+            if existing[position] == *item {
+                continue;
+            }
+            existing[position] = item.clone();
+            added += 1;
+            continue;
+        }
+        if contains_item(&existing, item) {
+            continue;
+        }
+        existing.insert(position, item.clone());
         added += 1;
     }
     if added == 0 {
@@ -305,6 +411,34 @@ fn append_items(
     }
     replace_list(config, p, existing)?;
     Ok(vec![format!("appended {added} item(s) to {raw}")])
+}
+
+/// Whether a `set` and a list edit disagree about a path's shape.
+///
+/// Returns the reason when they do. Exactly one of the two can be right about
+/// any given path: a list edit makes it a list, and a `set` that has to *walk
+/// through* it needs a mapping. Walking through a list is possible with an
+/// index or a selector (`a.b[0]`, `a[name=x]`), which is why those are not a
+/// disagreement — that is how an element of a list is addressed at all.
+fn shape_conflict(list: &Path, set: &Path, value: &Value) -> Option<String> {
+    let list = list.segments();
+    let set = set.segments();
+    if list == set {
+        return (!value.is_array())
+            .then(|| "replaces it with something that is not a list".to_owned());
+    }
+    let (shorter, longer) = if list.len() < set.len() {
+        (list, set)
+    } else {
+        (set, list)
+    };
+    if longer[..shorter.len()] != *shorter {
+        return None; // Unrelated paths; neither can decide the other's shape.
+    }
+    longer[shorter.len()..]
+        .iter()
+        .any(|segment| matches!(segment, path::Segment::Key(_)))
+        .then(|| "needs to walk through it as a mapping".to_owned())
 }
 
 /// Whether this path targets the routing rule list.
@@ -635,6 +769,45 @@ append: {rules: ["B,DIRECT", "C,DIRECT"]}
         let mut c = base();
         o.apply(&mut c).unwrap();
         assert_eq!(c["dns"]["nameserver"], json!(["1.1.1.1", "9.9.9.9"]));
+    }
+
+    /// A path cannot be a list and a mapping at once, and an overlay that asks
+    /// for both used to apply once and then fail on the second pass — the
+    /// opposite of the idempotence this module promises.
+    #[test]
+    fn an_overlay_that_contradicts_itself_is_refused_before_it_starts() {
+        let mut c = json!({});
+        let o = Overlay::from_yaml(
+            "set:\n  \"dns.nameserver\": \"1.1.1.1\"\nappend:\n  dns: [\"8.8.8.8\"]\n",
+        );
+        // Caught when the document is read, so the editor reports it.
+        match o {
+            Err(e) => assert!(e.to_string().contains("list"), "{e}"),
+            Ok(o) => panic!("expected the contradiction to be refused: {o:?}"),
+        }
+
+        // And caught again for an overlay built in code, which never went
+        // through `from_yaml`.
+        let built = Overlay {
+            set: BTreeMap::from([("dns.nameserver".to_owned(), json!("1.1.1.1"))]),
+            append: BTreeMap::from([("dns".to_owned(), vec![json!("8.8.8.8")])]),
+            ..Overlay::default()
+        };
+        let err = built.apply(&mut c).unwrap_err();
+        assert!(err.to_string().contains("list"), "{err}");
+        assert_eq!(
+            c,
+            json!({}),
+            "a refused overlay must not touch the document"
+        );
+
+        // The shape that is fine: two different paths.
+        let fine = Overlay {
+            set: BTreeMap::from([("dns.nameserver".to_owned(), json!("1.1.1.1"))]),
+            append: BTreeMap::from([("rules".to_owned(), vec![json!("MATCH,DIRECT")])]),
+            ..Overlay::default()
+        };
+        fine.apply(&mut c).unwrap();
     }
 
     /// Finding F17: the derived `Default` disagreed with the serde default for

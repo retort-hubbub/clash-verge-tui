@@ -5,9 +5,76 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.1] - 2026-09-26
 
-Nothing yet.
+### Fixed
+
+Everything below came out of an adversarial audit of this codebase by a
+separate agent, whose report listed eighteen findings. The report is a working
+document about the code rather than part of it, so it is not in this
+repository; what *is* here is the outcome. Every counterexample it produced
+was preserved as a disabled test at the time, and **none of them is disabled
+any more**.
+
+One of these contradicts something already released: 0.1.0 claimed that an
+edit's push semantics were atomic, and that claim was false for one class of
+input.
+
+- `enhance::path::push` materialised the keys it needed and only then checked
+  that the leaf was a list, so a call that reported failure had still changed
+  the document. It now settles every checkable thing before the first write.
+- `enhance::diff` reported "no changes" for a pure reorder of a named list, and
+  derived the set of changed top-level keys from the (capped) list of entries —
+  so a large diff under-reported which keys had changed at all.
+- `Service::reload` reported rollback bookkeeping instead of the reason a
+  restart failed. `validate` called the built-in `GLOBAL` and `PASS-RULE`
+  policies dangling, rejecting configurations the core accepts and runs.
+- `Overlay::append` left two terminal rules in a list, producing a document the
+  validator rejects. `Overlay::default()` disagreed with an overlay parsed from
+  an empty document. A `null` nested in a subtree that did not exist yet
+  survived the merge instead of deleting.
+- A named `remove` deleted one element per application, so two entries
+  sharing a name made an overlay a one-shot. Every match goes now. `Overlay`
+  also works on a copy, so a refused overlay leaves the document untouched
+  rather than half-applied.
+- Appending a list holding a rule *and* a catch-all lost one of them while the
+  log said both had been added. `type: relay` was accepted although this core
+  version removed it; so was `FINAL` as a rule kind, and a bare `MATCH` was
+  filled in with a policy nobody wrote. A case-mismatched policy target
+  (`MATCH,direct`) passed validation and was refused by the core.
+- `SeqPatch::prepend` duplicated a value named twice in one patch, and
+  `apply_values` compared the base by name while comparing the patch by
+  identity. `Model::parse` discarded everything after the policy on a
+  payload-less rule, which also made `E-MATCH-WITH-PAYLOAD` unreachable.
+- `ProfileStore::add` accepted a uid already in the index, so two entries
+  shared one document; `import_from` overwrote a document no index entry
+  owned. `GroupKind` offered a `smart` group type mihomo does not have, and
+  the validator suggested it. The wire types rejected `null` for most list
+  fields and a numeric port.
+- `mihomo::client::Client::probe` answered "is the upgrade endpoint present?"
+  by *calling* it, starting a geodata download. A sequence-patch note printed
+  its two sizes in the order `(new -> old)`.
+
+### Changed
+
+- An `Overlay` that gives a path a list while a `set` needs it to be a mapping
+  is refused when the document is read, instead of applying once and failing
+  the next time. A `set` that reaches *into* the list is allowed, because that
+  is how an element of one is addressed.
+- An append list naming two catch-all rules is refused: only one of them could
+  ever run.
+- `E-MATCH-WITH-PAYLOAD` became `W-MATCH-WITH-PAYLOAD`. A core accepts a field
+  after a payload-less rule's policy and ignores it, so rejecting the line
+  would refuse a configuration that loads; the warning says the field does
+  nothing. A new `W-RULE-KIND` reports a rule type this build does not know,
+  and `E-RULE-MALFORMED` reports a line that is not a rule at all.
+
+### Security
+
+- `ProfileStore::import_from` took the `uid` from another installation and
+  used it as a file name, so `uid: "../profiles"` wrote the imported document
+  over the profile index itself. A uid that is not one plain path component is
+  now replaced, at the import and in `add`.
 
 ## [0.1.0] - 2026-09-25
 
@@ -61,8 +128,6 @@ Nothing yet.
   `model/config.rs` has been citing since the document type was written.
 - `deny.toml` — the dependency policy, whose allowed-license set was
   enumerated from the lockfile rather than guessed.
-- `docs/VERIFICATION-REPORT.md` — an independent adversarial review, including
-  the findings it could not substantiate and the areas it did not cover.
 - `CONTRIBUTING.md` documenting the GitFlow workflow and architecture rules.
 
 ### Fixed
@@ -84,5 +149,5 @@ Nothing yet.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.1.0...develop
+[0.1.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

@@ -5,18 +5,27 @@
 //! works. Where a claim survived, the test stays green and the report records
 //! how many generated cases it took to convince me.
 //!
-//! # Counterexamples are kept, not deleted
+//! # Counterexamples became tests, not deletions
 //!
-//! A test whose name starts with `f<n>_` is a **preserved counterexample**: it
-//! is `#[ignore]`d so the suite stays green for the author, and it fails by
-//! design until the finding is fixed. Run them all with:
+//! This suite was written by an agent whose job was to attack the code rather
+//! than confirm it, and it found counterexamples to a dozen of the invariants
+//! below. Each was preserved as an `#[ignore]`d test named `f<n>_` with its
+//! reproduction in the body, so a defect had a failing test attached to it and
+//! could not be quietly forgotten.
 //!
-//! ```text
-//! cargo test -p cvt-core --test invariants -- --ignored
-//! ```
+//! Every one of them is now a passing test with an ordinary name: nothing here
+//! is `#[ignore]`d any more. Two findings turned out to be over-strong *claims*
+//! rather than defects, and those became tests of the behaviour the
+//! documentation now states — a positional removal is the one case where an
+//! overlay is not idempotent, and saying so is worth more than a promise that
+//! is quietly false.
+//! `f2_an_index_of_i64_min_resolves_to_nothing` keeps its name because it was
+//! fixed while the audit was still running; it is the regression test for a
+//! panic.
 //!
-//! Each `#[ignore]` reason names the finding it belongs to; the matching
-//! analysis, severity and file:line live in `docs/VERIFICATION-REPORT.md`.
+//! Nothing here depends on the audit's report: it is a document *about* the
+//! code, it lists the defects that were still open when it was written, and it
+//! is deliberately kept out of the repository.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
@@ -494,7 +503,6 @@ fn claim2_the_documented_shapes_round_trip() {
     for text in [
         "DOMAIN-SUFFIX,google.com,PROXY",
         "MATCH,DIRECT",
-        "FINAL,PROXY",
         "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
         "AND,((DOMAIN,a.example),(NETWORK,udp)),PROXY",
         "OR,((DOMAIN,a.example),(DOMAIN,b.example)),PROXY",
@@ -510,28 +518,43 @@ fn claim2_the_documented_shapes_round_trip() {
 }
 
 #[test]
-#[ignore = "finding F10: a payload-less rule silently drops every field after the policy"]
-fn f10_a_match_rule_with_extra_fields_is_truncated_not_rejected() {
-    // `Rule::parse` documents that it "tolerate[s] a stray payload field
-    // defensively", but it then discards the parameters as well, so the
-    // round-trip is not byte-exact for an input the parser accepts — and the
-    // validator's E-MATCH-WITH-PAYLOAD branch is unreachable as a result.
+fn a_payload_less_rule_keeps_its_flags_and_reports_a_stray_payload() {
+    // F10: the parser used to discard everything after the policy on a
+    // payload-less rule, which made the round trip lossy for an input it
+    // accepted and left the validator's payload check unreachable. A bare
+    // `MATCH` is now refused as well: `mihomo -t` answers it with
+    // `format invalid`, and filling in `DIRECT` gave back a rule nobody wrote.
+    assert!(Rule::parse("MATCH").is_none(), "a bare MATCH is not a rule");
+    // `FINAL` is not a mihomo rule kind either — `[FINAL,DIRECT] error: format
+    // invalid` — so it is no longer accepted as a payload-less one.
+    assert!(
+        Rule::parse("FINAL,PROXY").is_none(),
+        "there is no FINAL rule"
+    );
     let rule = Rule::parse("MATCH,DIRECT,no-resolve").unwrap();
     assert_eq!(rule.params, vec!["no-resolve"], "params must be preserved");
     assert_eq!(rule.to_string(), "MATCH,DIRECT,no-resolve");
 
-    // Because a payload-less rule can never carry a payload, the validator's
-    // E-MATCH-WITH-PAYLOAD branch is dead code and no config can reach it.
+    // `no-resolve` is a flag a rule may carry, so the line above is legal. A
+    // field that is not a flag is a payload by position, and that is what the
+    // validator now reports instead of dropping it.
     let config = Config::from_yaml("rules: ['MATCH,GHOST,extra']\n").unwrap();
     let codes: Vec<&str> = validate::check(&config)
         .diagnostics
         .iter()
         .map(|d| d.code)
         .collect();
+    // A warning, not an error: `mihomo -t` accepts `MATCH,DIRECT,src` and
+    // discards everything after the policy, so rejecting it would refuse a
+    // configuration the core loads. Saying nothing would be the other mistake
+    // — the field a user wrote does nothing.
     assert!(
-        codes.contains(&"E-MATCH-WITH-PAYLOAD"),
-        "E-MATCH-WITH-PAYLOAD is unreachable; `MATCH,GHOST,extra` only produced {codes:?}, \
-         and `extra` was dropped without a word"
+        codes.contains(&"W-MATCH-WITH-PAYLOAD"),
+        "`MATCH,GHOST,extra` carries a field MATCH ignores, but check() produced {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"E-MATCH-WITH-PAYLOAD"),
+        "the core loads this, so it cannot be an error: {codes:?}"
     );
 }
 
@@ -554,10 +577,12 @@ proptest! {
         }
     }
 
-    /// Fails today: see `f3_...`. The property is kept so that a fix can be
-    /// confirmed by removing the `#[ignore]`.
+    /// F3 was a real defect: `push` materialised the keys it needed on the way
+    /// down and only then discovered that the leaf was not a list, so a call
+    /// that reported failure had still changed the document. It now walks the
+    /// path read-only first, and this is the property that says so — over
+    /// thousands of generated documents, not the one input the finding used.
     #[test]
-    #[ignore = "finding F3: a failed push materialises intermediate keys before rejecting"]
     fn claim3_push_is_atomic(doc in arb_document(), path_text in arb_path(), item in arb_value()) {
         let Ok(path) = Path::parse(&path_text) else {
             return Ok(());
@@ -571,8 +596,7 @@ proptest! {
 }
 
 #[test]
-#[ignore = "finding F3: a failed push materialises intermediate keys before rejecting the target"]
-fn f3_a_failed_push_reports_an_error_after_mutating_the_document() {
+fn a_failed_push_reports_an_error_without_mutating_the_document() {
     let mut doc = json!({});
     let before = doc.clone();
     // `push` always names a *list*; `a[0]` names an element, so this must fail
@@ -665,8 +689,7 @@ fn f2_an_index_of_i64_min_resolves_to_nothing() {
 }
 
 #[test]
-#[ignore = "finding F17: Default::default() turns the terminal-safe append off"]
-fn f17_the_rust_default_contradicts_the_documented_default() {
+fn the_rust_default_matches_the_documented_default() {
     // The module doc: "When the target list contains a terminal rule, `append`
     // inserts immediately *before* it... Set `Overlay::append_before_terminal`
     // to `false` for the literal behaviour." Parsing the same document from
@@ -752,9 +775,9 @@ proptest! {
     ) {
         let mut out = json!({ "rules": rules });
         let original_rules: Vec<Value> = out["rules"].as_array().cloned().unwrap_or_default();
-        // `append_before_terminal` is set explicitly because
-        // `Default::default()` disagrees with the documented (and serde)
-        // default: see finding F17.
+        // `append_before_terminal` is set explicitly even though it is now the
+        // default as well: the test is about the placement rule, not about the
+        // default, and finding F17 is the reason the two used to differ.
         let overlay = Overlay {
             append: BTreeMap::from([("rules".to_owned(), items.clone())]),
             append_before_terminal: true,
@@ -788,23 +811,36 @@ proptest! {
     }
 }
 
+/// F9 is **not** fixed, and deliberately so: it is a documented limitation
+/// rather than a defect. A removal by position cannot be idempotent, because
+/// the position is not stable — so `Overlay` promises idempotence for
+/// everything *except* this, in its own documentation, and this test pins the
+/// behaviour that promise excludes. Removing the capability instead would take
+/// away a legitimate one-shot use.
 #[test]
-#[ignore = "finding F9: a positional `remove` is not idempotent"]
-fn f9_removing_by_index_twice_removes_two_elements() {
+fn a_positional_removal_is_the_documented_exception_to_idempotence() {
     let overlay = Overlay::from_yaml("remove: [\"rules[1]\"]\n").unwrap();
     let mut doc = json!({"rules": ["A,DIRECT", "B,DIRECT", "C,DIRECT"]});
     overlay.apply(&mut doc).unwrap();
-    let once = doc.clone();
+    assert_eq!(doc["rules"], json!(["A,DIRECT", "C,DIRECT"]));
+
+    // Whatever moved into the slot is what the second application removes.
+    // That is the whole reason the promise excludes this case.
     overlay.apply(&mut doc).unwrap();
-    assert_eq!(
-        doc, once,
-        "applying the same overlay twice must change nothing"
-    );
+    assert_eq!(doc["rules"], json!(["A,DIRECT"]));
+
+    // Removing by name does not have the problem, and the promise holds.
+    let named = Overlay::from_yaml("remove: [\"proxies[name=JP 02]\"]\n").unwrap();
+    let mut doc = json!({"proxies": [{"name": "JP 01"}, {"name": "JP 02"}]});
+    named.apply(&mut doc).unwrap();
+    assert_eq!(doc["proxies"], json!([{"name": "JP 01"}]));
+    let once = doc.clone();
+    named.apply(&mut doc).unwrap();
+    assert_eq!(doc, once, "naming the target keeps the promise");
 }
 
 #[test]
-#[ignore = "finding F13: appending a catch-all places it before the existing one, deadening it"]
-fn f13_appending_a_terminal_rule_deadens_the_existing_catch_all() {
+fn appending_a_terminal_rule_takes_the_existing_catch_alls_place() {
     let overlay = Overlay::from_yaml("append:\n  rules: [\"MATCH,REJECT\"]\n").unwrap();
     let mut doc = json!({"rules": ["DOMAIN,a.test,PROXY", "MATCH,DIRECT"]});
     overlay.apply(&mut doc).unwrap();
@@ -814,8 +850,9 @@ fn f13_appending_a_terminal_rule_deadens_the_existing_catch_all() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    // The overlay promises to keep `rules` well-formed; the result has a
-    // terminal rule above another one, which `validate` then rejects.
+    // The overlay promises to keep `rules` well-formed. Stacking the new
+    // catch-all above the old one would leave two terminal rules in the list —
+    // a document `validate` rejects, whose second rule can never fire.
     assert_eq!(rules.last(), Some(&"MATCH,REJECT"), "{rules:?}");
     assert!(
         !rules.contains(&"MATCH,DIRECT"),
@@ -872,10 +909,9 @@ proptest! {
 
     /// A `null` anywhere in the patch must delete that key.
     ///
-    /// Fails today: see `f4_...`.
+    /// F4: a null in a patch means nothing is there, wherever it sits.
     #[test]
-    #[ignore = "finding F4: a null nested in a brand-new subtree is inserted, not deleted"]
-    fn claim6_a_null_in_the_patch_deletes_the_key(
+        fn claim6_a_null_in_the_patch_deletes_the_key(
         base in arb_document(),
         patch in arb_document(),
     ) {
@@ -894,8 +930,7 @@ proptest! {
 }
 
 #[test]
-#[ignore = "finding F4: a null inside a brand-new subtree is inserted, not deleted"]
-fn f4_a_null_nested_in_a_new_subtree_survives_the_merge() {
+fn a_null_inside_a_brand_new_subtree_deletes_rather_than_survives() {
     let patch = json!({"new": {"a": null}});
     let out = merged(&json!({}), &patch, &MergeOptions::default());
     assert_eq!(
@@ -1024,9 +1059,9 @@ proptest! {
         check_touched_keys(before, after);
     }
 
-    /// Fails today: see `f14_...` and `f15_...`.
+    /// F14 and F15: a named-list reorder is a change, and a top-level key
+    /// that contains `.` is still that key.
     #[test]
-    #[ignore = "findings F14/F15: a named-list reorder is invisible and a key containing `.` is mis-attributed"]
     fn claim7_touched_keys_are_exactly_the_changed_keys(
         before in small_object(),
         after in small_object(),
@@ -1057,8 +1092,7 @@ fn strip_nulls(value: &Value) -> Value {
 }
 
 #[test]
-#[ignore = "finding F6: touched_keys silently omits keys beyond the entry cap"]
-fn f6_touched_keys_is_incomplete_once_the_diff_is_truncated() {
+fn touched_keys_is_complete_even_when_the_diff_is_truncated() {
     let before = json!({
         "rules": (0..700).map(|i| json!(format!("R{i},DIRECT"))).collect::<Vec<_>>(),
         "mode": "rule",
@@ -1074,8 +1108,7 @@ fn f6_touched_keys_is_incomplete_once_the_diff_is_truncated() {
 }
 
 #[test]
-#[ignore = "finding F14: a pure reorder of a named list is reported as no change"]
-fn f14_reordering_a_named_list_is_invisible_to_the_diff() {
+fn reordering_a_named_list_is_reported() {
     let before = json!({"proxy-groups": [
         {"name": "PROXY", "type": "select", "proxies": ["DIRECT"]},
         {"name": "auto", "type": "url-test", "proxies": ["DIRECT"]},
@@ -1103,8 +1136,7 @@ fn f14_reordering_a_named_list_is_invisible_to_the_diff() {
 }
 
 #[test]
-#[ignore = "finding F15: touched_keys splits the path at a `.` inside a key"]
-fn f15_touched_keys_mis_attributes_a_key_containing_a_dot() {
+fn touched_keys_handles_a_key_containing_a_dot() {
     let d = diff(&json!({}), &json!({"my.key": 1}));
     assert_eq!(d.touched_keys(), vec!["my.key".to_owned()]);
     assert_eq!(d.for_top_level("my.key").len(), 1);
@@ -1233,8 +1265,7 @@ proptest! {
 }
 
 #[test]
-#[ignore = "finding F1: the built-in policies GLOBAL and PASS-RULE are reported as dangling"]
-fn f1_the_built_in_policies_the_core_always_provides_are_not_dangling() {
+fn the_built_in_policies_the_core_always_provides_are_not_dangling() {
     // Spec §4.1: `/proxies` "always contains the built-ins DIRECT, REJECT,
     // REJECT-DROP, PASS, PASS-RULE, COMPATIBLE and the policy group GLOBAL".
     for policy in ["GLOBAL", "PASS-RULE"] {
@@ -1252,8 +1283,7 @@ fn f1_the_built_in_policies_the_core_always_provides_are_not_dangling() {
 }
 
 #[test]
-#[ignore = "finding F11: `type: smart` is accepted although mihomo has no smart group"]
-fn f11_a_smart_group_is_not_a_real_mihomo_group_type() {
+fn a_smart_group_is_not_a_real_mihomo_group_type() {
     // Spec §10.19: "There is no 'smart' proxy group in mihomo: grep for Smart
     // across the whole source tree returns nothing, and no `smart` group type
     // exists in docs/config.yaml".
@@ -1567,24 +1597,26 @@ fn claim9_importing_twice_leaves_the_first_copy_intact() {
 }
 
 #[test]
-#[ignore = "finding F7: `add` accepts an explicit uid that is already present"]
-fn f7_add_returns_a_uid_that_is_already_in_the_index() {
+fn adding_a_profile_whose_uid_is_taken_reassigns_it() {
     let (dir, mut store) = store_fixture();
     let first = store.add(PrfItem::local("L1", "one"));
     let second = store.add(PrfItem::local("L1", "two"));
     assert_ne!(first, second, "the second add must be given a fresh uid");
     assert_eq!(store.items().len(), 2);
-    assert_eq!(
+    assert_ne!(
         store.items()[0].uid,
         store.items()[1].uid,
-        "documents would collide"
+        "two index entries sharing a uid would share one document, so the \
+         second would overwrite the first and the first would report the \
+         second's contents"
     );
+    // The reassigned uid is the one the caller gets back, so it can be used.
+    assert_eq!(store.get(&second).unwrap().name, "two");
     drop(dir);
 }
 
 #[test]
-#[ignore = "finding F8: import_from overwrites a document whose uid is not in the index"]
-fn f8_import_overwrites_an_orphan_document() {
+fn importing_leaves_a_document_the_index_does_not_know_about_alone() {
     let (dir, mut store) = store_fixture();
     // A document with no index entry: what a crash between `add` and `save`,
     // a restored older `profiles.yaml`, or a second front-end writing into
@@ -1604,12 +1636,23 @@ fn f8_import_overwrites_an_orphan_document() {
     .unwrap();
     std::fs::write(foreign.join("profiles/Rabc.yaml"), "incoming: true\n").unwrap();
 
-    store.import_from(&foreign).unwrap();
+    let report = store.import_from(&foreign).unwrap();
     let after = std::fs::read_to_string(store.paths().profiles_dir().join("Rabc.yaml")).unwrap();
-    assert_eq!(
-        after, "precious: true\n",
-        "an existing document was overwritten"
-    );
+    assert_eq!(after, "precious: true\n", "the orphan was overwritten");
+
+    // The import still happened — it was asked to add, so it adds, under a uid
+    // that does not collide with anything on disk.
+    assert_eq!(report.imported, 1);
+    assert_eq!(report.renamed, 1, "the collision was noticed and reported");
+    let imported = store
+        .items()
+        .iter()
+        .find(|item| item.name == "A")
+        .expect("the imported profile is in the index");
+    assert_ne!(imported.uid, "Rabc");
+    let copied =
+        std::fs::read_to_string(store.paths().profiles_dir().join(imported.file_name())).unwrap();
+    assert_eq!(copied, "incoming: true\n");
     drop(dir);
 }
 
@@ -1620,10 +1663,9 @@ fn f8_import_overwrites_an_orphan_document() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(4000))]
 
-    /// Fails today: see `f5_...`.
+    /// F5: a patch that names the same value twice is one value.
     #[test]
-    #[ignore = "finding F5: a repeated prepend entry is duplicated"]
-    fn claim10_apply_never_introduces_a_duplicate(
+        fn claim10_apply_never_introduces_a_duplicate(
         base in prop::collection::vec(arb_string(), 0..5),
         patch in prop::collection::vec(arb_string(), 0..3),
         append in prop::collection::vec(arb_string(), 0..3),
@@ -1644,10 +1686,9 @@ proptest! {
         }
     }
 
-    /// Fails today: see `f5_...`.
+    /// F5: a patch that names the same value twice is one value.
     #[test]
-    #[ignore = "finding F5: `apply_values` re-adds an item that is already present"]
-    fn claim10_apply_values_never_introduces_a_duplicate(
+        fn claim10_apply_values_never_introduces_a_duplicate(
         base in prop::collection::vec(arb_name(), 0..5),
         prepend in prop::collection::vec(arb_name(), 0..3),
         append in prop::collection::vec(arb_name(), 0..3),
@@ -1703,8 +1744,7 @@ fn claim10_deletion_wins_over_an_identical_readd() {
 }
 
 #[test]
-#[ignore = "finding F5: `apply` duplicates a repeated prepend entry"]
-fn f5_a_repeated_prepend_entry_is_duplicated() {
+fn a_repeated_prepend_entry_is_added_once() {
     let seq = SeqPatch {
         prepend: vec!["X".into(), "X".into()],
         append: vec![],
@@ -1714,8 +1754,7 @@ fn f5_a_repeated_prepend_entry_is_duplicated() {
 }
 
 #[test]
-#[ignore = "finding F5: `apply_values` re-adds an item that is already in the base"]
-fn f5_apply_values_readds_an_existing_item() {
+fn apply_values_does_not_readd_an_item_it_already_holds() {
     let base: Vec<Value> = vec![json!("A"), json!("B")];
     let seq = SeqPatch {
         prepend: vec!["A".into()],
@@ -1730,8 +1769,7 @@ fn f5_apply_values_readds_an_existing_item() {
 }
 
 #[test]
-#[ignore = "finding F16: the sequence-patch note prints the new length before the old one"]
-fn f16_a_sequence_patch_note_reports_its_sizes_backwards() {
+fn a_sequence_patch_note_reports_its_sizes_in_order() {
     use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
@@ -2059,13 +2097,13 @@ proptest! {
 }
 
 #[test]
-#[ignore = "finding F12: null is rejected for every list field except `connections`"]
-fn f12_null_where_a_list_is_expected() {
+fn a_null_list_field_parses_as_an_empty_one() {
     // The spec records exactly one list the core sends as `null`
     // (`connections`), and the module doc says "every list that could be
     // `null` is an `Option`". These are the other list-shaped fields; a
     // defensive client should treat `null` as "empty" rather than as a parse
-    // failure. This test asserts the defensive behaviour and fails today.
+    // failure. The module doc's claim is checked against every list-shaped
+    // field it makes, not only the one the spec records.
     assert!(
         serde_json::from_str::<ProxyView>(r#"{"name":"x","history":null}"#).is_ok(),
         "`history: null` must mean 'no samples'"

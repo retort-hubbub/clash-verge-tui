@@ -22,6 +22,40 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+
+/// Deserialize a `null` as the type's default.
+///
+/// The core sends `null` for a list it has nothing to put in it. `connections`
+/// is the one the spec records, but the shape is a property of how the
+/// response is built rather than of that endpoint, and a client that fails to
+/// parse an idle response fails exactly when nobody is looking.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// Deserialize a port the core may send as a string or as a number.
+fn string_or_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    /// The two spellings, in the order serde tries them.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Port {
+        Text(String),
+        Number(serde_json::Number),
+    }
+
+    Ok(match Option::<Port>::deserialize(deserializer)? {
+        Some(Port::Text(text)) => text,
+        Some(Port::Number(number)) => number.to_string(),
+        None => String::new(),
+    })
+}
 use serde_json::{Map, Value};
 
 /// `GET /`
@@ -87,7 +121,7 @@ pub struct ProxyView {
     #[serde(default)]
     pub alive: bool,
     /// Recent latency measurements, oldest first.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub history: Vec<DelaySample>,
     /// Identifier; present on plain proxies, absent on groups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -189,7 +223,7 @@ impl ProxyView {
 pub struct ProxiesResponse {
     /// Flat, name-keyed map. The core returns it in Go map order, so callers
     /// must sort before display.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub proxies: BTreeMap<String, ProxyView>,
 }
 
@@ -197,7 +231,7 @@ pub struct ProxiesResponse {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GroupsResponse {
     /// Policy groups only.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub proxies: Vec<ProxyView>,
 }
 
@@ -214,7 +248,7 @@ pub struct ProxyProviderInfo {
     #[serde(rename = "vehicleType", default)]
     pub vehicle_type: String,
     /// The provider's nodes.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub proxies: Vec<ProxyView>,
     /// Health-check URL.
     #[serde(rename = "testUrl", default, skip_serializing_if = "Option::is_none")]
@@ -258,7 +292,7 @@ impl ProxyProviderInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProxyProvidersResponse {
     /// Name-keyed providers.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub providers: BTreeMap<String, ProxyProviderInfo>,
 }
 
@@ -287,7 +321,11 @@ pub struct RuleProviderInfo {
     #[serde(rename = "updatedAt", default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     /// Inline payload, present only for inline providers.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub payload: Vec<String>,
     /// Extra keys.
     #[serde(flatten)]
@@ -298,7 +336,7 @@ pub struct RuleProviderInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuleProvidersResponse {
     /// Name-keyed providers.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub providers: BTreeMap<String, RuleProviderInfo>,
 }
 
@@ -389,7 +427,7 @@ impl RuleInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RulesResponse {
     /// The rule list, in evaluation order.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub rules: Vec<RuleInfo>,
 }
 
@@ -500,11 +538,20 @@ pub struct Metadata {
     /// Resolved destination address.
     #[serde(rename = "destinationIP", default)]
     pub destination_ip: String,
-    /// Client port, as a JSON string.
-    #[serde(rename = "sourcePort", default)]
+    /// Client port, as a JSON string or a number.
+    ///
+    /// The core sends a string, because Go's encoder was handed one — but a
+    /// port is a number, and a client that accepts only the string spelling
+    /// breaks the first time something in front of the core rewrites the
+    /// response.
+    #[serde(rename = "sourcePort", default, deserialize_with = "string_or_number")]
     pub source_port: String,
-    /// Destination port, as a JSON string.
-    #[serde(rename = "destinationPort", default)]
+    /// Destination port, as a JSON string or a number.
+    #[serde(
+        rename = "destinationPort",
+        default,
+        deserialize_with = "string_or_number"
+    )]
     pub destination_port: String,
     /// Hostname from the request, when known.
     #[serde(default)]
@@ -591,10 +638,14 @@ pub struct Connection {
     pub start: String,
     /// Proxy chain, **outbound first**: element 0 dialled, the last element is
     /// the outermost group the rule selected.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub chains: Vec<String>,
     /// Provider chain, index-aligned with `chains`, empty where not applicable.
-    #[serde(rename = "providerChains", default)]
+    #[serde(
+        rename = "providerChains",
+        default,
+        deserialize_with = "null_as_default"
+    )]
     pub provider_chains: Vec<String>,
     /// Matched rule type in PascalCase, empty when nothing matched.
     #[serde(default)]

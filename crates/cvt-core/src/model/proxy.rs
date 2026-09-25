@@ -66,11 +66,14 @@ pub enum GroupKind {
     Fallback,
     /// Distributes by a hash or round-robin strategy.
     LoadBalance,
-    /// Chains members in order.
-    Relay,
-    /// mihomo's adaptive group.
-    Smart,
     /// A kind this build does not know about.
+    ///
+    /// There is deliberately no variant for `relay` or `smart`, the two a
+    /// user is most likely to try. `clash-verge-rev` accepts both and mihomo
+    /// does not — `mihomo -t` answers relay with "was removed, please using
+    /// dialer-proxy instead" and smart with "unsupported type" — and a
+    /// validator that passes a group the core refuses to load is worse than
+    /// one that names the mistake. `E-GROUP-TYPE` reports it.
     Unknown,
 }
 
@@ -85,8 +88,6 @@ impl GroupKind {
             "url-test" => Self::UrlTest,
             "fallback" => Self::Fallback,
             "load-balance" => Self::LoadBalance,
-            "relay" => Self::Relay,
-            "smart" => Self::Smart,
             _ => Self::Unknown,
         }
     }
@@ -105,8 +106,6 @@ impl GroupKind {
             "URLTest" => Self::UrlTest,
             "Fallback" => Self::Fallback,
             "LoadBalance" => Self::LoadBalance,
-            "Relay" => Self::Relay,
-            "Smart" => Self::Smart,
             // Tolerate a caller that passes the configuration spelling anyway.
             other => Self::from_wire(other),
         }
@@ -120,8 +119,6 @@ impl GroupKind {
             Self::UrlTest => "url-test",
             Self::Fallback => "fallback",
             Self::LoadBalance => "load-balance",
-            Self::Relay => "relay",
-            Self::Smart => "smart",
             Self::Unknown => "?",
         }
     }
@@ -129,10 +126,7 @@ impl GroupKind {
     /// Whether the group supports latency testing its members.
     #[must_use]
     pub fn is_testable(self) -> bool {
-        matches!(
-            self,
-            Self::UrlTest | Self::Fallback | Self::LoadBalance | Self::Smart
-        )
+        matches!(self, Self::UrlTest | Self::Fallback | Self::LoadBalance)
     }
 
     /// Whether a member can be pinned with `PUT /proxies/{name}`.
@@ -341,7 +335,6 @@ client-fingerprint: chrome
         assert!(GroupKind::UrlTest.is_selectable());
         assert!(GroupKind::Fallback.is_selectable());
         assert!(!GroupKind::LoadBalance.is_selectable());
-        assert!(!GroupKind::Relay.is_selectable());
         assert!(!GroupKind::Unknown.is_selectable());
     }
 
@@ -356,7 +349,6 @@ client-fingerprint: chrome
             GroupKind::from_adapter("LoadBalance"),
             GroupKind::LoadBalance
         );
-        assert_eq!(GroupKind::from_adapter("Relay"), GroupKind::Relay);
         assert_eq!(GroupKind::from_adapter("SomethingNew"), GroupKind::Unknown);
         // Feeding adapter names to the config parser is exactly the mistake
         // this exists to prevent.

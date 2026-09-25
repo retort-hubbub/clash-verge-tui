@@ -464,11 +464,27 @@ fn remove_here(container: &mut Value, seg: &Segment) -> Option<Value> {
             Some(arr.remove(idx))
         }
         Segment::Selector { key, value } => {
+            // Every match goes, not just the first. "Remove the thing called
+            // A" is a statement about A, so running it twice has to mean the
+            // same as running it once — and with two entries called A the
+            // first-match version removed one and then the other, which made
+            // an overlay containing it a one-shot. Duplicate names are invalid
+            // in a configuration anyway, so the only documents where this
+            // differs are ones the validator already rejects.
             let arr = container.as_array_mut()?;
-            let idx = arr.iter().position(|e| {
-                e.get(key.as_str()).and_then(Value::as_str) == Some(value.as_str())
-            })?;
-            Some(arr.remove(idx))
+            let mut removed = None;
+            let mut kept = Vec::with_capacity(arr.len());
+            for element in arr.drain(..) {
+                let matches =
+                    element.get(key.as_str()).and_then(Value::as_str) == Some(value.as_str());
+                if matches {
+                    removed.get_or_insert(element);
+                } else {
+                    kept.push(element);
+                }
+            }
+            *arr = kept;
+            removed
         }
     }
 }
@@ -478,63 +494,107 @@ fn remove_here(container: &mut Value, seg: &Segment) -> Option<Value> {
 /// # Errors
 /// [`Error::InvalidValue`] when the target exists but is not a list.
 pub fn push(root: &mut Value, path: &Path, item: Value) -> Result<()> {
-    // Reject a target that exists and is not a list before mutating.
+    // Every check comes before the first write, because `push` both descends
+    // and can fail at the leaf: a descent that had already materialised the
+    // keys it needed would leave the document changed *and* report failure,
+    // which is the worst of both. The leaf has to name a list, so it has to be
+    // a key.
+    let Segment::Key(leaf) = path.last() else {
+        return Err(Error::invalid(
+            "path",
+            format!("`{path}` does not name a list to push onto"),
+        ));
+    };
+    // A target that exists and is not a list is a mistake, not something to
+    // overwrite.
     if let Some(existing) = get(root, path)
         && !existing.is_null()
         && !existing.is_array()
     {
         return Err(Error::invalid("path", format!("`{path}` is not a list")));
     }
-    if path.segments().len() == 1
-        && let Segment::Key(k) = path.last()
-    {
-        if root.is_null() {
-            *root = Value::Object(Map::new());
-        }
-        let obj = root
-            .as_object_mut()
-            .ok_or_else(|| Error::invalid("path", "cannot push onto a non-mapping"))?;
-        let entry = obj
-            .entry(k.clone())
-            .or_insert_with(|| Value::Array(Vec::new()));
-        if entry.is_null() {
-            *entry = Value::Array(Vec::new());
-        }
-        let arr = entry
-            .as_array_mut()
-            .ok_or_else(|| Error::invalid("path", format!("`{k}` is not a list")))?;
-        arr.push(item);
-        return Ok(());
-    }
+    // And the way down has to be walkable. `push` used to discover this while
+    // walking, which is why a rejected path could still add keys.
+    check_traversable(root, path)?;
     let mut cur = root;
     for seg in path.parent() {
         cur = descend_mut(cur, seg, path)?;
     }
-    let seg = path.last();
-    let arr = match seg {
-        Segment::Key(k) => {
-            if cur.is_null() {
-                *cur = Value::Object(Map::new());
-            }
-            let obj = cur
-                .as_object_mut()
-                .ok_or_else(|| Error::invalid("path", "cannot push onto a non-mapping"))?;
-            obj.entry(k.clone())
-                .or_insert_with(|| Value::Array(Vec::new()))
-        }
-        Segment::Index(_) | Segment::Selector { .. } => {
-            return Err(Error::invalid(
-                "path",
-                format!("`{path}` does not name a list to push onto"),
-            ));
-        }
-    };
-    if arr.is_null() {
-        *arr = Value::Array(Vec::new());
+    if cur.is_null() {
+        *cur = Value::Object(Map::new());
     }
-    arr.as_array_mut()
-        .ok_or_else(|| Error::invalid("path", format!("`{path}` is not a list")))?
+    let obj = cur
+        .as_object_mut()
+        .ok_or_else(|| Error::invalid("path", "cannot push onto a non-mapping"))?;
+    let entry = obj
+        .entry(leaf.clone())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if entry.is_null() {
+        *entry = Value::Array(Vec::new());
+    }
+    entry
+        .as_array_mut()
+        .ok_or_else(|| Error::invalid("path", format!("`{leaf}` is not a list")))?
         .push(item);
+    Ok(())
+}
+
+/// A null that stands in for a value that a descent would have materialised.
+///
+/// The read-only walk has to reason about keys that do not exist yet without
+/// creating them, and an absent key and a null one behave identically on the
+/// way down.
+const ABSENT: Value = Value::Null;
+
+/// Walk `path` without writing anything, and report the first step that a
+/// descent would refuse.
+///
+/// Mirrors [`descend_mut`] step for step — a null is materialised as a mapping,
+/// a key may be absent, an index must be in range, a selector must match. The
+/// two are kept next to each other on purpose: if one learns a new rule, the
+/// other has to as well.
+fn check_traversable(root: &Value, path: &Path) -> Result<()> {
+    let mut cur: &Value = root;
+    for seg in path.parent() {
+        cur = match seg {
+            Segment::Key(k) => {
+                if cur.is_null() {
+                    // Materialised as a mapping, then `k` is inserted as null.
+                    &ABSENT
+                } else {
+                    cur.as_object()
+                        .ok_or_else(|| {
+                            Error::invalid("path", format!("`{path}`: `{k}` is not a mapping key"))
+                        })?
+                        .get(k)
+                        .unwrap_or(&ABSENT)
+                }
+            }
+            Segment::Index(i) => {
+                let arr = cur.as_array().ok_or_else(|| {
+                    Error::invalid("path", format!("`{path}`: cannot index a non-list"))
+                })?;
+                let len = arr.len();
+                let idx = resolve_index(*i, len).ok_or_else(|| {
+                    Error::invalid(
+                        "path",
+                        format!("`{path}`: index {i} is out of range (len {len})"),
+                    )
+                })?;
+                &arr[idx]
+            }
+            Segment::Selector { key, value } => cur
+                .as_array()
+                .ok_or_else(|| {
+                    Error::invalid("path", format!("`{path}`: cannot select inside a non-list"))
+                })?
+                .iter()
+                .find(|e| e.get(key.as_str()).and_then(Value::as_str) == Some(value.as_str()))
+                .ok_or_else(|| {
+                    Error::invalid("path", format!("`{path}`: no element with {key}={value}"))
+                })?,
+        };
+    }
     Ok(())
 }
 

@@ -423,12 +423,17 @@ impl SeqPatch {
             .filter(|item| !self.delete.contains(item))
             .cloned()
             .collect();
-        let mut head: Vec<String> = self
-            .prepend
-            .iter()
-            .filter(|item| !out.contains(item))
-            .cloned()
-            .collect();
+        // Checked against `out` *and* against what has already been collected:
+        // a patch that names the same value twice is one value, and comparing
+        // only against the base let the second copy through. A patch is a
+        // document a person wrote, and writing the same line twice is a slip,
+        // not a request for two of them.
+        let mut head: Vec<String> = Vec::new();
+        for item in &self.prepend {
+            if !out.contains(item) && !head.contains(item) {
+                head.push(item.clone());
+            }
+        }
         head.append(&mut out);
         for item in &self.append {
             if !head.contains(item) {
@@ -441,35 +446,60 @@ impl SeqPatch {
     /// Apply to a list of JSON values, deleting by `name` when present.
     #[must_use]
     pub fn apply_values(&self, base: &[Value]) -> Vec<Value> {
-        let name_of = |v: &Value| {
-            v.get("name")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| v.as_str().map(str::to_owned))
-        };
-        let mut out: Vec<Value> = base
+        let out: Vec<Value> = base
             .iter()
             .filter(|v| name_of(v).is_none_or(|n| !self.delete.contains(&n)))
             .cloned()
             .collect();
-        let mut head: Vec<Value> = self
-            .prepend
-            .iter()
-            .map(|s| match serde_json::from_str::<Value>(s) {
-                Ok(v) => v,
-                Err(_) => Value::String(s.clone()),
-            })
-            .collect();
-        for item in &self.append {
-            let value = match serde_json::from_str::<Value>(item) {
-                Ok(v) => v,
-                Err(_) => Value::String(item.clone()),
-            };
-            head.push(value);
+        // Deduplicated by the same rule the doc comment states, and by the
+        // same rule `apply` uses for plain strings: an item the base already
+        // holds is not added, and neither is a second copy of one this patch
+        // already named. Comparing only the *names* for the base and only
+        // identity for the patch is what let a repeated entry through.
+        let parse = |s: &String| match serde_json::from_str::<Value>(s) {
+            Ok(v) => v,
+            Err(_) => Value::String(s.clone()),
+        };
+        let already_present =
+            |list: &[Value], candidate: &Value| list.iter().any(|e| same_item(e, candidate));
+        let mut head: Vec<Value> = Vec::new();
+        for item in &self.prepend {
+            let value = parse(item);
+            if !already_present(&out, &value) && !already_present(&head, &value) {
+                head.push(value);
+            }
         }
-        let _ = &mut out;
         head.extend(out);
+        for item in &self.append {
+            let value = parse(item);
+            if !already_present(&head, &value) {
+                head.push(value);
+            }
+        }
         head
+    }
+}
+
+/// How a list item is identified for deletion and deduplication.
+///
+/// A named mapping is identified by its `name`, so a proxy is the same proxy
+/// however much else about it changed; a plain string is its own identity.
+fn name_of(v: &Value) -> Option<String> {
+    v.get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| v.as_str().map(str::to_owned))
+}
+
+/// `true` when two items are the same item.
+///
+/// Two anonymous values are compared structurally, because that is the only
+/// identity they have; comparing them by name would make every unnamed value
+/// equal to every other one.
+fn same_item(a: &Value, b: &Value) -> bool {
+    match (name_of(a), name_of(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => a == b,
     }
 }
 

@@ -296,10 +296,11 @@ pub fn check(config: &Config) -> Report {
 
     // Everything a policy may legally point at.
     let provider_node_names: HashSet<&str> = proxy_providers.keys().map(String::as_str).collect();
+    // Exactly, not case-insensitively: `mihomo -t` answers `MATCH,direct` with
+    // "proxy [direct] not found". A validator that accepts what the core
+    // rejects is worse than one that reports nothing.
     let is_known_policy = |name: &str| {
-        BUILTIN_POLICIES
-            .iter()
-            .any(|b| b.eq_ignore_ascii_case(name))
+        BUILTIN_POLICIES.contains(&name)
             || proxy_names.contains(name)
             || group_names.contains(name)
             || provider_node_names.contains(name)
@@ -320,7 +321,7 @@ pub fn check(config: &Config) -> Report {
                     format!("proxy group `{}` has unsupported type `{}`", g.name, g.kind),
                 )
                 .at(format!("proxy-groups[{i}]"))
-                .fix("use one of: select, url-test, fallback, load-balance, relay, smart"),
+                .fix("use one of: select, url-test, fallback, load-balance"),
             );
         }
         for m in &g.proxies {
@@ -439,7 +440,27 @@ pub fn check(config: &Config) -> Report {
     }
 
     let mut seen_rule: HashMap<String, usize> = HashMap::new();
-    for (i, r) in rules.iter().enumerate() {
+    for (i, raw) in config.raw_rules().iter().enumerate() {
+        let Some(r) = crate::model::rule::Rule::parse(raw) else {
+            // A blank line or a comment is not a rule and is skipped on
+            // purpose. Anything else the parser refuses is a line the core
+            // refuses too — `mihomo -t` calls it `format invalid` — and
+            // skipping it here is how a typo becomes a rule that is simply not
+            // there.
+            let line = raw.trim();
+            if !line.is_empty() && !line.starts_with('#') {
+                report.diagnostics.push(
+                    Diagnostic::error(
+                        "E-RULE-MALFORMED",
+                        format!("`{line}` is not a rule the core can parse"),
+                    )
+                    .at(format!("rules[{i}]"))
+                    .fix("write `<TYPE>,<payload>,<policy>`, or `MATCH,<policy>`"),
+                );
+            }
+            continue;
+        };
+        let r = &r;
         if let Some(prev) = seen_rule.insert(r.to_string(), i) {
             report.diagnostics.push(
                 Diagnostic::warn(
@@ -448,6 +469,29 @@ pub fn check(config: &Config) -> Report {
                 )
                 .at(format!("rules[{i}]"))
                 .fix("delete the later copy; it is never evaluated"),
+            );
+        }
+        // A rule type this build has never heard of. A *warning*, not an
+        // error, and deliberately: mihomo's rule table is closed, so an
+        // unknown type is refused by the core today — but a core released
+        // after this list was written may accept it, and refusing a
+        // configuration the core loads is the one mistake a validator must not
+        // make. (`FINAL` was accepted as a payload-less rule for exactly this
+        // reason, and it is not a rule kind at all.)
+        if !crate::mihomo::types::RULE_KINDS
+            .iter()
+            .any(|(_, config)| *config == r.kind)
+        {
+            report.diagnostics.push(
+                Diagnostic::warn(
+                    "W-RULE-KIND",
+                    format!(
+                        "rule `{r}` uses type `{}`, which this build does not know",
+                        r.kind
+                    ),
+                )
+                .at(format!("rules[{i}]"))
+                .fix("check the spelling; a core newer than this build may accept it"),
             );
         }
         if !is_known_policy(&r.policy) {
@@ -501,10 +545,33 @@ pub fn check(config: &Config) -> Report {
 }
 
 fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mut Report) {
+    let loc = format!("rules[{index}]");
+    // A payload-less rule carries a policy and nothing else. `mihomo -t`
+    // *accepts* a field after the policy — its `MATCH` branch reads the target
+    // and discards the rest — so this is a warning rather than an error:
+    // rejecting a configuration the core loads is the one mistake a validator
+    // must not make. Saying nothing would be the other one, because an ignored
+    // field is a line a user wrote that does nothing.
+    if rule.payload.is_none() {
+        if !rule.params.is_empty() {
+            report.diagnostics.push(
+                Diagnostic::warn(
+                    "W-MATCH-WITH-PAYLOAD",
+                    format!(
+                        "`{rule}` gives `{}` a field it does not take; the core ignores \
+                         everything after the policy, so it does nothing",
+                        rule.kind
+                    ),
+                )
+                .at(loc)
+                .fix(format!("write `{},<policy>`", rule.kind)),
+            );
+        }
+        return;
+    }
     let Some(payload) = rule.payload.as_deref() else {
         return;
     };
-    let loc = format!("rules[{index}]");
     match rule.kind.as_str() {
         "IP-CIDR" | "IP-CIDR6" | "SRC-IP-CIDR" => {
             if !payload.contains('/') {
@@ -525,7 +592,7 @@ fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mu
                         "E-CIDR-FAMILY",
                         format!("`{rule}` uses the wrong address family for `{}`", rule.kind),
                     )
-                    .at(loc.clone())
+                    .at(loc)
                     .fix(if want_v6 {
                         "use `IP-CIDR` for IPv4, `IP-CIDR6` for IPv6"
                     } else {
@@ -541,29 +608,24 @@ fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mu
                         "W-DOMAIN-WILDCARD",
                         format!("`{rule}`: `DOMAIN-SUFFIX` already matches subdomains"),
                     )
-                    .at(loc.clone())
+                    .at(loc)
                     .fix("write the bare domain, e.g. `google.com`"),
                 );
             }
         }
         _ => {}
     }
-    if rule.kind == "MATCH" {
-        report.diagnostics.push(
-            Diagnostic::error(
-                "E-MATCH-WITH-PAYLOAD",
-                format!("`{rule}` gives a payload to MATCH, which takes none"),
-            )
-            .at(loc)
-            .fix("write `MATCH,<policy>`"),
-        );
-    }
 }
 
 fn detect_relay_cycles(groups: &[crate::model::proxy::ProxyGroup], report: &mut Report) {
+    // Keyed on the spelling in the document rather than on `GroupKind`, which
+    // no longer has a `Relay`: the core removed the group type, so a document
+    // holding one already reports `E-GROUP-TYPE`. This check adds the specific
+    // problem to that — a relay chain that loops is worth naming, because it is
+    // the reason the type was replaced by `dialer-proxy` in the first place.
     let relay: HashMap<&str, &[String]> = groups
         .iter()
-        .filter(|g| g.group_kind() == crate::model::proxy::GroupKind::Relay)
+        .filter(|g| g.kind.eq_ignore_ascii_case("relay"))
         .map(|g| (g.name.as_str(), g.proxies.as_slice()))
         .collect();
     if relay.is_empty() {
@@ -995,9 +1057,18 @@ proxy-groups:
   - { name: B, type: relay, proxies: [DIRECT] }
 rules: [MATCH,A]
 "#);
+        // An acyclic relay chain has no *cycle* — and is still a document the
+        // core refuses, because v1.19.31 removed the group type entirely
+        // ("was removed, please using dialer-proxy instead"). The two are
+        // reported separately on purpose: one names the loop, the other names
+        // the reason the whole shape is gone.
         let acyclic_report = check(&acyclic);
-        assert!(!codes(&acyclic_report).contains(&"E-RELAY-CYCLE"));
-        assert!(acyclic_report.is_ok(), "{}", acyclic_report.render());
+        let acyclic_codes = codes(&acyclic_report);
+        assert!(
+            !acyclic_codes.contains(&"E-RELAY-CYCLE"),
+            "{acyclic_codes:?}"
+        );
+        assert!(acyclic_codes.contains(&"E-GROUP-TYPE"), "{acyclic_codes:?}");
     }
 
     #[test]

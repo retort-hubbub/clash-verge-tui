@@ -85,12 +85,26 @@ profiles on disk
  Service::reload ── hot reload, else restart, else roll back and restart
 ```
 
-Two properties are worth noting because they are enforced rather than
-intended. `enhance::path::set` is atomic — a path that cannot be applied
-leaves the document untouched — and merges are idempotent, so applying an
-override twice is the same as applying it once. Appending a rule inserts it
-*before* the terminal `MATCH`, because a catch-all appended after a catch-all
-is dead code.
+Three properties are worth noting because they are enforced rather than
+intended.
+
+`enhance::path` is atomic: an edit whose path cannot be applied leaves the
+document exactly as it was. Getting that right took a read-only pass down the
+path before the first write, because a descent that has already materialised
+the keys it needs cannot report failure *and* leave nothing behind.
+
+Merging and applying an override are idempotent — re-running the pipeline with
+an unchanged subscription produces an unchanged configuration — with one
+documented exception. A removal by *position* (`proxies[1]`) cannot make that
+promise, because the position is not stable: the second application removes
+whatever has moved into the slot. It is supported anyway, because dropping the
+rule a subscription always puts first is a real thing to want, and the
+documentation says which case it is rather than promising uniformly.
+
+Appending a rule places it *before* the terminal `MATCH`, because a catch-all
+appended after a catch-all is dead code — and appending a rule that is itself
+terminal *replaces* the existing catch-all, because two of them is a document
+the validator rejects and the second can never fire.
 
 `enhance::pipeline` keeps the last 20 generated documents. That is what makes
 `ReloadOutcome::RolledBack` possible, and it is the reason the reload decision
@@ -228,6 +242,10 @@ found it, and fixing one shows up in the history as a commit that removes an
 `#[ignore]` line and its note. `cargo test -p cvt-core --test invariants --
 --ignored` runs them, and they fail on purpose.
 
-The independent review that produced them is in
-[`VERIFICATION-REPORT.md`](VERIFICATION-REPORT.md), including the findings it
-could not substantiate and the parts of the system it did not cover.
+The review that produced them was an adversarial audit by a separate agent
+whose job was to attack this code rather than confirm it. Its report is a
+working document about the code rather than part of it, and it lists defects
+that are still open, so it is deliberately not in this repository — it lives
+beside the checkout in the maintainer's working copy. What matters to a
+reader here is the part that *is* in the repository: every counterexample it
+found is a disabled test above, with the analysis in the test body.

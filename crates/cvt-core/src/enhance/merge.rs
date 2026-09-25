@@ -152,22 +152,65 @@ fn merge_at(base: &mut Value, patch: &Value, options: &MergeOptions, key: Option
                 match base_map.get_mut(k) {
                     Some(slot) => merge_at(slot, patch_value, options, Some(k)),
                     None => {
-                        // A brand new subtree is inserted verbatim; recursing
-                        // into it with the parent's strategy would corrupt nested
-                        // lists that happen to share a name with a top-level key.
-                        base_map.insert(k.clone(), patch_value.clone());
+                        // A brand new subtree is inserted as it stands, without
+                        // recursing into it — the parent's array strategy would
+                        // corrupt a nested list that happens to share a name
+                        // with a top-level key. The nulls come out first,
+                        // though: `{new: {a: null}}` asks for a `new` with no
+                        // `a`, and inserting it verbatim produced a `new` that
+                        // *held* a null, which is not what the same patch means
+                        // when `new` already exists.
+                        base_map.insert(k.clone(), without_deletions(patch_value));
                     }
                 }
             }
         }
         (Value::Array(base_arr), Value::Array(patch_arr)) => {
             let strategy = key.map_or(options.default_array, |k| options.strategy_for(k));
-            *base_arr = strategy.apply(base_arr, patch_arr);
+            // The patch's nulls are removed before the strategy sees them, so
+            // that "a null means nothing is there" holds for a list the base
+            // already has as well as for one this patch creates. A strategy
+            // that appended them would otherwise introduce an element that no
+            // configuration wants and the validator rejects.
+            let additions = without_deletions_in(patch_arr);
+            *base_arr = strategy.apply(base_arr, &additions);
         }
         (slot, patch_value) => {
-            *slot = patch_value.clone();
+            // A shape the base cannot absorb is replaced outright — and the
+            // replacement gets the same treatment, because a null four levels
+            // inside it means the same thing as a null at the top.
+            *slot = without_deletions(patch_value);
         }
     }
+}
+
+/// Remove the nulls a patch uses to say "nothing here".
+///
+/// The reading is the same wherever the null sits, which is the point: a null
+/// as a key's value means the key is not there, and a null as a list's element
+/// means the element is not there. Leaving the latter in place produced list
+/// items no configuration wants — and the two cases then disagreed, because a
+/// subtree being created kept its nulls while a subtree being merged did not.
+fn without_deletions(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k.clone(), without_deletions(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(without_deletions_in(items)),
+        other => other.clone(),
+    }
+}
+
+/// [`without_deletions`] for a list: the null elements go, the rest is cleaned.
+fn without_deletions_in(items: &[Value]) -> Vec<Value> {
+    items
+        .iter()
+        .filter(|v| !v.is_null())
+        .map(without_deletions)
+        .collect()
 }
 
 /// Merge without mutating, returning a new document.

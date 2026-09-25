@@ -13,8 +13,10 @@ document) and `fix` where a fix is one line.
 usually not what the author meant. **Notes** are informational.
 
 A code is never reused for a different meaning, and a code that stops being
-produced is removed rather than repurposed (`E-CIDR-FAMILY` went that way: it
-rejected rules the core loads).
+produced is removed rather than repurposed — a family check that rejected rules
+the core loads went that way. Its name is deliberately not repeated here: this
+page is asserted against the codes the validator produces, and a code named in
+a sentence is not one a reader can look up.
 
 ## Errors
 
@@ -81,9 +83,11 @@ the one mistake a validator must not make. Several warnings here are things a
 user almost certainly did not intend, and the honest way to say so is to say it
 without stopping them.
 
-That rule has been got wrong in both directions. `E-UNREACHABLE-RULES` was an
-error until a real core was asked and accepted the document; `E-CIDR-FAMILY`
-was introduced as an error and removed entirely once `mihomo -t` and a running
-core showed it loads `IP-CIDR,2001:db8::/32,DIRECT` and matches traffic with
-it. Every check in this file that describes what the core does was settled by
-asking the core.
+That rule has been got wrong in both directions. A check that rules after a
+terminal `MATCH` were unreachable was an *error* until a real core was asked
+and accepted the document, and is a warning now. A check that a CIDR rule's
+address family matched its kind's name was an error, and was then removed
+entirely once `mihomo -t` and a running core showed it loads
+`IP-CIDR,2001:db8::/32,DIRECT` and matches traffic with it. Neither name is
+repeated here, for the same reason. Every check in this file that describes
+what the core does was settled by asking the core.

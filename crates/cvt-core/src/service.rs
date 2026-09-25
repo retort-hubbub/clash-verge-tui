@@ -942,6 +942,13 @@ impl Service {
                     }
                 };
                 let created = stamp.parse::<i64>().ok()?;
+                // Canonicalised as well, and not only the suffix: `02000-2`
+                // and `2000-2` both parsed to `(2000, 2)`, so the tie was back
+                // and the survivor was the filesystem's again — canonicalising
+                // one half of a key and not the other.
+                if stamp != created.to_string() {
+                    return None;
+                }
                 let items = std::fs::read_dir(entry.path())
                     .map(|inner| inner.flatten().count())
                     .unwrap_or(0);

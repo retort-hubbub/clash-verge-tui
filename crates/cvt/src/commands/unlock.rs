@@ -202,8 +202,23 @@ async fn ask(client: &reqwest::Client, probe: &Probe) -> UnlockRow {
 
 /// The reading, per service, with the evidence that produced it.
 fn read(service: &str, status: u16, body: &str) -> (Verdict, String) {
+    // Read once, and consulted *inside* every arm whose signal is the status.
+    // A login wall arrives as `HTTP 200` — the redirect is followed and the
+    // reading is handed the login page — so an arm that turns any 200 into
+    // `Unlocked` reports the service as available when it is asking you to sign
+    // in. `docs/CLI.md` promises the opposite in as many words.
+    let walled = is_a_wall(body);
+    let wall = || {
+        (
+            Verdict::Unknown,
+            format!("HTTP {status}: a login wall or a notice, not the service"),
+        )
+    };
     match service {
         "youtube-premium" => {
+            if walled {
+                return wall();
+            }
             // The page carries the country it decided you are in. Where Premium
             // is not sold the same URL answers without it.
             if let Some(code) = between(body, "\"countryCode\":\"", "\"") {
@@ -217,48 +232,46 @@ fn read(service: &str, status: u16, body: &str) -> (Verdict, String) {
                 (Verdict::Unknown, format!("HTTP {status}"))
             }
         }
-        // A login wall or a rate-limit page arrives as `HTTP 200` — the
-        // redirect is followed and the reading is handed the login page — so
-        // every arm whose signal is the status has to look at the body first.
-        // `docs/CLI.md` promises exactly this: "`unknown` is a real answer here
-        // and means the response said nothing either way — a login wall, a
-        // rate limit, a redesign".
-        _ if is_a_wall(body) => (
-            Verdict::Unknown,
-            format!("HTTP {status}: a login wall or a notice, not the service"),
-        ),
-        "netflix" => match status {
-            200 => (
+        // The status is the signal, and the *body* decides whether the status
+        // is the service's. Matching on the pair rather than on the status
+        // alone is what makes the wall case impossible to forget in an arm: a
+        // `200 =>` with nothing beside it cannot be written.
+        "netflix" => match (status, walled) {
+            (_, true) => wall(),
+            (200, false) => (
                 Verdict::Unlocked,
                 "HTTP 200 for a region-locked title".to_owned(),
             ),
-            404 => (
+            (404, false) => (
                 Verdict::Blocked,
                 "HTTP 404: the title is not licensed here".to_owned(),
             ),
             _ => (Verdict::Unknown, format!("HTTP {status}")),
         },
-        "chatgpt" => match status {
-            200 => (
+        "chatgpt" => match (status, walled) {
+            (_, true) => wall(),
+            (200, false) => (
                 Verdict::Unlocked,
                 "HTTP 200 from the session endpoint".to_owned(),
             ),
-            403 => (
+            (403, false) => (
                 Verdict::Blocked,
                 "HTTP 403: not available in this country".to_owned(),
             ),
             _ => (Verdict::Unknown, format!("HTTP {status}")),
         },
-        "disney-plus" => match status {
-            200 => (Verdict::Unlocked, "HTTP 200".to_owned()),
+        "disney-plus" => match (status, walled) {
+            (_, true) => wall(),
+            (200, false) => (Verdict::Unlocked, "HTTP 200".to_owned()),
             // Disney answers a redirect to a "not available" page rather than a
             // 4xx in most regions it does not serve.
-            301 | 302 | 403 => (
+            (301 | 302 | 403, false) => (
                 Verdict::Blocked,
                 format!("HTTP {status}: redirected away from the service"),
             ),
             _ => (Verdict::Unknown, format!("HTTP {status}")),
         },
+        _ if walled => wall(),
         _ => (Verdict::Unknown, format!("HTTP {status}")),
     }
 }

@@ -1569,21 +1569,10 @@ fn every_code_the_validator_produces_is_documented() {
     let page = include_str!("../../../docs/DIAGNOSTICS.md");
     let produced = constructed_codes();
 
-    let missing: Vec<&String> = produced
-        .iter()
-        .filter(|code| !page.contains(code.as_str()))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "{} code(s) are produced by the validator and have no entry in \
-         docs/DIAGNOSTICS.md: {missing:?}",
-        missing.len()
-    );
-
-    // The other direction, over the *tables* rather than the prose. A row for a
-    // code that is never produced sends a reader looking for something that
-    // cannot happen — while prose is allowed to name a retired code, because
-    // saying why a check was removed is the most useful thing on the page.
+    // The *tables*, not the prose — and in both directions. A code named in a
+    // sentence saying it was removed satisfied this check before, so a
+    // retraction read as documentation; and the reverse check could not see it
+    // either, because it read only table rows. One list, used twice.
     let documented: Vec<&str> = page
         .lines()
         .filter_map(|line| line.strip_prefix("| `"))
@@ -1593,6 +1582,18 @@ fn every_code_the_validator_produces_is_documented() {
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
         })
         .collect();
+
+    let missing: Vec<&String> = produced
+        .iter()
+        .filter(|code| !documented.contains(&code.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} code(s) are produced by the validator and have no *table* entry in \
+         docs/DIAGNOSTICS.md — a sentence naming them is not one: {missing:?}",
+        missing.len()
+    );
+
     let stale: Vec<&&str> = documented
         .iter()
         .filter(|code| !produced.contains(&(**code).to_owned()))
@@ -1608,28 +1609,43 @@ fn every_code_the_validator_produces_is_documented() {
 /// Deliberately textual. The alternative is for `validate.rs` to keep a list,
 /// which is the same hand-maintained list this exists to check.
 fn constructed_codes() -> Vec<String> {
-    let source = include_str!("../src/validate.rs");
+    // Up to the test module: a code named in `validate.rs`'s own tests is not a
+    // code the validator produces, and `E-CIDR-FAMILY` — retired, and named in
+    // a test asserting it is *not* produced — was read as one.
+    let whole = include_str!("../src/validate.rs");
+    let source = whole.split("#[cfg(test)]").next().unwrap_or(whole);
     let mut found = Vec::new();
-    let mut rest = source;
-    while let Some(at) = rest.find("Diagnostic::") {
-        rest = &rest[at + "Diagnostic::".len()..];
-        let Some(paren) = rest.find('(') else { break };
-        let constructor = &rest[..paren];
-        if !matches!(constructor, "error" | "warn" | "note" | "info") {
+    let bytes = source.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'"' {
+            at += 1;
             continue;
         }
-        let after = rest[paren + 1..].trim_start();
-        let Some(quoted) = after.strip_prefix('"') else {
-            continue;
+        let start = at + 1;
+        let Some(offset) = source[start..].find('"') else {
+            break;
         };
-        let Some(end) = quoted.find('"') else {
-            continue;
-        };
-        found.push(quoted[..end].to_owned());
+        let literal = &source[start..start + offset];
+        if looks_like_a_code(literal) {
+            found.push(literal.to_owned());
+        }
+        at = start + offset + 1;
     }
     found.sort();
     found.dedup();
     found
+}
+
+/// `E-SOMETHING`, `W-SOMETHING` or `I-SOMETHING`, in capitals.
+fn looks_like_a_code(literal: &str) -> bool {
+    let mut chars = literal.chars();
+    matches!(chars.next(), Some('E' | 'W' | 'I'))
+        && chars.next() == Some('-')
+        && literal.len() > 2
+        && literal
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
 }
 
 // ================================================================ claim 9

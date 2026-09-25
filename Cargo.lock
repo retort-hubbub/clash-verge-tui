@@ -578,6 +578,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "serde_norway",
  "tempfile",
  "tokio",
  "tracing",

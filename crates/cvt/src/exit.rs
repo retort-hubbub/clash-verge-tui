@@ -221,11 +221,8 @@ mod tests {
 
     #[test]
     fn an_explicit_exit_wins_over_everything_else() {
-        let err = anyhow::Error::new(Exit::new(
-            ExitCode::Controller,
-            "the core is not running",
-        ))
-        .context("doctor");
+        let err = anyhow::Error::new(Exit::new(ExitCode::Controller, "the core is not running"))
+            .context("doctor");
         assert_eq!(ExitCode::for_error(&err), ExitCode::Controller);
     }
 

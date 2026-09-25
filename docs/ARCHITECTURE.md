@@ -150,7 +150,16 @@ in exactly one place:
 2. try a hot reload, which applies most changes without dropping connections;
 3. only if that fails, restart the process;
 4. if the core then fails to come up, restore the previous snapshot and start
-   again.
+   again;
+5. **wait until the document is live** — `/version` answering means the process
+   is up, not that it has *this* configuration, and a reload rebuilds the groups
+   in the background;
+6. replay the node choices a user made, which the reload has just discarded.
+
+Steps 5 and 6 are the ones a reader is most likely to delete as redundant. Both
+were added because a command that ran immediately after a successful `apply`
+failed — the first with `no group named PROXY`, the second silently, with the
+core still holding the old node.
 
 A reload that cannot be undone reports the failure that caused it — not what
 the rollback bookkeeping did — and a machine with no core binary is not treated
@@ -201,8 +210,15 @@ because a refresh reorders.
 ## `cvt`
 
 Argument parsing, output formatting, the exit-code mapping, and the effect
-executor. Nothing else: every operation is a `Service` call, and the module
-structure mirrors the CLI's subcommand groups.
+executor. The module structure mirrors the CLI's subcommand groups.
+
+Almost everything is a `Service` call. Two commands are not: `geo` and `unlock`
+make their own HTTP requests through the core's proxy port, because the question
+they answer — what address the world sees, and whether a service will serve it —
+is about the *tunnel* rather than about the core, and the core has no endpoint
+that answers it. Both go through `proxied_client` in `commands/mod.rs`, which is
+where the proxy port is read and the timeout is checked, so the two cannot drift
+apart on either.
 
 Two conventions are load-bearing. `--json` emits a stable schema name on every
 read command, so a script can depend on the shape rather than parse the human
@@ -213,7 +229,7 @@ full table is in `docs/CLI.md` and in `--help`.
 
 ## Testing strategy
 
-Four layers, each catching what the one below cannot.
+Five layers, each catching what the one below cannot.
 
 | Layer | Where | What it is for |
 |---|---|---|
@@ -221,6 +237,7 @@ Four layers, each catching what the one below cannot.
 | API contract tests | `tests/client_contract.rs` | The client against a fake controller that answers the observed bytes |
 | Render tests | `cvt-tui/src/ui/render_tests.rs` | Every screen, empty and populated, at four terminal sizes |
 | Live core tests | `tests/live_controller.rs` | The same expectations against a real binary |
+| Review counterexamples | `tests/recheck*.rs` | The claims of past reviews, kept as tests — see below |
 
 The property layer is the interesting one, because the risk in this program is
 not a wrong value but a wrong *property*: a merge that is not idempotent, a
@@ -233,19 +250,42 @@ who wrote the client, so it can only confirm what they already believe.
 which is why it went unnoticed for a while that it had never actually run. When
 it did, it failed on its fourth assertion.
 
-### Known defects are kept, not deleted
+### Adversarial review, and where its counterexamples live
 
-The counterexamples the property suite has found are preserved as `#[ignore]`d
-tests with the reasoning in the body, rather than being deleted along with the
-bug or left failing. Each one is a reproduction that outlives the report that
-found it, and fixing one shows up in the history as a commit that removes an
-`#[ignore]` line and its note. `cargo test -p cvt-core --test invariants --
---ignored` runs them, and they fail on purpose.
+Every round of substantial work ends with an independent adversarial pass by an
+agent that did not write the code, whose instructions are to falsify the claims
+rather than confirm them. Eight rounds have produced 96 defects, and **every
+round has found a real problem** — including two rounds whose findings were
+defects *introduced by the previous round's fixes*.
 
-The review that produced them was an adversarial audit by a separate agent
-whose job was to attack this code rather than confirm it. Its report is a
-working document about the code rather than part of it, and it lists defects
-that are still open, so it is deliberately not in this repository — it lives
-beside the checkout in the maintainer's working copy. What matters to a
-reader here is the part that *is* in the repository: every counterexample it
-found is a disabled test above, with the analysis in the test body.
+The counterexamples are in the build, as ordinary passing tests:
+`tests/recheck.rs` through `tests/recheck7.rs`, one file per round, each named
+for what it attacked. A finding is closed by making its test pass, so the suite
+is a list of things that used to be wrong and now are not — which is the useful
+form. A report is prose about a state that no longer exists; a test is a claim
+the build refuses to be green while it stands.
+
+Three things a reader should know before trusting one of those files:
+
+- **A reviewer's assertion can be wrong.** Eight rounds have produced an
+  assertion that encoded the *buggy* state, a failure message that proved the
+  fix worked while the assertion failed, two tests in one round that
+  contradicted each other, and a premise that was timing-dependent and flaked.
+  Each finding is reproduced by the author before it is acted on, and a
+  disagreement is written down beside the assertion rather than silently
+  absorbed.
+- **A fix that is narrower than its defect is the recurring failure.** Six
+  times, a guard has covered the members of a class that somebody had named
+  rather than the class itself: `uid` then `file` then the arm beside it; the
+  control plane; `--url` in two commands and then a third; `--concurrency` in
+  one function and then a second copy of the flag; `--timeout` never checked at
+  all; a canonicalised suffix with an uncanonicalised stamp. The fix that works
+  is the one that makes the class impossible to join without the guard.
+- **Some defects only running finds.** A fake controller cannot tell an allowed
+  path from a refused one, so four rounds of API-client review missed that the
+  hot reload could never work. A fifo where a document goes hangs
+  `std::fs::copy`'s open forever. Both were found by running the program.
+
+The *reports* are working documents about the code rather than part of it, and
+they list defects that were open when they were written, so they are
+deliberately not in this repository. What belongs here is the tests.

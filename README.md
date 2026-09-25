@@ -126,9 +126,9 @@ $ CVT_LIVE_CONTROLLER='127.0.0.1:9090|your-secret' \
   cargo test -p cvt-core --test live_controller -- --test-threads=1 --nocapture
 ```
 
-The counterexamples the property suite has found are kept as `#[ignore]`d
-tests rather than deleted, so each known defect has a reproduction attached
-and unfixing it is a visible act.
+The counterexamples every adversarial review has found are kept as **passing
+tests** in `tests/recheck*.rs` rather than deleted, so each defect that was
+once real has a reproduction attached and regressing it is a visible act.
 
 ## Relationship to other projects
 

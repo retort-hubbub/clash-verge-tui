@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cvt unlock` — whether the exit can reach the services people actually ask
+  about. A latency number says a socket opened; it does not say whether the
+  other end will serve you, and a node can be fast, in the right country, and
+  on a range the streaming services have already blocked. Four services that
+  genuinely answer differently by region are asked through the core's proxy,
+  and **the evidence is printed beside every verdict**: a tool that says
+  `Netflix: unlocked` and cannot show why is one whose answer cannot be
+  checked, and these probes are wrong often enough — services change their
+  pages, a probe URL that worked last month may answer a login wall today —
+  that seeing the response is the difference between a reading and a guess. An
+  answer that says nothing either way is reported as `unknown` rather than
+  rounded to one of the other two.
 - `cvt geo` — the address and location the traffic comes out at, asked *through
   the core's own proxy port* so the answer describes the tunnel rather than the
   machine. `--direct` asks the same question without the proxy, and the pair is

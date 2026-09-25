@@ -14,10 +14,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use cvt_core::error::Error;
-use cvt_core::model::config::Config;
 use serde::Serialize;
 
 use crate::cli::GeoArgs;
+use crate::commands::{proxied_client, proxy_port};
 use crate::context::Ctx;
 use crate::output::{Fields, Output, Report};
 
@@ -91,11 +91,11 @@ impl Report for GeoReport {
 pub async fn run(ctx: &Ctx, args: &GeoArgs) -> Result<()> {
     let timeout = Duration::from_millis(args.timeout.unwrap_or(10_000));
     let (client, via) = if args.direct {
-        (build(None, timeout)?, "direct".to_owned())
+        (proxied_client(None, timeout)?, "direct".to_owned())
     } else {
         let port = proxy_port(ctx)?;
         (
-            build(Some(port), timeout)?,
+            proxied_client(Some(port), timeout)?,
             format!("the core's proxy on 127.0.0.1:{port}"),
         )
     };
@@ -140,43 +140,6 @@ struct Found {
     region: Option<String>,
     city: Option<String>,
     org: Option<String>,
-}
-
-/// A client pointed at the core's proxy port, or at nothing.
-fn build(proxy_port: Option<u16>, timeout: Duration) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(timeout)
-        .user_agent(concat!("clash-verge-tui/", env!("CARGO_PKG_VERSION")));
-    if let Some(port) = proxy_port {
-        builder = builder.proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}"))?);
-    }
-    builder.build().map_err(|e| Error::http("geo", e).into())
-}
-
-/// The port the core is listening on, from the generated configuration.
-fn proxy_port(ctx: &Ctx) -> Result<u16> {
-    let path = ctx.paths().runtime_config();
-    if !path.is_file() {
-        return Err(Error::invalid(
-            "runtime config",
-            format!(
-                "{} does not exist yet; run `clash-verge-tui config generate --apply`",
-                path.display()
-            ),
-        )
-        .into());
-    }
-    let yaml = ctx.paths().read(&path)?;
-    let config = Config::from_yaml(&yaml)?;
-    config.effective_proxy_port().ok_or_else(|| {
-        Error::invalid(
-            "mixed-port",
-            "the generated configuration has no `mixed-port`, `port` or `socks-port`, \
-             so there is no proxy to ask through; use `--direct` for this machine's own \
-             address",
-        )
-        .into()
-    })
 }
 
 /// Ask one source, and read whatever shape it answers in.

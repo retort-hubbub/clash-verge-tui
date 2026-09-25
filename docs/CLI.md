@@ -290,6 +290,32 @@ a reason for this command to have nothing to say.
 
 *JSON:* `cvt.geo.v1`.
 
+### `unlock`
+
+| Flag | Meaning |
+|---|---|
+| `--timeout MS` | how long to wait per service, default 15000 |
+
+Asks four services that genuinely answer differently by region, through the
+core's proxy, and prints **the evidence beside every verdict**:
+
+```console
+$ cvt unlock
+service          verdict   evidence
+youtube-premium  unlocked  HTTP 200, region GB
+netflix          unlocked  HTTP 200 for a region-locked title
+chatgpt          unlocked  HTTP 200 from the session endpoint
+disney-plus      unlocked  HTTP 200
+```
+
+`unknown` is a real answer here and means the response said nothing either way
+— a login wall, a rate limit, a redesign. Rounding one of those to `blocked`
+would be a guess presented as a reading, so it is not done. The evidence is
+printed for the same reason: these probes read other people's pages, and a
+verdict nobody can check is worth less than the response it came from.
+
+*JSON:* `cvt.unlock.v1`.
+
 ### `core`
 
 | Command | Effect |

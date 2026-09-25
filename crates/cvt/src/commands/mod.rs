@@ -21,9 +21,11 @@ pub mod rules;
 pub mod status;
 pub mod test;
 pub mod theme;
+pub mod unlock;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use cvt_core::enhance::diff::{Change, Diff};
@@ -31,7 +33,7 @@ use cvt_core::enhance::pipeline::{AppliedProfile, Outcome};
 use cvt_core::error::Error;
 use cvt_core::mihomo::client::Client;
 use cvt_core::mihomo::supervisor::CoreStatus;
-use cvt_core::model::config::ConfigStats;
+use cvt_core::model::config::{Config, ConfigStats};
 use cvt_core::validate::Report as ValidationReport;
 use futures_util::stream::{self, StreamExt as _};
 use serde::Serialize;
@@ -56,6 +58,7 @@ pub async fn dispatch(ctx: &Ctx, command: &Command) -> Result<()> {
         }
         Command::Profiles { command } => profiles::run(ctx, command).await,
         Command::Geo(args) => geo::run(ctx, args).await,
+        Command::Unlock(args) => unlock::run(ctx, args).await,
         Command::Backup { command } => backup::run(ctx, command).await,
         Command::Config { command } => config::run(ctx, command).await,
         Command::Proxies { command } => proxies::run(ctx, command).await,
@@ -609,6 +612,43 @@ pub fn nodes_by_group(groups: &[cvt_core::mihomo::types::ProxyView]) -> Vec<(Str
 pub fn test_defaults(ctx: &Ctx) -> (String, u32, usize) {
     let test = &ctx.settings().test;
     (test.url.clone(), test.timeout_ms, test.concurrency.max(1))
+}
+
+/// A client pointed at the core's proxy port, or at nothing.
+pub fn proxied_client(proxy_port: Option<u16>, timeout: Duration) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent(concat!("clash-verge-tui/", env!("CARGO_PKG_VERSION")));
+    if let Some(port) = proxy_port {
+        builder = builder.proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}"))?);
+    }
+    builder.build().map_err(|e| Error::http("geo", e).into())
+}
+
+/// The port the core is listening on, from the generated configuration.
+pub fn proxy_port(ctx: &Ctx) -> Result<u16> {
+    let path = ctx.paths().runtime_config();
+    if !path.is_file() {
+        return Err(Error::invalid(
+            "runtime config",
+            format!(
+                "{} does not exist yet; run `clash-verge-tui config generate --apply`",
+                path.display()
+            ),
+        )
+        .into());
+    }
+    let yaml = ctx.paths().read(&path)?;
+    let config = Config::from_yaml(&yaml)?;
+    config.effective_proxy_port().ok_or_else(|| {
+        Error::invalid(
+            "mixed-port",
+            "the generated configuration has no `mixed-port`, `port` or `socks-port`, \
+             so there is no proxy to ask through; use `--direct` for this machine's own \
+             address",
+        )
+        .into()
+    })
 }
 
 /// `--url`, `--timeout` and `--concurrency`, falling back to settings.

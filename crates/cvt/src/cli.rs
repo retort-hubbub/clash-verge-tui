@@ -68,6 +68,9 @@ pub enum Command {
     /// Show the address and location the traffic comes out at
     Geo(GeoArgs),
 
+    /// Check whether the exit can reach the services people ask about
+    Unlock(UnlockArgs),
+
     /// Save or restore the profiles, settings and overrides
     Backup {
         /// Which backup operation to run
@@ -428,6 +431,14 @@ pub struct DelayArgs {
     /// Which arguments apply to a node test
     #[command(flatten)]
     pub node: NodeTestArgs,
+}
+
+/// Arguments of `unlock`.
+#[derive(Debug, Args)]
+pub struct UnlockArgs {
+    /// How long to wait per service, in milliseconds
+    #[arg(long, value_name = "MS")]
+    pub timeout: Option<u64>,
 }
 
 /// Arguments of `geo`.

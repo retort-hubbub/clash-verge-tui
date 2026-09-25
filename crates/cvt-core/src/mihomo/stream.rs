@@ -233,6 +233,7 @@ impl Stream {
     ///
     /// # Errors
     /// [`Error::InvalidValue`] if the endpoint is malformed.
+    #[allow(clippy::needless_pass_by_value)] // ownership reads better at call sites
     pub fn spawn(endpoint: Endpoint, options: Options) -> Result<Self> {
         endpoint.validate()?;
         let (tx, rx) = mpsc::channel(options.buffer);

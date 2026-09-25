@@ -25,6 +25,7 @@ pub mod error;
 pub mod mihomo;
 pub mod model;
 pub mod paths;
+pub mod profile;
 pub mod validate;
 
 pub use error::{Error, Result};

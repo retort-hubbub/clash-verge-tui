@@ -501,10 +501,37 @@ pub fn check(config: &Config) -> Report {
 }
 
 fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mut Report) {
+    let loc = format!("rules[{index}]");
+    // A payload-less rule takes `KIND,POLICY` and the flags a rule may carry.
+    // Anything else is a payload by position, which is what this code is for —
+    // and it used to be dead code, because the parser discarded the field
+    // before anything could look at it. The code keeps its name even though
+    // `FINAL` is payload-less too: a diagnostic code is an interface, and
+    // renaming one for tidiness breaks whoever matched on it.
+    if rule.payload.is_none() {
+        if let Some(stray) = rule.params.iter().find(|p| {
+            !crate::model::rule::RULE_FLAGS
+                .iter()
+                .any(|flag| flag.eq_ignore_ascii_case(p))
+        }) {
+            report.diagnostics.push(
+                Diagnostic::error(
+                    "E-MATCH-WITH-PAYLOAD",
+                    format!(
+                        "`{rule}` gives a payload to {}; `{stray}` is not a flag a rule may \
+                         carry either",
+                        rule.kind
+                    ),
+                )
+                .at(loc)
+                .fix(format!("write `{},<policy>`", rule.kind)),
+            );
+        }
+        return;
+    }
     let Some(payload) = rule.payload.as_deref() else {
         return;
     };
-    let loc = format!("rules[{index}]");
     match rule.kind.as_str() {
         "IP-CIDR" | "IP-CIDR6" | "SRC-IP-CIDR" => {
             if !payload.contains('/') {
@@ -525,7 +552,7 @@ fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mu
                         "E-CIDR-FAMILY",
                         format!("`{rule}` uses the wrong address family for `{}`", rule.kind),
                     )
-                    .at(loc.clone())
+                    .at(loc)
                     .fix(if want_v6 {
                         "use `IP-CIDR` for IPv4, `IP-CIDR6` for IPv6"
                     } else {
@@ -541,22 +568,12 @@ fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mu
                         "W-DOMAIN-WILDCARD",
                         format!("`{rule}`: `DOMAIN-SUFFIX` already matches subdomains"),
                     )
-                    .at(loc.clone())
+                    .at(loc)
                     .fix("write the bare domain, e.g. `google.com`"),
                 );
             }
         }
         _ => {}
-    }
-    if rule.kind == "MATCH" {
-        report.diagnostics.push(
-            Diagnostic::error(
-                "E-MATCH-WITH-PAYLOAD",
-                format!("`{rule}` gives a payload to MATCH, which takes none"),
-            )
-            .at(loc)
-            .fix("write `MATCH,<policy>`"),
-        );
     }
 }
 

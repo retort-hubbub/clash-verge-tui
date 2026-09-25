@@ -513,18 +513,17 @@ fn claim2_the_documented_shapes_round_trip() {
 }
 
 #[test]
-#[ignore = "finding F10: a payload-less rule silently drops every field after the policy"]
-fn f10_a_match_rule_with_extra_fields_is_truncated_not_rejected() {
-    // `Rule::parse` documents that it "tolerate[s] a stray payload field
-    // defensively", but it then discards the parameters as well, so the
-    // round-trip is not byte-exact for an input the parser accepts — and the
-    // validator's E-MATCH-WITH-PAYLOAD branch is unreachable as a result.
+fn a_payload_less_rule_keeps_its_flags_and_reports_a_stray_payload() {
+    // F10: the parser used to discard everything after the policy on a
+    // payload-less rule, which made the round trip lossy for an input it
+    // accepted and left the validator's payload check unreachable.
     let rule = Rule::parse("MATCH,DIRECT,no-resolve").unwrap();
     assert_eq!(rule.params, vec!["no-resolve"], "params must be preserved");
     assert_eq!(rule.to_string(), "MATCH,DIRECT,no-resolve");
 
-    // Because a payload-less rule can never carry a payload, the validator's
-    // E-MATCH-WITH-PAYLOAD branch is dead code and no config can reach it.
+    // `no-resolve` is a flag a rule may carry, so the line above is legal. A
+    // field that is not a flag is a payload by position, and that is what the
+    // validator now reports instead of dropping it.
     let config = Config::from_yaml("rules: ['MATCH,GHOST,extra']\n").unwrap();
     let codes: Vec<&str> = validate::check(&config)
         .diagnostics
@@ -533,8 +532,7 @@ fn f10_a_match_rule_with_extra_fields_is_truncated_not_rejected() {
         .collect();
     assert!(
         codes.contains(&"E-MATCH-WITH-PAYLOAD"),
-        "E-MATCH-WITH-PAYLOAD is unreachable; `MATCH,GHOST,extra` only produced {codes:?}, \
-         and `extra` was dropped without a word"
+        "`MATCH,GHOST,extra` carries a field MATCH does not take, but check() produced {codes:?}"
     );
 }
 

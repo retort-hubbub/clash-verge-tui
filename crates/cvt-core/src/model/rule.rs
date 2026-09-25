@@ -38,6 +38,14 @@ pub struct Rule {
 /// Rule types that take no payload, where the second field is the policy.
 const PAYLOADLESS: &[&str] = &["MATCH", "FINAL"];
 
+/// Flags a rule may carry after its policy.
+///
+/// Anything else in that position is not a flag this knows about, and on a
+/// payload-less rule it is a payload by position — which is what
+/// `E-MATCH-WITH-PAYLOAD` reports. The list is deliberately short: it is what
+/// mihomo's own parser accepts, not everything a configuration might contain.
+pub const RULE_FLAGS: &[&str] = &["no-resolve"];
+
 impl Rule {
     /// Build a rule from its parts.
     #[must_use]
@@ -70,13 +78,24 @@ impl Rule {
         }
         let kind = parts[0].trim().to_ascii_uppercase();
         if PAYLOADLESS.contains(&kind.as_str()) {
-            // MATCH,POLICY — tolerate a stray payload field defensively.
+            // `MATCH,POLICY` and nothing else, apart from the flags a rule may
+            // carry. What follows the policy is kept rather than dropped: a
+            // parser that accepts an input and then changes it is the one
+            // thing a lossless round trip cannot survive, and dropping the
+            // field here is also what made `E-MATCH-WITH-PAYLOAD` unreachable.
             let policy = parts.get(1).map_or("DIRECT", |s| s.trim()).to_owned();
             return Some(Self {
                 kind,
                 payload: None,
                 policy,
-                params: Vec::new(),
+                // A bare `MATCH` has no policy field at all, so there is
+                // nothing after index 1 to look at.
+                params: parts
+                    .get(2..)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|s| s.trim().to_owned())
+                    .collect(),
             });
         }
         if parts.len() < 3 {

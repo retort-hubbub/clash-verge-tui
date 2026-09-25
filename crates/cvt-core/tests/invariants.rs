@@ -557,10 +557,12 @@ proptest! {
         }
     }
 
-    /// Fails today: see `f3_...`. The property is kept so that a fix can be
-    /// confirmed by removing the `#[ignore]`.
+    /// F3 was a real defect: `push` materialised the keys it needed on the way
+    /// down and only then discovered that the leaf was not a list, so a call
+    /// that reported failure had still changed the document. It now walks the
+    /// path read-only first, and this is the property that says so — over
+    /// thousands of generated documents, not the one input the finding used.
     #[test]
-    #[ignore = "finding F3: a failed push materialises intermediate keys before rejecting"]
     fn claim3_push_is_atomic(doc in arb_document(), path_text in arb_path(), item in arb_value()) {
         let Ok(path) = Path::parse(&path_text) else {
             return Ok(());
@@ -574,8 +576,7 @@ proptest! {
 }
 
 #[test]
-#[ignore = "finding F3: a failed push materialises intermediate keys before rejecting the target"]
-fn f3_a_failed_push_reports_an_error_after_mutating_the_document() {
+fn a_failed_push_reports_an_error_without_mutating_the_document() {
     let mut doc = json!({});
     let before = doc.clone();
     // `push` always names a *list*; `a[0]` names an element, so this must fail

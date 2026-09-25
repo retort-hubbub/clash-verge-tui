@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `protect_dns: true` on a base profile keeps its own `dns` section whatever an
+  enhancement says, and reports that it did. A subscription that ships a `dns`
+  block usually ships one tuned to its own resolvers, and an override written
+  for a different subscription quietly replacing it is how a working
+  configuration starts resolving through somebody else's server.
+
+  It is the same mechanism as the control plane — a key the base declared that
+  no enhancement may change — so it is a *list* on the pipeline rather than a
+  second special case beside it.
+
+### Added
+
 - `cvt proxies chain <node>` draws a proxy's `dialer-proxy` chain and says
   whether it loops. The core reports the field and nothing draws the chain, so
   a loop, or a name that does not exist, is something the user meets as a core

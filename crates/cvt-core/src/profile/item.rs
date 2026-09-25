@@ -143,6 +143,16 @@ pub struct PrfOption {
     /// Minutes between automatic refreshes; `0` or absent disables it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_interval: Option<u64>,
+    /// Keep this profile's own `dns` section, whatever an enhancement says.
+    ///
+    /// `clash-verge-rev` has the same switch, and the reason is the same: a
+    /// subscription that ships a `dns` block usually ships one tuned to its own
+    /// resolvers, and a merge or an override written for a *different*
+    /// subscription quietly replacing it is how a working configuration becomes
+    /// one that resolves through somebody else's server. Read from the **base**
+    /// profile, because that is the one whose DNS is being protected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protect_dns: Option<bool>,
     /// Whether `cvt update` may refresh this profile unattended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_auto_update: Option<bool>,

@@ -211,6 +211,26 @@ and rolls back if the core will not come up with the new one. `cvt config
 rollback` restores the last snapshot by hand, and `cvt config snapshots` lists
 them.
 
+## A base profile can keep its own DNS
+
+A subscription that ships a `dns` block usually ships one tuned to its own
+resolvers. An enhancement written for a *different* subscription quietly
+replacing it is how a working configuration starts resolving through somebody
+else's server. The base profile can refuse that:
+
+```yaml
+# profiles.yaml, on the base entry
+option:
+  protect_dns: true
+```
+
+Its own `dns` section is then restored after every enhancement, and the warning
+names it — an override that does not take effect has to say so, or the user
+edits it again. Two limits are deliberate: a base with no `dns` of its own
+protects nothing (there is nothing to restore, and an enhancement adding one is
+doing what was asked), and the switch protects the *whole* section rather than
+named keys, because "keep my DNS" is the thing a person means.
+
 ## What an override cannot do
 
 The control plane — `external-controller`, its TLS/unix/pipe variants, `secret`

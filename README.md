@@ -94,9 +94,6 @@ homes it found.
   together and why.
 - [`docs/adr/`](docs/adr/) — the decisions behind the design, with the
   alternatives that were rejected.
-- [`docs/VERIFICATION-REPORT.md`](docs/VERIFICATION-REPORT.md) — an
-  independent adversarial review of this codebase: what it found, what it
-  could not substantiate, and what it did not cover.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — the GitFlow workflow, commit
   conventions, and the architecture rules that are not negotiable.
 

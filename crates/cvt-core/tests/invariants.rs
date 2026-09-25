@@ -15,8 +15,11 @@
 //! cargo test -p cvt-core --test invariants -- --ignored
 //! ```
 //!
-//! Each `#[ignore]` reason names the finding it belongs to; the matching
-//! analysis, severity and file:line live in `docs/VERIFICATION-REPORT.md`.
+//! Each `#[ignore]` reason names the finding, and the test body carries the
+//! reproduction: the input that breaks the invariant and why the code
+//! violates it. Nothing here depends on the audit that produced these — its
+//! report is a document *about* the code, lists defects that are still open,
+//! and is deliberately kept out of the repository.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 

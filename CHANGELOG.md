@@ -61,8 +61,6 @@ Nothing yet.
   `model/config.rs` has been citing since the document type was written.
 - `deny.toml` — the dependency policy, whose allowed-license set was
   enumerated from the lockfile rather than guessed.
-- `docs/VERIFICATION-REPORT.md` — an independent adversarial review, including
-  the findings it could not substantiate and the areas it did not cover.
 - `CONTRIBUTING.md` documenting the GitFlow workflow and architecture rules.
 
 ### Fixed

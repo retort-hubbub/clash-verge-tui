@@ -234,7 +234,10 @@ impl Report for AddReport {
 
     fn render(&self, _out: Output) -> String {
         let mut fields = Fields::new();
-        fields.push("added", format!("{} ({})", self.uid, self.url));
+        // The action, not the word "added": `profiles edit-url` reports through
+        // this shape too, and printing "added" for a URL that was changed is a
+        // report of something that did not happen.
+        fields.push(self.action, format!("{} ({})", self.uid, self.url));
         fields.push("download", self.result.describe());
         fields.push_opt(
             "hint",
@@ -302,22 +305,33 @@ async fn edit_url(ctx: &Ctx, uid: &str, url: &str, no_fetch: bool) -> Result<()>
              run `clash-verge-tui profiles update {uid}` before the next generate",
             previous.as_deref().unwrap_or("its previous URL")
         ));
-        return ctx.out().emit(&ProfileChangeReport {
-            action: "url changed",
+        return ctx.out().emit(&UrlChangeReport {
             uid: uid.to_owned(),
-            name: url,
-            detail: "not fetched; the document is still the previous provider's".to_owned(),
+            url,
+            previous,
+            fetched: false,
+            download: None,
         });
     }
 
     let result = fetch_one(ctx, uid).await;
     let ok = result.ok;
-    ctx.out().emit(&AddReport {
-        action: "url changed",
+    if !ok {
+        // Put back. The index is written before the fetch because the fetcher
+        // reads the URL from it, and leaving the new one behind on a failure
+        // means every refusal leaves the profile pointing at something that
+        // cannot download — the state `--no-fetch` exists to *warn* about, and
+        // this path made it the default.
+        if let Some(previous) = previous.as_deref() {
+            ctx.edit_store(|store| store.set_url(uid, previous))?;
+        }
+    }
+    ctx.out().emit(&UrlChangeReport {
         uid: uid.to_owned(),
         url,
-        ok,
-        result,
+        previous,
+        fetched: true,
+        download: Some(result),
     })?;
     if !ok {
         return Err(Exit::failure(format!(
@@ -327,6 +341,47 @@ async fn edit_url(ctx: &Ctx, uid: &str, url: &str, no_fetch: bool) -> Result<()>
         .into());
     }
     Ok(())
+}
+
+/// The result of `profiles edit-url`.
+///
+/// One shape for one command. The first version reported through `AddReport`
+/// when it fetched and `ProfileChangeReport` when it did not, so a caller
+/// parsing `--json` had to handle `cvt.profiles.added.v1` and
+/// `cvt.profiles.changed.v1` for the same operation — and the first of those
+/// says "added" about something that was not added.
+#[derive(Debug, Serialize)]
+pub struct UrlChangeReport {
+    /// The profile whose URL changed.
+    pub uid: String,
+    /// The URL it now points at.
+    pub url: String,
+    /// What it pointed at before, when it had a URL at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    /// Whether the new URL was downloaded from.
+    pub fetched: bool,
+    /// The download, when there was one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download: Option<UpdateRow>,
+}
+
+impl Report for UrlChangeReport {
+    fn schema(&self) -> &'static str {
+        "cvt.profiles.url.v1"
+    }
+
+    fn render(&self, _out: Output) -> String {
+        let mut fields = Fields::new();
+        fields.push("url", format!("{} -> {}", self.uid, self.url));
+        fields.push_opt("was", self.previous.clone());
+        if let Some(download) = &self.download {
+            fields.push("download", download.describe());
+        } else {
+            fields.push("document", "still the previous provider's".to_owned());
+        }
+        fields.render()
+    }
 }
 
 fn switch(ctx: &Ctx, uid: &str) -> Result<()> {

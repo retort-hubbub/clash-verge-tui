@@ -12,15 +12,31 @@
 //! worked last month may answer a login wall today — that being able to see the
 //! evidence is the difference between a reading and a guess.
 
-use std::time::Duration;
-
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::cli::UnlockArgs;
-use crate::commands::{proxied_client, proxy_port};
+use crate::commands::{check_request_timeout, proxied_client, proxy_port};
 use crate::context::Ctx;
 use crate::output::{Output, Report, Table};
+
+/// How much of a page is read to find a signal in it.
+const BODY_LIMIT: usize = 64 * 1024;
+
+/// Read at most `limit` bytes of a response body.
+async fn read_prefix(response: reqwest::Response, limit: usize) -> String {
+    use futures_util::StreamExt as _;
+    let mut body: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(Ok(chunk)) = stream.next().await {
+        let room = limit.saturating_sub(body.len());
+        if room == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
 
 /// What one probe concluded, and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -133,7 +149,7 @@ impl Report for UnlockReport {
 /// [`Error::InvalidValue`] when there is no generated configuration to read a
 /// proxy port from.
 pub async fn run(ctx: &Ctx, args: &UnlockArgs) -> Result<()> {
-    let timeout = Duration::from_millis(args.timeout.unwrap_or(15_000));
+    let timeout = check_request_timeout(args.timeout.unwrap_or(15_000))?;
     let port = proxy_port(ctx)?;
     let client = proxied_client(Some(port), timeout)?;
     let via = format!("the core's proxy on 127.0.0.1:{port}");
@@ -171,7 +187,9 @@ async fn ask(client: &reqwest::Client, probe: &Probe) -> UnlockRow {
     let status = response.status();
     let delay_ms = u64::try_from(started.elapsed().as_millis()).ok();
     // Bounded: these are pages, and only a prefix is needed to read a signal.
-    let body = response.text().await.unwrap_or_default();
+    // The crate already had a bound for the subscription fetcher and this
+    // command stated one it did not have.
+    let body = read_prefix(response, BODY_LIMIT).await;
     let (verdict, evidence) = read(probe.name, status.as_u16(), &body);
     UnlockRow {
         service: probe.name.to_owned(),
@@ -199,6 +217,16 @@ fn read(service: &str, status: u16, body: &str) -> (Verdict, String) {
                 (Verdict::Unknown, format!("HTTP {status}"))
             }
         }
+        // A login wall or a rate-limit page arrives as `HTTP 200` — the
+        // redirect is followed and the reading is handed the login page — so
+        // every arm whose signal is the status has to look at the body first.
+        // `docs/CLI.md` promises exactly this: "`unknown` is a real answer here
+        // and means the response said nothing either way — a login wall, a
+        // rate limit, a redesign".
+        _ if is_a_wall(body) => (
+            Verdict::Unknown,
+            format!("HTTP {status}: a login wall or a notice, not the service"),
+        ),
         "netflix" => match status {
             200 => (
                 Verdict::Unlocked,
@@ -233,6 +261,27 @@ fn read(service: &str, status: u16, body: &str) -> (Verdict, String) {
         },
         _ => (Verdict::Unknown, format!("HTTP {status}")),
     }
+}
+
+/// Whether a 200 is really a wall rather than the service.
+///
+/// Matched on phrases these pages actually use. Deliberately a short list and a
+/// conservative one: a false positive turns a working service into `unknown`,
+/// which is a smaller lie than the reverse but still a lie.
+fn is_a_wall(body: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "sign in to continue",
+        "log in to continue",
+        "please log in",
+        "please sign in",
+        "too many requests",
+        "rate limit",
+        "captcha",
+        "unusual traffic",
+        "not available in your",
+    ];
+    let lower = body.to_ascii_lowercase();
+    MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
 /// The text between two markers, when both are present.

@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A restore **checks every destination before it writes anything**. A refusal
+  used to come halfway through, leaving the home as two configurations at once
+  with nothing saying so.
+- A restore refuses a destination that is a *fifo* — `std::fs::copy` opens the
+  destination before it reads the source, and a fifo with no reader blocks that
+  open forever, so `cvt backup restore` was a hung process with no output.
+- A destination that is a *hard link* is replaced rather than written through.
+  `std::fs::copy` truncates the inode, so a document that was a second name for
+  a file outside the home had that file edited — the escape the symlink guard
+  refuses, one `symlink_metadata` further down. The name is unlinked first, so
+  the other name keeps what it had.
+- `backup()` **reserves** its directory instead of looking for a free name, and
+  prunes only entries older than the second it is writing. Two backups in one
+  second both chose the same name, both wrote into one directory, and each
+  pruned around the other; a pruned name was then re-reserved, so two callers
+  were handed the same directory. 24 concurrent backups left 3 of 3 returned
+  paths holding nothing.
+- A backup taken from a home with no profile index is restorable. The check
+  demanded `profiles.yaml`, which is the one file such a home does not have, so
+  this program refused a directory it had written itself.
+- The mapping from a backup's name to its sequence is injective. `<stamp>-2-3`,
+  `<stamp>-overflow` and `<stamp>-1` each parsed to something, two of them to
+  the same something, and a tie the sequence cannot break is the bug it exists
+  for.
+- `wait_until_ready` bounds each call. It promised ten seconds and took thirty
+  against a core that accepts the connection and answers nothing — the fifth
+  place in this codebase where a deadline was checked between calls rather than
+  around them.
+- `cvt profiles edit-url` puts the old URL back when the new one cannot be
+  fetched, reports through **one** schema (`cvt.profiles.url.v1`) rather than
+  two, and no longer says "added" about something that was not added.
+- `cvt geo` and `cvt unlock` hold `--timeout` to the same kind of check every
+  other command does. `--timeout 0` expired before a request was sent and every
+  service was reported as having said nothing.
+- `cvt geo` tries the next source when one answers without an address, as its
+  own documentation says; it used to take the first answer however empty.
+- `cvt unlock` reads a login wall or a rate-limit page as `unknown` rather than
+  `unlocked`. Both arrive as `HTTP 200`, and `docs/CLI.md` promises exactly the
+  opposite in as many words.
+- Both new commands read a bounded prefix of a response rather than the whole
+  body.
+
 ### Added
 
 - `cvt profiles edit-url <uid> <url>` changes a subscription's address and

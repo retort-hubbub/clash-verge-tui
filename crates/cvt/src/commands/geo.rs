@@ -10,14 +10,12 @@
 //! side by side are the whole point: the interesting fact is not your address
 //! or the node's, it is that they differ.
 
-use std::time::Duration;
-
 use anyhow::Result;
 use cvt_core::error::Error;
 use serde::Serialize;
 
 use crate::cli::GeoArgs;
-use crate::commands::{proxied_client, proxy_port};
+use crate::commands::{check_request_timeout, proxied_client, proxy_port};
 use crate::context::Ctx;
 use crate::output::{Fields, Output, Report};
 
@@ -27,6 +25,9 @@ use crate::output::{Fields, Output, Report};
 /// refusing a request from a given country, is not a reason for this command to
 /// have nothing to say. The plain-text one is last and is the only one that
 /// needs no JSON parsing, so it works when a service has changed its shape.
+/// How much of a response is read to find an address in it.
+const BODY_LIMIT: usize = 64 * 1024;
+
 const SOURCES: &[&str] = &[
     "https://ipinfo.io/json",
     "https://api.ip.sb/geoip",
@@ -89,7 +90,7 @@ impl Report for GeoReport {
 /// [`Error::InvalidValue`] when there is no generated configuration to read a
 /// proxy port from, and [`Error::Http`] when every source failed.
 pub async fn run(ctx: &Ctx, args: &GeoArgs) -> Result<()> {
-    let timeout = Duration::from_millis(args.timeout.unwrap_or(10_000));
+    let timeout = check_request_timeout(args.timeout.unwrap_or(10_000))?;
     let (client, via) = if args.direct {
         (proxied_client(None, timeout)?, "direct".to_owned())
     } else {
@@ -104,6 +105,14 @@ pub async fn run(ctx: &Ctx, args: &GeoArgs) -> Result<()> {
     let mut failures = Vec::new();
     for source in SOURCES {
         match fetch(&client, source).await {
+            // An answer with no address in it is not an answer. A service that
+            // replies 200 with a rate-limit notice used to be taken as the
+            // first source's verdict, and the other two were never tried — so
+            // the report went out with the address blank, which is exactly what
+            // the three-source list exists to avoid.
+            Ok(found) if found.ip.is_empty() => {
+                failures.push(format!("{source}: answered without an address"));
+            }
             Ok(found) => {
                 let delay_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let summary = format!("{} via {via}", found.ip);
@@ -157,11 +166,34 @@ async fn fetch(client: &reqwest::Client, source: &str) -> Result<Found> {
         )
         .into());
     }
-    let body = response.text().await.map_err(|e| Error::http(source, e))?;
+    // A prefix, not the whole body: these are other people's pages, and one
+    // of them answering with a megabyte of HTML should not be read into memory
+    // to find out that it holds no address.
+    let body = read_prefix(response, source, BODY_LIMIT).await?;
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
         return Ok(from_json(&value));
     }
     Ok(from_trace(&body))
+}
+
+/// Read at most `limit` bytes of a response body.
+///
+/// These are other people's pages: one answering with a megabyte of HTML should
+/// not be read into memory to discover that it holds no address. The prefix is
+/// enough for every shape the three sources use.
+async fn read_prefix(response: reqwest::Response, source: &str, limit: usize) -> Result<String> {
+    use futures_util::StreamExt as _;
+    let mut body: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| Error::http(source, e))?;
+        let room = limit.saturating_sub(body.len());
+        if room == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 /// The three JSON shapes these services use.

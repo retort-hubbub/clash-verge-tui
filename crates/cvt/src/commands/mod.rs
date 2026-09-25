@@ -614,6 +614,31 @@ pub fn test_defaults(ctx: &Ctx) -> (String, u32, usize) {
     (test.url.clone(), test.timeout_ms, test.concurrency.max(1))
 }
 
+/// The longest a request this program makes on its own behalf may wait.
+///
+/// A different value kind from `MAX_TEST_TIMEOUT_MS` — that one is the core's
+/// int16 for `/delay`, this one is a local HTTP client's timeout — but the same
+/// *flag name*, and a flag name checked in one place and not another is the
+/// class this project has fixed six times. `--timeout 0` expired before a
+/// request was sent, and every service was then reported as having said
+/// nothing.
+pub const MAX_REQUEST_TIMEOUT_MS: u64 = 120_000;
+
+/// A `--timeout` from a command that makes its own requests.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when it is zero or beyond [`MAX_REQUEST_TIMEOUT_MS`].
+pub fn check_request_timeout(asked: u64) -> Result<Duration> {
+    if asked == 0 || asked > MAX_REQUEST_TIMEOUT_MS {
+        return Err(Error::invalid(
+            "timeout",
+            format!("{asked} ms is outside the range 1 to {MAX_REQUEST_TIMEOUT_MS}"),
+        )
+        .into());
+    }
+    Ok(Duration::from_millis(asked))
+}
+
 /// A client pointed at the core's proxy port, or at nothing.
 pub fn proxied_client(proxy_port: Option<u16>, timeout: Duration) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()

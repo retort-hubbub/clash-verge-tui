@@ -183,6 +183,17 @@ impl Backup {
     }
 }
 
+/// Whether a directory is one of this program's backups.
+///
+/// The four things [`copy_state`] writes, any of which is evidence: a home that
+/// has never saved its settings or had an index still produces a backup, and a
+/// check demanding one particular file refuses the program's own output.
+fn looks_like_a_backup(dir: &Path) -> bool {
+    ["cvt.yaml", "profiles.yaml", "profiles", "overrides"]
+        .iter()
+        .any(|name| dir.join(name).exists())
+}
+
 /// Copy the state a user would have to recreate by hand.
 ///
 /// Two directories rather than an [`AppPaths`] and a directory, because the
@@ -229,6 +240,116 @@ fn is_same_file(left: &Path, right: &Path) -> bool {
     same.is_some() && same == std::fs::canonicalize(right).ok()
 }
 
+/// Everything a copy would write, checked before any of it is written.
+///
+/// A restore that refuses halfway has already replaced part of the home, and
+/// the state it leaves is two configurations at once with nothing saying so.
+/// The refusal has to come first, which means walking the whole tree — the
+/// sources *and* the destinations — before the first byte moves.
+///
+/// # Errors
+/// [`Error::InvalidValue`] naming the first destination that cannot be written.
+fn check_copy(from: &Path, to: &Path) -> Result<()> {
+    for name in ["cvt.yaml", "profiles.yaml"] {
+        let source = from.join(name);
+        if source.is_file() {
+            check_destination(&source, &to.join(name))?;
+        }
+    }
+    for name in ["profiles", "overrides"] {
+        let source = from.join(name);
+        if !source.is_dir() {
+            continue;
+        }
+        check_directory_destination(&to.join(name))?;
+        let Ok(entries) = std::fs::read_dir(&source) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                check_destination(
+                    &source.join(entry.file_name()),
+                    &to.join(name).join(entry.file_name()),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a directory destination can be written.
+///
+/// A directory has its own two answers: a *symlink* would be followed, putting
+/// everything outside the home, and something that is not a directory at all —
+/// a file where `profiles/` belongs — cannot hold what is being copied into it.
+fn check_directory_destination(path: &Path) -> Result<()> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if meta.file_type().is_symlink() {
+        return Err(Error::invalid(
+            "backup",
+            format!(
+                "{} is a symbolic link; writing through it would put the files \
+                 outside the home. Remove the link, or restore by hand.",
+                path.display()
+            ),
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(Error::invalid(
+            "backup",
+            format!(
+                "{} is not a directory, so the files that belong in it cannot be \
+                 restored there",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether one file destination can be written, and why not when it cannot.
+///
+/// Four answers, and the first three are the ones this function exists for:
+/// a *symlink* would be followed, putting the file outside the home; a *fifo*
+/// blocks `std::fs::copy`'s open forever, so the command hangs with no output
+/// rather than failing; and a *hard link* — one inode, two names — is a second
+/// name for a file this program did not create, and truncating it edits that
+/// file. Everything else that is a regular file, or is not there, is fine.
+fn check_destination(source: &Path, path: &Path) -> Result<()> {
+    // A destination that already *is* the source's file needs nothing, and a
+    // link pointing at the source is that: refusing it would refuse a restore
+    // that has nothing to do. The order matters and got it wrong once.
+    if is_same_file(source, path) {
+        return Ok(());
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if meta.file_type().is_symlink() {
+        return Err(Error::invalid(
+            "backup",
+            format!(
+                "{} is a symbolic link; writing through it would put the files \
+                 outside the home. Remove the link, or restore by hand.",
+                path.display()
+            ),
+        ));
+    }
+    if !meta.is_file() {
+        return Err(Error::invalid(
+            "backup",
+            format!(
+                "{} is not a regular file, so a copy into it would block or fail; \
+                 remove it, or restore by hand",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Copy one file, refusing to copy it onto itself.
 ///
 /// The guard is here and not only at the entry points, because this is the
@@ -244,6 +365,22 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     // back.
     if is_same_file(source, destination) {
         return Ok(());
+    }
+    check_destination(source, destination)?;
+    // A destination that is a *hard link* is replaced rather than written
+    // through. `std::fs::copy` truncates the inode, so a document that is a
+    // second name for a file outside the home had that file edited — the same
+    // escape the symlink guard refuses, one `symlink_metadata` further down.
+    // Unlinking the name first breaks the link: the copy gets a fresh inode,
+    // and the other name keeps what it had. A refusal would be defensible, but
+    // a home whose documents were hard-linked by `cp -al` should still be
+    // restorable, and this is the answer that allows both.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if std::fs::metadata(destination).is_ok_and(|meta| meta.nlink() > 1) {
+            std::fs::remove_file(destination).map_err(|e| Error::io(destination, e))?;
+        }
     }
     // A destination that is a *symlink* is refused rather than followed, with
     // one exception that comes before this: a link pointing at the *source*
@@ -713,7 +850,12 @@ impl Service {
         // this did first — made `restore` impossible to use directly after a
         // backup, because restore takes a safety backup first and the two
         // land in the same second whenever a person is doing it by hand.
-        let destination = self.free_backup_path(Utc::now().timestamp());
+        // *Reserved*, not merely chosen. `exists()` and then a write is a race
+        // two backups in the same second both win: both saw the same free name,
+        // both wrote into one directory, and each pruned around a directory the
+        // other was still filling. `create_dir` fails when the name is taken,
+        // and that failure is the lock.
+        let destination = self.reserve_backup_path(Utc::now().timestamp())?;
         copy_state(self.paths.home(), &destination)?;
         // Pruned around the new one, never through it. Ordering by timestamp is
         // right — the newest backups are the ones worth keeping — but it is the
@@ -728,37 +870,34 @@ impl Service {
     }
 
     /// A backup name that is not already taken.
-    fn free_backup_path(&self, stamp: i64) -> PathBuf {
+    /// A backup name that is not already taken, *created* so that it stays
+    /// that way.
+    ///
+    /// `exists()` and then a write is a race two backups in the same second
+    /// both win: both see the same free name, both write into one directory,
+    /// and each prunes around a directory the other is still filling.
+    /// `create_dir` fails when the name is taken, and that failure is the lock.
+    ///
+    /// # Errors
+    /// [`Error::Io`] when a name cannot be created.
+    fn reserve_backup_path(&self, stamp: i64) -> Result<PathBuf> {
         let dir = self.paths.backups_dir();
-        let first = dir.join(stamp.to_string());
-        if !first.exists() {
-            return first;
-        }
+        std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        let mut candidates = vec![dir.join(stamp.to_string())];
         for n in 2..1000 {
-            let candidate = dir.join(format!("{stamp}-{n}"));
-            if !candidate.exists() {
-                return candidate;
+            candidates.push(dir.join(format!("{stamp}-{n}")));
+        }
+        candidates.push(dir.join(format!("{stamp}-{}", u32::MAX)));
+        for candidate in &candidates {
+            match std::fs::create_dir(candidate) {
+                Ok(()) => return Ok(candidate.clone()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(Error::io(candidate, e)),
             }
         }
-        // A thousand backups in one second is not a scenario, but the name has
-        // to keep the one property the suffix exists for: `-overflow` parsed
-        // back as sequence 1 — the bare timestamp's — so the two collided and
-        // their order went back to `read_dir`'s, which is the whole thing the
-        // sequence was added to stop. `u32::MAX` sorts last, and last is what
-        // an overflow is.
-        let last = dir.join(format!("{stamp}-{}", u32::MAX));
-        if !last.exists() {
-            return last;
-        }
-        // A thousand and one backups in one second: give up on the second and
-        // use the nanosecond, which cannot collide with a name this program
-        // writes and is still parseable as a name.
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::from(d.subsec_nanos()));
-        dir.join(format!(
-            "{stamp}-{}",
-            u32::MAX - u32::try_from(nanos % 1000).unwrap_or(0)
+        Err(Error::invalid(
+            "backup",
+            format!("a thousand backups in the second {stamp}; try again in a moment"),
         ))
     }
 
@@ -783,14 +922,25 @@ impl Service {
                     return None;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let (stamp, sequence) = name
-                    .split_once('-')
-                    // A suffix that is not a number sorts last rather than
-                    // being read as the first: a name this program cannot
-                    // parse is not evidence that it is the oldest.
-                    .map_or((name.as_str(), 1), |(stamp, rest)| {
-                        (stamp, rest.parse::<u32>().unwrap_or(u32::MAX))
-                    });
+                // `1790363784`, or `1790363784-2` when that second was taken.
+                //
+                // The mapping from name to `(created, sequence)` has to be
+                // *injective*, because the sequence exists to break ties and a
+                // tie it cannot break is the bug it was added for. So a name
+                // this program would not write is not a backup: `<stamp>-2-3`,
+                // `<stamp>-overflow` and `<stamp>-1` each used to parse to
+                // something, and two of them to the same something.
+                let (stamp, sequence) = match name.split_once('-') {
+                    None => (name.as_str(), 1),
+                    Some((stamp, rest)) => {
+                        let n = rest.parse::<u32>().ok()?;
+                        // Canonical spelling, and `-1` is the bare name.
+                        if n < 2 || rest != n.to_string() {
+                            return None;
+                        }
+                        (stamp, n)
+                    }
+                };
                 let created = stamp.parse::<i64>().ok()?;
                 let items = std::fs::read_dir(entry.path())
                     .map(|inner| inner.flatten().count())
@@ -849,15 +999,24 @@ impl Service {
                 ),
             ));
         }
-        if !from.join("profiles.yaml").is_file() {
+        // What `backup()` produces, rather than the one file it *usually*
+        // produces: a home that has never had an index copied to a backup with
+        // no `profiles.yaml` in it, and this check then refused a directory
+        // this program had written itself.
+        if !looks_like_a_backup(from) {
             return Err(Error::invalid(
                 "backup",
                 format!(
-                    "{} holds no profiles.yaml, so it is not a backup of this home",
+                    "{} holds none of the settings, the profile index or the profile \
+                     directories, so it is not a backup of this home",
                     from.display()
                 ),
             ));
         }
+        // Before the safety copy, and before a single byte moves: a refusal
+        // that has already written half of the backup leaves the home as two
+        // configurations at once, with nothing saying so.
+        check_copy(from, self.paths.home())?;
         let safety = self.backup()?;
         copy_state(from, self.paths.home())?;
         Ok(safety)
@@ -866,8 +1025,25 @@ impl Service {
     /// Keep the newest `keep` backups, and `keep_this` whatever its age.
     fn prune_backups_keeping(&self, keep: usize, keep_this: &Path) -> Result<usize> {
         let mut removed = 0;
+        // Only what is *older* than the backup just taken. Two backups in the
+        // same second are otherwise indistinguishable from two backups days
+        // apart, and each pruned around a directory the other was still
+        // filling: 24 at once left 3 of 3 returned paths holding nothing.
+        let newest = self
+            .backups()?
+            .into_iter()
+            .find(|backup| backup.path == keep_this)
+            .map(|backup| (backup.created, backup.sequence));
         for backup in self.backups()?.into_iter().skip(keep) {
             if backup.path == keep_this {
+                continue;
+            }
+            // Same *second*, not merely same-or-newer sequence. Pruning frees
+            // names, and a freed name is one another `backup()` in the same
+            // second will reserve and return — so two threads were handed the
+            // same directory, one of them writing into what the other had
+            // already handed back.
+            if newest.is_some_and(|(created, _)| backup.created >= created) {
                 continue;
             }
             std::fs::remove_dir_all(&backup.path).map_err(|e| Error::io(&backup.path, e))?;
@@ -1171,12 +1347,19 @@ impl Service {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut last = String::from("no attempt made");
         while std::time::Instant::now() < deadline {
-            match client.version().await {
-                Ok(v) => {
+            // Bounded, not merely checked between calls. `client.version`
+            // carries the client's own timeout — `ui.refresh_ms * 5`, so at
+            // least five seconds — and a core that accepts the connection and
+            // answers nothing made a ten-second deadline take thirty. This is
+            // the fifth place the same shape appeared.
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(left, client.version()).await {
+                Ok(Ok(v)) => {
                     tracing::info!(version = %v.trimmed(), "core is up");
                     return Ok(());
                 }
-                Err(e) => last = e.short(),
+                Ok(Err(e)) => last = e.short(),
+                Err(_) => break,
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }

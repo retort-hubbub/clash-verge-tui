@@ -23,6 +23,7 @@
 mod cli;
 mod commands;
 mod context;
+mod executor;
 mod exit;
 mod output;
 mod tui;
@@ -111,7 +112,7 @@ async fn run(cli: Cli, out: Output) -> anyhow::Result<()> {
         }
         // Only `None` routes to the interface, so the remaining shapes are
         // unreachable; handling them keeps `run` total without a panic.
-        _ => tui::run(out),
+        _ => tui::run(&paths, out).await,
     }
 }
 

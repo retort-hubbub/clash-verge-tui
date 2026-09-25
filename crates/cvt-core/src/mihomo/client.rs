@@ -801,13 +801,28 @@ impl Client {
         let version = self.version().await?;
         Ok(Capabilities {
             version: version.trimmed().to_owned(),
+            // Bodyless, so the handler rejects it before it can change
+            // anything (a real core answers `400 Body invalid`), and a handler
+            // that ran is itself the proof that the route exists.
             rules_disable: self
                 .route_exists(reqwest::Method::PATCH, "/rules/disable")
                 .await,
             configs_write: self.route_exists(reqwest::Method::PATCH, "/configs").await,
+            // `PUT` is the only method that reveals whether the `/debug`
+            // subtree is mounted: the subtree is absent unless the core was
+            // started with `-debug`, and while it is absent *every* method
+            // answers a plain-text 404, so a gentler method would report "no
+            // debug routes" even on a debug build. The cost is `runtime.GC()`
+            // — bounded, idempotent, and the same call `cvt core gc` makes on
+            // purpose.
             debug: self.route_exists(reqwest::Method::PUT, "/debug/gc").await,
+            // Deliberately *not* the method this family is registered for.
+            // `POST /upgrade/geo` calls the geodata updater and starts a
+            // multi-megabyte download, so probing a core used to mutate it. A
+            // mounted route answers `405 Allow: POST` to any other method and
+            // runs no handler at all.
             upgrade: self
-                .route_exists(reqwest::Method::POST, "/upgrade/geo")
+                .route_exists(reqwest::Method::PUT, "/upgrade/geo")
                 .await,
         })
     }

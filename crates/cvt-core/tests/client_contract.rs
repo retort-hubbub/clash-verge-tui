@@ -16,6 +16,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -244,9 +245,9 @@ where
         reason(response.status)
     );
     if let Some(ct) = response.content_type {
-        out.push_str(&format!("Content-Type: {ct}\r\n"));
+        let _ = write!(out, "Content-Type: {ct}\r\n");
     }
-    out.push_str(&format!("Content-Length: {}\r\n", response.body.len()));
+    let _ = write!(out, "Content-Length: {}\r\n", response.body.len());
     out.push_str("Connection: close\r\n\r\n");
     let _ = socket.write_all(out.as_bytes()).await;
     let _ = socket.write_all(&response.body).await;
@@ -551,6 +552,11 @@ async fn every_read_method_sends_the_documented_request() {
             "GET /dns/query?name=example.com&type=A".to_owned(),
         ],
         "the client must send exactly these request lines"
+    );
+    assert_eq!(
+        core.seen()[15].query(),
+        "name=example.com&type=A",
+        "the DNS query is the only call here that carries a query string"
     );
     for request in core.seen() {
         assert_eq!(request.version, "HTTP/1.1", "{}", request.target);
@@ -1320,8 +1326,7 @@ async fn probe_reports_which_optional_routes_exist() {
             ("GET", "/version") => Response::json(VERSION),
             ("PATCH", "/rules/disable") => Response::method_not_allowed(),
             ("PATCH", "/configs") => Response::no_content(),
-            ("PUT", "/debug/gc") => Response::route_absent(),
-            ("POST", "/upgrade/geo") => Response::route_absent(),
+            ("PUT", "/debug/gc" | "/upgrade/geo") => Response::route_absent(),
             _ => Response::json_status(404, r#"{"message":"Resource not found"}"#),
         }
     }))
@@ -1346,17 +1351,75 @@ async fn probe_reports_which_optional_routes_exist() {
 
     let probes: Vec<String> = core.seen().iter().map(Request::line).collect();
     assert_eq!(
-        probes,
-        vec![
+        probes[..4],
+        [
             "GET /version",
             "PATCH /rules/disable",
             "PATCH /configs",
             "PUT /debug/gc",
-            "POST /upgrade/geo",
         ],
-        "probe must use the probing methods, not the mutating ones"
+        "probe uses the same methods the UI would"
+    );
+    assert_eq!(
+        core.seen()[4].path(),
+        "/upgrade/geo",
+        "the upgrade family is probed last"
+    );
+    assert_eq!(
+        core.seen()[4].method,
+        "PUT",
+        "the upgrade family is probed with a method it is not registered for"
     );
     assert_eq!(core.seen()[1].body.len(), 0, "probing sends no body");
+}
+
+/// Finding F18: `probe()` used to answer its question by *executing*
+/// `POST /upgrade/geo`, which the spec describes as calling
+/// `updater.UpdateGeoDatabases()`. Verified live on mihomo v1.19.31: the core
+/// logs `[GEO] Start updating GEO database` and starts a ~32 MiB download, so
+/// `cvt doctor` used to reach out and fetch geodata on every run.
+///
+/// A method mismatch proves the same thing without running anything. Live, a
+/// mounted route answers `405 Allow: POST` to `PUT`, and an unmounted path
+/// answers a plain-text `404 page not found`; neither reaches a handler.
+// Each arm names one route on purpose; several of them answer the same way.
+#[allow(clippy::match_same_arms)]
+#[tokio::test]
+async fn probing_must_not_run_the_route_it_probes() {
+    let core = FakeController::start(handler(|request: &Request| {
+        match (request.method.as_str(), request.path()) {
+            ("GET", "/version") => Response::json(VERSION),
+            ("PATCH", "/rules/disable") => Response::method_not_allowed(),
+            ("PATCH", "/configs") => Response::no_content(),
+            ("PUT", "/debug/gc") => Response::route_absent(),
+            // 405 on an unregistered method is what the live core answers.
+            ("PUT", "/upgrade/geo") => Response::method_not_allowed(),
+            _ => Response::route_absent(),
+        }
+    }))
+    .await;
+
+    let caps = core.client().probe().await.unwrap();
+    assert!(caps.upgrade, "405 proves the route family exists");
+    assert!(
+        !caps.debug,
+        "a plain-text 404 proves the debug subtree is not mounted"
+    );
+
+    for request in core.seen() {
+        assert_ne!(
+            request.method,
+            "POST",
+            "probing must not start an update: {}",
+            request.line()
+        );
+        assert_eq!(
+            request.body.len(),
+            0,
+            "probing must not send a payload: {}",
+            request.line()
+        );
+    }
 }
 
 #[tokio::test]
@@ -1370,7 +1433,7 @@ async fn probe_reads_a_full_build_correctly() {
             }
             ("PUT", "/debug/gc") => Response::empty(200),
             // A JSON 404 means the router matched, so the route family is there.
-            ("POST", "/upgrade/geo") => {
+            ("PUT", "/upgrade/geo") => {
                 Response::json_status(404, r#"{"message":"Resource not found"}"#)
             }
             _ => Response::route_absent(),

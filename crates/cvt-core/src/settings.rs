@@ -35,6 +35,19 @@ pub struct CoreSettings {
     /// Explicit path to the core binary; overrides discovery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary: Option<PathBuf>,
+    /// Where the controller listens, forced over every profile.
+    ///
+    /// The control plane has to be settable from somewhere that a subscription
+    /// update cannot overwrite, and a profile is exactly the wrong place for
+    /// it: the base document is replaced wholesale whenever the subscription is
+    /// refreshed. When this is set it wins over every profile, and profiles are
+    /// not allowed to declare a control plane at all — see
+    /// [`crate::enhance::pipeline::CONTROL_PLANE`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_controller: Option<String>,
+    /// The controller's secret, forced over every profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
     /// Start the core when the application starts.
     pub auto_start: bool,
     /// Revert to the last snapshot when a new configuration fails to load.
@@ -45,6 +58,8 @@ impl Default for CoreSettings {
     fn default() -> Self {
         Self {
             binary: None,
+            external_controller: None,
+            secret: None,
             auto_start: false,
             rollback_on_failure: true,
         }

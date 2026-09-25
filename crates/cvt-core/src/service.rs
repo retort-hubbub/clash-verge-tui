@@ -189,7 +189,10 @@ impl Service {
     /// The pipeline that generates runtime configurations.
     #[must_use]
     pub fn pipeline(&self) -> Pipeline {
-        Pipeline::new(self.paths.clone())
+        Pipeline::new(self.paths.clone()).with_control_plane(
+            self.settings.core.external_controller.as_deref(),
+            self.settings.core.secret.as_deref(),
+        )
     }
 
     /// Where the controller is, as far as can be determined.

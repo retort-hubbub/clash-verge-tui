@@ -446,7 +446,7 @@ impl SeqPatch {
     /// Apply to a list of JSON values, deleting by `name` when present.
     #[must_use]
     pub fn apply_values(&self, base: &[Value]) -> Vec<Value> {
-        let mut out: Vec<Value> = base
+        let out: Vec<Value> = base
             .iter()
             .filter(|v| name_of(v).is_none_or(|n| !self.delete.contains(&n)))
             .cloned()
@@ -460,18 +460,19 @@ impl SeqPatch {
             Ok(v) => v,
             Err(_) => Value::String(s.clone()),
         };
-        let held = |list: &[Value], candidate: &Value| list.iter().any(|e| same_item(e, candidate));
+        let already_present =
+            |list: &[Value], candidate: &Value| list.iter().any(|e| same_item(e, candidate));
         let mut head: Vec<Value> = Vec::new();
         for item in &self.prepend {
             let value = parse(item);
-            if !held(&out, &value) && !held(&head, &value) {
+            if !already_present(&out, &value) && !already_present(&head, &value) {
                 head.push(value);
             }
         }
         head.extend(out);
         for item in &self.append {
             let value = parse(item);
-            if !held(&head, &value) {
+            if !already_present(&head, &value) {
                 head.push(value);
             }
         }

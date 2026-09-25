@@ -889,8 +889,7 @@ proptest! {
     ///
     /// Fails today: see `f4_...`.
     #[test]
-    #[ignore = "finding F4: a null nested in a brand-new subtree is inserted, not deleted"]
-    fn claim6_a_null_in_the_patch_deletes_the_key(
+        fn claim6_a_null_in_the_patch_deletes_the_key(
         base in arb_document(),
         patch in arb_document(),
     ) {
@@ -909,8 +908,7 @@ proptest! {
 }
 
 #[test]
-#[ignore = "finding F4: a null inside a brand-new subtree is inserted, not deleted"]
-fn f4_a_null_nested_in_a_new_subtree_survives_the_merge() {
+fn a_null_inside_a_brand_new_subtree_deletes_rather_than_survives() {
     let patch = json!({"new": {"a": null}});
     let out = merged(&json!({}), &patch, &MergeOptions::default());
     assert_eq!(

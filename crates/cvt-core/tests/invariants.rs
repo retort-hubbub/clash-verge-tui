@@ -669,8 +669,7 @@ fn f2_an_index_of_i64_min_resolves_to_nothing() {
 }
 
 #[test]
-#[ignore = "finding F17: Default::default() turns the terminal-safe append off"]
-fn f17_the_rust_default_contradicts_the_documented_default() {
+fn the_rust_default_matches_the_documented_default() {
     // The module doc: "When the target list contains a terminal rule, `append`
     // inserts immediately *before* it... Set `Overlay::append_before_terminal`
     // to `false` for the literal behaviour." Parsing the same document from
@@ -1030,7 +1029,6 @@ proptest! {
 
     /// Fails today: see `f14_...` and `f15_...`.
     #[test]
-    #[ignore = "findings F14/F15: a named-list reorder is invisible and a key containing `.` is mis-attributed"]
     fn claim7_touched_keys_are_exactly_the_changed_keys(
         before in small_object(),
         after in small_object(),
@@ -1061,8 +1059,7 @@ fn strip_nulls(value: &Value) -> Value {
 }
 
 #[test]
-#[ignore = "finding F6: touched_keys silently omits keys beyond the entry cap"]
-fn f6_touched_keys_is_incomplete_once_the_diff_is_truncated() {
+fn touched_keys_is_complete_even_when_the_diff_is_truncated() {
     let before = json!({
         "rules": (0..700).map(|i| json!(format!("R{i},DIRECT"))).collect::<Vec<_>>(),
         "mode": "rule",
@@ -1078,8 +1075,7 @@ fn f6_touched_keys_is_incomplete_once_the_diff_is_truncated() {
 }
 
 #[test]
-#[ignore = "finding F14: a pure reorder of a named list is reported as no change"]
-fn f14_reordering_a_named_list_is_invisible_to_the_diff() {
+fn reordering_a_named_list_is_reported() {
     let before = json!({"proxy-groups": [
         {"name": "PROXY", "type": "select", "proxies": ["DIRECT"]},
         {"name": "auto", "type": "url-test", "proxies": ["DIRECT"]},
@@ -1107,8 +1103,7 @@ fn f14_reordering_a_named_list_is_invisible_to_the_diff() {
 }
 
 #[test]
-#[ignore = "finding F15: touched_keys splits the path at a `.` inside a key"]
-fn f15_touched_keys_mis_attributes_a_key_containing_a_dot() {
+fn touched_keys_handles_a_key_containing_a_dot() {
     let d = diff(&json!({}), &json!({"my.key": 1}));
     assert_eq!(d.touched_keys(), vec!["my.key".to_owned()]);
     assert_eq!(d.for_top_level("my.key").len(), 1);
@@ -1238,7 +1233,7 @@ proptest! {
 
 #[test]
 #[ignore = "finding F1: the built-in policies GLOBAL and PASS-RULE are reported as dangling"]
-fn f1_the_built_in_policies_the_core_always_provides_are_not_dangling() {
+fn the_built_in_policies_the_core_always_provides_are_not_dangling() {
     // Spec §4.1: `/proxies` "always contains the built-ins DIRECT, REJECT,
     // REJECT-DROP, PASS, PASS-RULE, COMPATIBLE and the policy group GLOBAL".
     for policy in ["GLOBAL", "PASS-RULE"] {
@@ -1734,8 +1729,7 @@ fn f5_apply_values_readds_an_existing_item() {
 }
 
 #[test]
-#[ignore = "finding F16: the sequence-patch note prints the new length before the old one"]
-fn f16_a_sequence_patch_note_reports_its_sizes_backwards() {
+fn a_sequence_patch_note_reports_its_sizes_in_order() {
     use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();

@@ -156,6 +156,38 @@ impl Overlay {
                 ));
             }
         }
+        self.check_targets_do_not_contradict()
+    }
+
+    /// Refuse an overlay whose entries cannot all hold at once.
+    ///
+    /// `prepend` and `append` *replace* whatever is at their path with a list —
+    /// that is deliberate, it is how an override grows a list the base document
+    /// never had. A `set` below that same path needs a mapping. The two cannot
+    /// both be true, so one of them wins in the first pass and the other finds
+    /// the wrong shape on the second: the overlay applies once and then fails,
+    /// which is the opposite of the idempotence this module promises.
+    ///
+    /// Refusing it up front names the contradiction instead of leaving the user
+    /// to work out why the second apply of the same document behaves
+    /// differently from the first.
+    fn check_targets_do_not_contradict(&self) -> Result<()> {
+        for list in self.prepend.keys().chain(self.append.keys()) {
+            for scalar in self.set.keys() {
+                let inside = scalar.len() > list.len()
+                    && scalar.starts_with(list.as_str())
+                    && matches!(scalar.as_bytes().get(list.len()), Some(b'.' | b'['),);
+                if inside || scalar == list {
+                    return Err(Error::invalid(
+                        "override",
+                        format!(
+                            "`{list}` is given a list while `{scalar}` is set inside it; \
+                             a path cannot be a list and a mapping at once"
+                        ),
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -212,6 +244,10 @@ impl Overlay {
     /// [`Error::InvalidValue`] when a `set` path cannot be resolved. List
     /// edits never fail on an absent list: they create it.
     pub fn apply(&self, config: &mut Value) -> Result<Vec<String>> {
+        // The same checks a parsed document gets, so an `Overlay` built in code
+        // behaves exactly like one read from a file — including refusing to
+        // start work it cannot finish.
+        self.validate()?;
         let mut log = Vec::new();
 
         for raw in &self.remove {
@@ -635,6 +671,45 @@ append: {rules: ["B,DIRECT", "C,DIRECT"]}
         let mut c = base();
         o.apply(&mut c).unwrap();
         assert_eq!(c["dns"]["nameserver"], json!(["1.1.1.1", "9.9.9.9"]));
+    }
+
+    /// A path cannot be a list and a mapping at once, and an overlay that asks
+    /// for both used to apply once and then fail on the second pass — the
+    /// opposite of the idempotence this module promises.
+    #[test]
+    fn an_overlay_that_contradicts_itself_is_refused_before_it_starts() {
+        let mut c = json!({});
+        let o = Overlay::from_yaml(
+            "set:\n  \"dns.nameserver\": \"1.1.1.1\"\nappend:\n  dns: [\"8.8.8.8\"]\n",
+        );
+        // Caught when the document is read, so the editor reports it.
+        match o {
+            Err(e) => assert!(e.to_string().contains("list"), "{e}"),
+            Ok(o) => panic!("expected the contradiction to be refused: {o:?}"),
+        }
+
+        // And caught again for an overlay built in code, which never went
+        // through `from_yaml`.
+        let built = Overlay {
+            set: BTreeMap::from([("dns.nameserver".to_owned(), json!("1.1.1.1"))]),
+            append: BTreeMap::from([("dns".to_owned(), vec![json!("8.8.8.8")])]),
+            ..Overlay::default()
+        };
+        let err = built.apply(&mut c).unwrap_err();
+        assert!(err.to_string().contains("list"), "{err}");
+        assert_eq!(
+            c,
+            json!({}),
+            "a refused overlay must not touch the document"
+        );
+
+        // The shape that is fine: two different paths.
+        let fine = Overlay {
+            set: BTreeMap::from([("dns.nameserver".to_owned(), json!("1.1.1.1"))]),
+            append: BTreeMap::from([("rules".to_owned(), vec![json!("MATCH,DIRECT")])]),
+            ..Overlay::default()
+        };
+        fine.apply(&mut c).unwrap();
     }
 
     /// Finding F17: the derived `Default` disagreed with the serde default for

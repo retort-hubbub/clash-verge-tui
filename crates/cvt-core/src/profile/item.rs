@@ -234,6 +234,20 @@ impl UserInfo {
     }
 }
 
+/// The one plain path component a file name has to be, if it is one.
+///
+/// Separators, the two directory names, an empty string and a NUL are refused.
+/// A name that fails is not repaired by keeping its last segment:
+/// `../../etc/passwd` would become `passwd`, which is a different document from
+/// the one the index meant, and silently pointing at that is worse than saying
+/// the name is unusable.
+fn single_component(name: &str) -> Option<String> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
 /// One entry in the profile index.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrfItem {
@@ -325,9 +339,25 @@ impl PrfItem {
     /// The filename, derived from the uid when the index omitted it.
     #[must_use]
     pub fn file_name(&self) -> String {
-        self.file
+        let named = self
+            .file
             .clone()
-            .unwrap_or_else(|| self.default_file_name())
+            .unwrap_or_else(|| self.default_file_name());
+        // The document lives *inside* the profiles directory, so this is one
+        // path component and nothing else. The uid guard covers the other
+        // field that reaches a path, and fixing only that one left this open:
+        // an index carrying `file: ../outside.yaml` — from another front end, a
+        // hand edit, a restored backup or a synced dotfiles directory, none of
+        // which `load` inspects — made every caller of `document_path` write,
+        // read and *delete* outside `profiles/`.
+        //
+        // A name that is not one component is replaced rather than refused: an
+        // entry with an unusable file name is still an entry, and the
+        // alternative is an index that cannot be opened at all.
+        match single_component(&named) {
+            Some(plain) => plain,
+            None => self.default_file_name(),
+        }
     }
 
     /// The filename this profile would have if named after its uid.

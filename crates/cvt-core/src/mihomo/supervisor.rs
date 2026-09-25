@@ -83,6 +83,92 @@ struct PidRecord {
     start_ticks: u64,
 }
 
+/// Rotating and pruning a log file, for whichever log is being rotated.
+///
+/// Kept apart from the supervisor because it is about files rather than about
+/// the core: the same two operations apply to the application's own log, and
+/// nothing here needs to know which one it is working on.
+mod rotation {
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use crate::error::{Error, Result};
+
+    /// Where the `n`th rotated copy of `log` lives, `n` starting at 1.
+    fn rotated(log: &Path, n: usize) -> PathBuf {
+        let mut name = log.file_name().unwrap_or_default().to_os_string();
+        name.push(format!(".{n}"));
+        log.with_file_name(name)
+    }
+
+    pub(super) fn rotate(log: &Path, max_bytes: u64, keep: usize) -> Result<Option<PathBuf>> {
+        if max_bytes == 0 || keep == 0 {
+            return Ok(None);
+        }
+        let Ok(size) = std::fs::metadata(log).map(|m| m.len()) else {
+            return Ok(None);
+        };
+        if size < max_bytes {
+            return Ok(None);
+        }
+        // Oldest first: dropping it makes room for the shift, and doing it
+        // before the renames means a full directory never blocks them.
+        let _ = std::fs::remove_file(rotated(log, keep));
+        for n in (1..keep).rev() {
+            let from = rotated(log, n);
+            if from.is_file() {
+                let to = rotated(log, n + 1);
+                std::fs::rename(&from, &to).map_err(|e| Error::io(&to, e))?;
+            }
+        }
+        let first = rotated(log, 1);
+        std::fs::rename(log, &first).map_err(|e| Error::io(&first, e))?;
+        Ok(Some(first))
+    }
+
+    pub(super) fn prune(log: &Path, keep_days: u64) -> Result<usize> {
+        if keep_days == 0 {
+            return Ok(0);
+        }
+        let Some(directory) = log.parent() else {
+            return Ok(0);
+        };
+        let Some(stem) = log.file_name().and_then(|name| name.to_str()) else {
+            return Ok(0);
+        };
+        let cutoff = SystemTime::now()
+            .checked_sub(Duration::from_secs(keep_days.saturating_mul(86_400)))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        let mut removed = 0;
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return Ok(0);
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            // Only the files this module writes: `<log>.<n>`.
+            let Some(suffix) = name.strip_prefix(stem) else {
+                continue;
+            };
+            if !suffix.starts_with('.') || suffix[1..].parse::<usize>().is_err() {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            if modified < cutoff {
+                std::fs::remove_file(entry.path()).map_err(|e| Error::io(entry.path(), e))?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+}
+
 /// Locates, starts and stops the mihomo core.
 #[derive(Debug, Clone)]
 pub struct Supervisor {
@@ -106,6 +192,32 @@ impl Supervisor {
     #[must_use]
     pub fn log_file(&self) -> PathBuf {
         self.paths.core_log()
+    }
+
+    /// Rotate a log file that has grown past `max_bytes`.
+    ///
+    /// Returns the file the old contents were moved to, or `None` when there
+    /// was nothing to do.
+    ///
+    /// Called before the core is started, and that timing is the whole design:
+    /// the child holds the file open for as long as it runs, so renaming it
+    /// underneath would leave a live process writing into a file nothing will
+    /// read again — the log would look frozen at the moment of rotation while
+    /// silently growing somewhere else. At a start there is no child, and the
+    /// file is about to be reopened.
+    ///
+    /// # Errors
+    /// [`Error::Io`] when the file cannot be moved.
+    pub fn rotate_log(&self, log: &Path, max_bytes: u64, keep: usize) -> Result<Option<PathBuf>> {
+        rotation::rotate(log, max_bytes, keep)
+    }
+
+    /// Delete rotated logs older than `keep_days`.
+    ///
+    /// # Errors
+    /// [`Error::Io`] when a file exists and cannot be removed.
+    pub fn prune_logs(&self, log: &Path, keep_days: u64) -> Result<usize> {
+        rotation::prune(log, keep_days)
     }
 
     /// Find the core binary.
@@ -433,6 +545,82 @@ mod tests {
         paths.ensure_dirs().unwrap();
         let sup = Supervisor::new(paths);
         (dir, sup)
+    }
+
+    #[test]
+    fn a_log_below_the_limit_is_left_alone() {
+        let (_d, sup) = supervisor();
+        let log = sup.log_file();
+        std::fs::write(&log, "a few lines\n").unwrap();
+
+        assert!(sup.rotate_log(&log, 1024, 4).unwrap().is_none());
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "a few lines\n");
+        assert!(!sup.paths.logs_dir().join("core.log.1").exists());
+    }
+
+    #[test]
+    fn a_log_above_the_limit_is_shifted_and_the_oldest_dropped() {
+        let (_d, sup) = supervisor();
+        let log = sup.log_file();
+        for n in 1..=3 {
+            std::fs::write(
+                sup.paths.logs_dir().join(format!("core.log.{n}")),
+                format!("old {n}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(&log, "x".repeat(2048)).unwrap();
+
+        let moved = sup.rotate_log(&log, 1024, 3).unwrap().unwrap();
+        assert_eq!(moved, sup.paths.logs_dir().join("core.log.1"));
+        // The live file is emptied of its old contents, and each copy has moved
+        // along by one — with `keep` of 3, the third is gone rather than `.4`.
+        assert_eq!(std::fs::read_to_string(&moved).unwrap().len(), 2048);
+        assert_eq!(
+            std::fs::read_to_string(sup.paths.logs_dir().join("core.log.2")).unwrap(),
+            "old 1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(sup.paths.logs_dir().join("core.log.3")).unwrap(),
+            "old 2\n"
+        );
+        assert!(!sup.paths.logs_dir().join("core.log.4").exists());
+        // The live file is *moved*, not truncated: its contents are the point
+        // of rotating, and the core recreates it when it is started — which is
+        // the very next thing that happens, since this runs on the way in.
+        assert!(!log.exists());
+    }
+
+    #[test]
+    fn rotation_can_be_turned_off() {
+        let (_d, sup) = supervisor();
+        let log = sup.log_file();
+        std::fs::write(&log, "x".repeat(4096)).unwrap();
+        assert!(sup.rotate_log(&log, 0, 4).unwrap().is_none());
+        assert_eq!(std::fs::read_to_string(&log).unwrap().len(), 4096);
+    }
+
+    #[test]
+    fn pruning_takes_rotated_copies_and_nothing_else() {
+        let (_d, sup) = supervisor();
+        let dir = sup.paths.logs_dir();
+        let log = sup.log_file();
+        std::fs::write(&log, "live\n").unwrap();
+        // A file that merely starts with the log's name is not a rotated copy.
+        std::fs::write(dir.join("core.log.backup"), "keep me\n").unwrap();
+        std::fs::write(dir.join("app.log.1"), "another log\n").unwrap();
+
+        for n in 1..=3 {
+            std::fs::write(dir.join(format!("core.log.{n}")), "old\n").unwrap();
+        }
+        // Everything just written is newer than a 14-day cutoff.
+        assert_eq!(sup.prune_logs(&log, 14).unwrap(), 0);
+        assert!(dir.join("core.log.1").exists());
+        assert!(dir.join("core.log.backup").exists());
+        assert!(dir.join("app.log.1").exists());
+        // And a zero-day cutoff prunes nothing rather than everything.
+        assert_eq!(sup.prune_logs(&log, 0).unwrap(), 0);
+        assert!(dir.join("core.log.1").exists());
     }
 
     #[test]

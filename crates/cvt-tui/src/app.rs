@@ -66,6 +66,12 @@ pub const POLL_EVERY: u64 = 20;
 /// the outcome except through [`Event::Done`] or [`Event::Failed`]. Payloads
 /// carry what the binary cannot work out on its own — which uid, which node,
 /// which reload discipline — and nothing else.
+// `SaveSettings` carries a whole `Settings` and is by far the largest variant.
+// Boxing it would make every `Effect` match in the loop pay an indirection for
+// a payload that is constructed a handful of times per keystroke; the vector of
+// effects is built and dropped within one event, so the wasted bytes are
+// transient rather than resident.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// Restore the terminal and exit. The core keeps running.
@@ -752,6 +758,30 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             kind: SettingKind::Text,
         },
         SettingRow {
+            key: "core.external_controller",
+            label: "controller address",
+            value: settings
+                .core
+                .external_controller
+                .clone()
+                .unwrap_or_else(|| "from the base profile".to_owned()),
+            help: "where the core's API listens; this wins over every profile, and a \
+                   profile is not allowed to set it",
+            kind: SettingKind::Text,
+        },
+        SettingRow {
+            key: "core.secret",
+            label: "controller secret",
+            value: settings
+                .core
+                .secret
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), |_| "set".to_owned()),
+            help: "the bearer token the core requires; stored in plain text, like the \
+                   rest of this file",
+            kind: SettingKind::Text,
+        },
+        SettingRow {
             key: "core.auto_start",
             label: "start the core on launch",
             value: yes_no(settings.core.auto_start),
@@ -1033,6 +1063,22 @@ fn set_setting_text(settings: &mut Settings, key: &str, text: &str) -> Result<()
                 None
             } else {
                 Some(PathBuf::from(text))
+            };
+            Ok(())
+        }
+        "core.external_controller" => {
+            settings.core.external_controller = if text.is_empty() {
+                None
+            } else {
+                Some(text.to_owned())
+            };
+            Ok(())
+        }
+        "core.secret" => {
+            settings.core.secret = if text.is_empty() {
+                None
+            } else {
+                Some(text.to_owned())
             };
             Ok(())
         }
@@ -4092,7 +4138,7 @@ mod tests {
     fn every_setting_row_can_be_cycled_from_the_keyboard() {
         let mut a = loaded();
         goto(&mut a, Screen::Settings);
-        assert_eq!(a.settings_rows.len(), 19);
+        assert_eq!(a.settings_rows.len(), 21);
         a.settings_rows
             .select_by_key("ui.color".to_owned(), |row| row.key.to_owned());
         assert_eq!(press(&mut a, KeyCode::Enter), Vec::new());

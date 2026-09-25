@@ -234,6 +234,46 @@ impl UserInfo {
     }
 }
 
+/// The one plain path component a file name has to be, if it is one.
+///
+/// Separators, the two directory names, an empty string and a NUL are refused.
+/// A name that fails is not repaired by keeping its last segment:
+/// `../../etc/passwd` would become `passwd`, which is a different document from
+/// the one the index meant, and silently pointing at that is worse than saying
+/// the name is unusable.
+fn single_component(name: &str) -> Option<String> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
+/// A group's remembered selection.
+///
+/// `clash-verge-rev` records the node a user picked, per profile, and replays
+/// it when that profile is applied again. It is the difference between "my
+/// choice survived the subscription update" and "I pick again every morning":
+/// a configuration reload rebuilds every group, and the core's own memory of
+/// the choice is keyed to the group it was made in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedNode {
+    /// The group the choice was made in.
+    pub name: String,
+    /// The member that was chosen.
+    pub now: String,
+}
+
+impl SelectedNode {
+    /// Record a choice.
+    #[must_use]
+    pub fn new(name: impl Into<String>, now: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            now: now.into(),
+        }
+    }
+}
+
 /// One entry in the profile index.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrfItem {
@@ -248,6 +288,17 @@ pub struct PrfItem {
     /// Free-form description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub desc: String,
+    /// The node choices made in this profile, newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected: Vec<SelectedNode>,
+    /// The subscription's own page, as the panel advertised it.
+    ///
+    /// Recorded rather than guessed: a panel that sends
+    /// `profile-web-page-url` is telling the user where to manage their
+    /// account, and the only moment anyone knows that is the moment the
+    /// subscription was fetched. Only http(s) is kept — see the parser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
     /// Subscription URL, for remote profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -325,9 +376,25 @@ impl PrfItem {
     /// The filename, derived from the uid when the index omitted it.
     #[must_use]
     pub fn file_name(&self) -> String {
-        self.file
+        let named = self
+            .file
             .clone()
-            .unwrap_or_else(|| self.default_file_name())
+            .unwrap_or_else(|| self.default_file_name());
+        // The document lives *inside* the profiles directory, so this is one
+        // path component and nothing else. The uid guard covers the other
+        // field that reaches a path, and fixing only that one left this open:
+        // an index carrying `file: ../outside.yaml` — from another front end, a
+        // hand edit, a restored backup or a synced dotfiles directory, none of
+        // which `load` inspects — made every caller of `document_path` write,
+        // read and *delete* outside `profiles/`.
+        //
+        // A name that is not one component is replaced rather than refused: an
+        // entry with an unusable file name is still an entry, and the
+        // alternative is an index that cannot be opened at all.
+        match single_component(&named) {
+            Some(plain) => plain,
+            None => self.default_file_name(),
+        }
     }
 
     /// The filename this profile would have if named after its uid.
@@ -377,6 +444,8 @@ impl Default for PrfItem {
             kind: ProfileType::Local,
             name: String::new(),
             desc: String::new(),
+            selected: Vec::new(),
+            home: None,
             url: None,
             file: None,
             updated: None,

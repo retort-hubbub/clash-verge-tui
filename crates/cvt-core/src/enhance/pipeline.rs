@@ -74,6 +74,29 @@ impl AppliedProfile {
     }
 }
 
+/// Keys that decide how this program talks to the core.
+///
+/// The endpoint is read out of the *generated* document, so a document that
+/// rewrites it does not break the connection — it redirects it. A subscription
+/// is somebody else's file, and `external-controller` or `secret` arriving from
+/// one is at best a mistake and at worst an attempt to point this program at a
+/// controller it does not own. `external-controller-cors` belongs on the list
+/// for the same reason: a profile that widens CORS to `*` is opening a door,
+/// and it is not the owner of the door.
+///
+/// `external-ui*` is deliberately absent. It decides what a *browser* sees at
+/// `/ui`, not how this program reaches the core, which is the connection being
+/// protected here.
+pub const CONTROL_PLANE: &[&str] = &[
+    "external-controller",
+    "external-controller-tls",
+    "external-controller-unix",
+    "external-controller-pipe",
+    "external-controller-routing-mark",
+    "external-controller-cors",
+    "secret",
+];
+
 /// The result of running the pipeline.
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -122,13 +145,39 @@ impl Outcome {
 #[derive(Debug, Clone)]
 pub struct Pipeline {
     paths: AppPaths,
+    /// The control plane the application itself insists on, if the user set
+    /// one. It wins over every profile.
+    control_plane: Vec<(&'static str, Value)>,
 }
 
 impl Pipeline {
     /// Bind a pipeline to an application home.
     #[must_use]
     pub fn new(paths: AppPaths) -> Self {
-        Self { paths }
+        Self {
+            paths,
+            control_plane: Vec::new(),
+        }
+    }
+
+    /// Force a control plane over every profile.
+    ///
+    /// The controller's address and secret belong to the application, not to a
+    /// document a subscription replaces on every update. Everything here is
+    /// written after the whole chain has been applied, so no profile can move
+    /// it, and profiles are not permitted to declare one at all.
+    #[must_use]
+    pub fn with_control_plane(mut self, controller: Option<&str>, secret: Option<&str>) -> Self {
+        self.control_plane.clear();
+        if let Some(controller) = controller.filter(|value| !value.trim().is_empty()) {
+            self.control_plane
+                .push(("external-controller", Value::String(controller.to_owned())));
+        }
+        if let Some(secret) = secret.filter(|value| !value.trim().is_empty()) {
+            self.control_plane
+                .push(("secret", Value::String(secret.to_owned())));
+        }
+        self
     }
 
     /// Where the generated configuration is written.
@@ -147,6 +196,9 @@ impl Pipeline {
         let chain = store.resolve_chain()?;
         let mut applied = Vec::new();
         let mut warnings = Vec::new();
+        // What the base profile says about the control plane, kept so that
+        // nothing downstream can move it. Empty until a base has been read.
+        let mut control_plane: Vec<(&'static str, Value)> = Vec::new();
 
         let mut config = Value::Object(serde_json::Map::new());
         let mut started = false;
@@ -176,6 +228,15 @@ impl Pipeline {
                     }
                     config = parsed;
                     started = true;
+                    control_plane = CONTROL_PLANE
+                        .iter()
+                        .filter_map(|key| {
+                            config
+                                .get(*key)
+                                .filter(|value| !value.is_null())
+                                .map(|value| (*key, value.clone()))
+                        })
+                        .collect();
                     applied.push(AppliedProfile::applied(
                         item,
                         format!(
@@ -254,6 +315,65 @@ impl Pipeline {
             applied.push(AppliedProfile::applied(
                 item,
                 format!("sequence patch on {key} ({before} -> {after})"),
+            ));
+        }
+
+        // The control plane has exactly two sources, and everything above this
+        // line is neither of them: it is enhancement — merge documents,
+        // overrides and sequence patches, which arrive from the user's own
+        // home *and* from an imported installation. An enhancement that
+        // changes the endpoint is changing where this program connects next
+        // time, and one that introduces a secret or widens CORS is changing who
+        // may talk to it.
+        //
+        // Both outcomes are reported rather than done quietly: an override that
+        // does not take effect has to say so, or the user edits it again.
+        let mut restored: Vec<&str> = Vec::new();
+        let mut refused: Vec<&str> = Vec::new();
+        for key in CONTROL_PLANE {
+            let from_setting = self
+                .control_plane
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value);
+            let from_base = control_plane
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value);
+            let wanted = from_setting.or(from_base);
+
+            match (wanted, config.get(*key)) {
+                (Some(wanted), Some(current)) if current == wanted => {}
+                (Some(wanted), _) => {
+                    if let Some(object) = config.as_object_mut() {
+                        object.insert((*key).to_owned(), wanted.clone());
+                        if from_setting.is_none() {
+                            restored.push(key);
+                        }
+                    }
+                }
+                (None, Some(_)) => {
+                    if let Some(object) = config.as_object_mut() {
+                        object.remove(*key);
+                        refused.push(key);
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        if !restored.is_empty() {
+            warnings.push(format!(
+                "the control plane is the base profile's to declare; {} was restored \
+                 after an enhancement changed it",
+                restored.join(", ")
+            ));
+        }
+        if !refused.is_empty() {
+            warnings.push(format!(
+                "an enhancement tried to introduce {}; the control plane is not a \
+                 profile's to set — use `core.external-controller` and `core.secret` \
+                 in the settings, or declare it in the base profile",
+                refused.join(", ")
             ));
         }
 

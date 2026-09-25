@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::paths::AppPaths;
-use crate::profile::item::{PrfItem, ProfileType};
+use crate::profile::item::{PrfItem, ProfileType, SelectedNode};
 
 /// The on-disk profile index.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -250,6 +250,52 @@ impl ProfileStore {
         }
         self.index.chain = uids.to_vec();
         Ok(())
+    }
+
+    /// Remember which member of a group the user picked.
+    ///
+    /// Recorded on the *current* profile, because that is the one a reload
+    /// rebuilds and therefore the one whose choices have to be replayed. A
+    /// store with no current profile records nothing: there is no
+    /// configuration for the choice to belong to.
+    ///
+    /// # Errors
+    /// [`Error::ProfileNotFound`] when the current uid is not in the index.
+    pub fn remember_selection(&mut self, group: &str, member: &str) -> Result<()> {
+        self.amend_selection(group, Some(member))
+    }
+
+    /// Forget what was remembered for a group.
+    ///
+    /// # Errors
+    /// As [`ProfileStore::remember_selection`].
+    pub fn forget_selection(&mut self, group: &str) -> Result<()> {
+        self.amend_selection(group, None)
+    }
+
+    fn amend_selection(&mut self, group: &str, member: Option<&str>) -> Result<()> {
+        let Some(uid) = self.current_uid().map(str::to_owned) else {
+            return Ok(());
+        };
+        let item = self
+            .get_mut(&uid)
+            .ok_or_else(|| Error::ProfileNotFound { uid: uid.clone() })?;
+        match member {
+            Some(member) => match item.selected.iter_mut().find(|s| s.name == group) {
+                Some(recorded) => member.clone_into(&mut recorded.now),
+                None => item.selected.push(SelectedNode::new(group, member)),
+            },
+            None => item.selected.retain(|s| s.name != group),
+        }
+        Ok(())
+    }
+
+    /// What the current profile remembers.
+    #[must_use]
+    pub fn selections(&self) -> Vec<SelectedNode> {
+        self.current()
+            .map(|item| item.selected.clone())
+            .unwrap_or_default()
     }
 
     /// The ordered profiles that produce the runtime configuration.
@@ -515,6 +561,62 @@ mod tests {
         paths.ensure_dirs().unwrap();
         let store = ProfileStore::load(&paths).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn a_choice_is_remembered_once_per_group_and_can_be_forgotten() {
+        let (dir, mut store) = store();
+        let uid = store.add(PrfItem::local("L1", "base"));
+        store.set_current(&uid).unwrap();
+
+        assert!(store.selections().is_empty(), "nothing chosen yet");
+        store.remember_selection("PROXY", "JP 01").unwrap();
+        store.remember_selection("auto", "US 01").unwrap();
+        // A second choice in the same group replaces the first rather than
+        // accumulating: a list of everything ever chosen would replay the
+        // oldest one first and the newest last, which is the same answer by a
+        // longer route.
+        store.remember_selection("PROXY", "JP 02").unwrap();
+
+        let selections = store.selections();
+        assert_eq!(selections.len(), 2);
+        assert_eq!(selections[0].name, "PROXY");
+        assert_eq!(selections[0].now, "JP 02");
+        assert_eq!(selections[1].now, "US 01");
+
+        store.forget_selection("PROXY").unwrap();
+        assert_eq!(store.selections().len(), 1);
+        assert_eq!(store.selections()[0].name, "auto");
+        // Forgetting something that was never remembered is not an error.
+        store.forget_selection("never").unwrap();
+        drop(dir);
+    }
+
+    #[test]
+    fn a_choice_survives_a_round_trip_through_the_index() {
+        let (dir, mut store) = store();
+        let uid = store.add(PrfItem::local("L1", "base"));
+        store.set_current(&uid).unwrap();
+        store.remember_selection("PROXY", "JP 01").unwrap();
+        store.save().unwrap();
+
+        let reloaded = ProfileStore::load(store.paths()).unwrap();
+        assert_eq!(
+            reloaded.selections(),
+            vec![SelectedNode::new("PROXY", "JP 01")],
+            "the choice is part of the index, not of this process"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn a_store_with_nothing_current_remembers_nothing() {
+        let (dir, mut store) = store();
+        assert!(store.selections().is_empty());
+        // Not an error: there is no configuration for the choice to belong to.
+        store.remember_selection("PROXY", "JP 01").unwrap();
+        assert!(store.selections().is_empty());
+        drop(dir);
     }
 
     #[test]

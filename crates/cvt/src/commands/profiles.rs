@@ -182,6 +182,19 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     // result rather than by undoing the add: retrying is one command, and
     // re-adding would lose the name the user chose.
     let ok = result.ok;
+    // A panel that names the subscription knows better than the host name this
+    // fell back to, and it only says so when the document arrives. Adopted only
+    // when the user did not name it: a name somebody chose is theirs.
+    if ok
+        && args.name.is_none()
+        && let Some(suggested) = result.suggested_name.clone()
+    {
+        ctx.edit_store(|store| store.rename(&uid, &suggested))?;
+        ctx.out().verbose(
+            1,
+            format!("named `{uid}` {suggested:?}, as the panel suggested"),
+        );
+    }
     ctx.out().emit(&AddReport {
         action: "added",
         uid: uid.clone(),
@@ -292,6 +305,9 @@ fn switch(ctx: &Ctx, uid: &str) -> Result<()> {
 pub struct UpdateRow {
     /// Profile uid, or `-` when it never got as far as one.
     pub uid: String,
+    /// A name the panel suggested, when it sent one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_name: Option<String>,
     /// Whether the refresh produced a document.
     pub ok: bool,
     /// Bytes received.
@@ -312,6 +328,7 @@ impl UpdateRow {
     fn from_outcome(outcome: &UpdateOutcome) -> Self {
         Self {
             uid: outcome.uid.clone(),
+            suggested_name: outcome.suggested_name.clone(),
             ok: true,
             bytes: outcome.bytes,
             source: Some(outcome.source.to_string()),
@@ -325,6 +342,7 @@ impl UpdateRow {
     fn from_error(uid: &str, error: &Error) -> Self {
         Self {
             uid: uid.to_owned(),
+            suggested_name: None,
             ok: false,
             bytes: 0,
             source: None,

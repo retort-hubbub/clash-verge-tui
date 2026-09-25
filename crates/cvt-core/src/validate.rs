@@ -426,9 +426,16 @@ pub fn check(config: &Config) -> Report {
         }
     }
     for &idx in terminal.iter().skip(1) {
+        // A warning, not an error. `mihomo -t` answers
+        // `[MATCH,DIRECT, MATCH,REJECT]` with *test is successful*: the second
+        // catch-all loads and simply never fires. Calling that an error meant
+        // `Service::start_core`, which refuses to start on any error, would not
+        // start a core over a document the core is happy to run — the same
+        // mistake as reporting a policy the core accepts as dangling, and the
+        // one this project has now made twice.
         report.diagnostics.push(
-            Diagnostic::error(
-                "E-UNREACHABLE-RULES",
+            Diagnostic::warn(
+                "W-UNREACHABLE-RULES",
                 format!(
                     "`{}` at rules[{idx}] is a second terminal rule and can never match",
                     rules[idx]
@@ -478,10 +485,7 @@ pub fn check(config: &Config) -> Report {
         // configuration the core loads is the one mistake a validator must not
         // make. (`FINAL` was accepted as a payload-less rule for exactly this
         // reason, and it is not a rule kind at all.)
-        if !crate::mihomo::types::RULE_KINDS
-            .iter()
-            .any(|(_, config)| *config == r.kind)
-        {
+        if !crate::mihomo::types::is_config_rule_kind(&r.kind) {
             report.diagnostics.push(
                 Diagnostic::warn(
                     "W-RULE-KIND",
@@ -720,7 +724,10 @@ fn check_ports(config: &Config, report: &mut Report) {
                 "W-NO-CONTROLLER",
                 "external-controller is not set; clash-verge-tui cannot manage this core",
             )
-            .fix("add `external-controller: 127.0.0.1:9090`"),
+            .fix(
+                "set `core.external_controller` in the settings, or declare \
+                 `external-controller: 127.0.0.1:9090` in the base profile",
+            ),
         );
     } else if let Some(addr) = config.external_controller()
         && !addr.contains(':')
@@ -974,7 +981,10 @@ rules:
     }
 
     #[test]
-    fn errors_on_a_second_terminal_rule() {
+    fn warns_about_a_second_terminal_rule_rather_than_refusing_it() {
+        // `mihomo -t` answers this document with *test is successful*: the
+        // second catch-all loads and never fires. An error here would stop
+        // `start_core` on a configuration the core is happy to run.
         let c = cfg(r#"
 mixed-port: 7890
 external-controller: 127.0.0.1:9090
@@ -984,11 +994,37 @@ rules:
 "#);
         let report = check(&c);
         assert!(
-            codes(&report).contains(&"E-UNREACHABLE-RULES"),
+            codes(&report).contains(&"W-UNREACHABLE-RULES"),
             "{}",
             report.render()
         );
-        assert!(!report.is_ok());
+        assert!(
+            report.is_ok(),
+            "the core loads this, so it must not block starting: {}",
+            report.render()
+        );
+        assert!(!codes(&report).contains(&"E-UNREACHABLE-RULES"));
+    }
+
+    #[test]
+    fn accepts_ip_cidr6_which_the_core_loads() {
+        // `mihomo -t` reports `test is successful` for
+        // `IP-CIDR6,2001:db8::/32,DIRECT`, and a core started with one reports
+        // it through `GET /rules` as an `IPCIDR` rule — so the type exists in
+        // documents, it simply has no row of its own in the translation table.
+        let c = cfg(r#"
+mixed-port: 7890
+external-controller: 127.0.0.1:9090
+rules:
+  - IP-CIDR6,2001:db8::/32,DIRECT
+  - MATCH,DIRECT
+"#);
+        let report = check(&c);
+        assert!(
+            !codes(&report).contains(&"W-RULE-KIND"),
+            "IP-CIDR6 is a rule kind this core loads: {}",
+            report.render()
+        );
     }
 
     #[test]

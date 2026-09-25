@@ -35,6 +35,7 @@
 //! firing twenty at once is how an account gets rate-limited for the day.
 
 use std::fmt::Write as _;
+use std::path::Path;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -74,6 +75,9 @@ const USER_AGENT_VALUE: &str = concat!(
 
 /// Header a panel uses to report the account's quota.
 const USERINFO_HEADER: &str = "subscription-userinfo";
+
+/// Where the subscription's own page is.
+const HOME_HEADER: &str = "profile-web-page-url";
 
 /// How much of a failing response is quoted back in an error message.
 const ERROR_BODY_BYTES: usize = 64 * 1024;
@@ -119,6 +123,18 @@ pub struct Fetched {
     /// Quota parsed from the `subscription-userinfo` header; all-zeroes when
     /// the panel did not send one.
     pub user_info: UserInfo,
+    /// The subscription's own page, from `profile-web-page-url`.
+    ///
+    /// Only `http` and `https` are accepted. This is a link the interface will
+    /// show and may offer to open, and a panel does not get to hand the user a
+    /// `javascript:` or a `file:` one.
+    pub home: Option<String>,
+    /// A name the panel suggested: `Content-Disposition`'s filename, or the
+    /// last segment of the URL when the panel sent none.
+    ///
+    /// Suggested, not decided: a caller that already has a name keeps it, and
+    /// one that does not has something better than a host name.
+    pub name: Option<String>,
     /// `Content-Type` of the response, kept for diagnostics.
     pub content_type: Option<String>,
     /// `ETag` of the response.
@@ -178,6 +194,12 @@ pub struct UpdateOutcome {
     /// `true` when the provider sent exactly the document that was already
     /// stored, in which case the file was left alone.
     pub unchanged: bool,
+    /// A name the panel suggested on this request, if it sent one.
+    ///
+    /// Carried out to the caller rather than applied here: whether to adopt a
+    /// suggested name is a decision about a profile the user may have named
+    /// themselves, and a refresh is not the moment to make it.
+    pub suggested_name: Option<String>,
     /// Every tier that was tried, in order, with the failures recorded.
     pub attempts: Vec<Attempt>,
 }
@@ -355,6 +377,18 @@ impl SubscriptionFetcher {
 
         let content_type = header_string(&response, reqwest::header::CONTENT_TYPE);
         let etag = header_string(&response, ETAG);
+        let home = response
+            .headers()
+            .get(HOME_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| is_web_url(value))
+            .map(str::to_owned);
+        let name = response
+            .headers()
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(disposition_filename)
+            .or_else(|| name_from_url(url));
         // `HeaderMap` lookups ignore case, so `Subscription-Userinfo` and
         // `subscription-userinfo` are the same header here, as HTTP promises.
         let user_info = response
@@ -368,6 +402,8 @@ impl SubscriptionFetcher {
             bytes: raw.len(),
             body: decode_body(&raw)?,
             user_info,
+            home,
+            name,
             content_type,
             etag,
             source,
@@ -509,6 +545,12 @@ fn store_fetched(
         // Quota headers move on every request even when the document does not,
         // which is most of the reason to refresh an unchanged profile at all.
         entry.extra = fetched.user_info;
+        // The page the panel advertises is only known here. Recorded rather
+        // than overwritten with `None` when the panel stops sending it: a
+        // value that was true once is worth more than a blank.
+        if fetched.home.is_some() {
+            entry.home.clone_from(&fetched.home);
+        }
     }
     store.save()?;
 
@@ -516,6 +558,7 @@ fn store_fetched(
         uid: uid.to_owned(),
         bytes: fetched.bytes,
         user_info: fetched.user_info,
+        suggested_name: fetched.name,
         source: fetched.source,
         unchanged,
         attempts,
@@ -610,7 +653,23 @@ fn validated_url(url: &str) -> Result<reqwest::Url> {
 /// [`Error::InvalidValue`] for a URL that is not `http`/`https`, or
 /// [`Error::Http`] when the request cannot be assembled.
 fn build_request(client: &reqwest::Client, url: &str) -> Result<reqwest::Request> {
-    let parsed = validated_url(url)?;
+    // A panel that appends `&token=...` to a URL with no `?` produces one path
+    // segment and a 404. The repair is attempted here rather than at the call
+    // site so every route into a subscription benefits from it, and only when
+    // the original fails to validate — a URL that is already well-formed is
+    // never second-guessed.
+    let (url, parsed) = match validated_url(url) {
+        Ok(parsed) => (url.to_owned(), parsed),
+        Err(error) => {
+            let Some(repaired) = repair_url(url) else {
+                return Err(error);
+            };
+            let Ok(parsed) = validated_url(&repaired) else {
+                return Err(error);
+            };
+            (repaired, parsed)
+        }
+    };
     client
         .get(parsed)
         .header(USER_AGENT, USER_AGENT_VALUE)
@@ -708,6 +767,97 @@ fn single_line(text: &str, limit: usize) -> String {
         written += 1;
     }
     out
+}
+
+/// Whether a string is a URL a user can be shown and may open.
+#[must_use]
+pub fn is_web_url(value: &str) -> bool {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://"))
+        && !trimmed.contains(char::is_whitespace)
+}
+
+/// The filename a `Content-Disposition` header suggests, if any.
+///
+/// Handles the two spellings that exist in the wild: `filename*=UTF-8''<pct>`
+/// as RFC 5987 defines it, and the plain quoted `filename="..."`. Neither is
+/// validated beyond being non-empty — this is a suggestion, and a panel that
+/// sends a strange one simply gets it ignored by whoever called.
+#[must_use]
+pub fn disposition_filename(header: &str) -> Option<String> {
+    let value = header
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("filename*="))
+        .and_then(|rest| rest.split_once("''").map(|(_, encoded)| encoded))
+        .map(|encoded| percent_decode(encoded.trim().trim_matches('"')))
+        .or_else(|| {
+            header
+                .split(';')
+                .map(str::trim)
+                .find_map(|part| part.strip_prefix("filename="))
+                .map(|value| value.trim().trim_matches('"').to_owned())
+        })?;
+    let stem = Path::new(value.trim())
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())?;
+    let stem = stem.trim().to_owned();
+    // A leading dot is not a name: `filename=".yaml"` is a panel sending an
+    // extension and nothing else, and `Some(".yaml")` as a display name is
+    // worse than the host name the caller already has.
+    (!stem.is_empty() && !stem.starts_with('.')).then_some(stem)
+}
+
+/// The last meaningful segment of a URL, as a name.
+fn name_from_url(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let segment = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .find(|part| !part.is_empty())?;
+    // A URL whose last segment is the *host* names nothing useful.
+    if segment.contains('.') && !segment.starts_with("sub") {
+        return None;
+    }
+    let decoded = percent_decode(segment);
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+/// Repair the `path&a=b` spelling of a query string.
+///
+/// A panel that builds its subscription URL by appending `&token=...` to a URL
+/// with no `?` produces a query string nobody sent: the whole thing is one path
+/// segment, and the server answers 404. It is a common enough mistake — and the
+/// reference project carries the same repair — that guessing the intended URL
+/// is friendlier than reporting the 404 the panel earned.
+#[must_use]
+pub fn repair_url(url: &str) -> Option<String> {
+    let (path, rest) = url.split_once('&')?;
+    if rest.is_empty() || url.contains('?') || url.contains('#') {
+        return None;
+    }
+    Some(format!("{path}?{rest}"))
+}
+
+/// Decode `%xx` escapes, leaving anything malformed as it stands.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Parse the `subscription-userinfo` header.
@@ -948,8 +1098,72 @@ mod tests {
         (dir, store)
     }
 
+    #[test]
+    fn a_panel_suggested_name_is_read_from_whichever_spelling_it_used() {
+        // RFC 5987.
+        assert_eq!(
+            disposition_filename("attachment; filename*=UTF-8''My%20Airport.yaml").as_deref(),
+            Some("My Airport")
+        );
+        // The plain, older spelling, with and without a quoted value.
+        assert_eq!(
+            disposition_filename("attachment; filename=\"airport.yaml\"").as_deref(),
+            Some("airport")
+        );
+        assert_eq!(
+            disposition_filename("attachment; filename=airport.yaml").as_deref(),
+            Some("airport")
+        );
+        // Nothing usable is `None` rather than an empty name.
+        assert_eq!(disposition_filename("inline"), None);
+        assert_eq!(disposition_filename("attachment; filename=\"\""), None);
+        assert_eq!(disposition_filename("attachment; filename=\".yaml\""), None);
+    }
+
+    #[test]
+    fn a_url_gives_a_name_only_when_it_has_one_to_give() {
+        assert_eq!(
+            name_from_url("https://panel.example.com/sub/MyAirport").as_deref(),
+            Some("MyAirport")
+        );
+        assert_eq!(
+            name_from_url("https://panel.example.com/sub/My%20Airport?token=x").as_deref(),
+            Some("My Airport")
+        );
+        // The host is not a name: `default_name` already covers that, and a
+        // suggestion of `panel.example.com` would be worse than nothing.
+        assert_eq!(name_from_url("https://panel.example.com"), None);
+        assert_eq!(name_from_url("https://panel.example.com/"), None);
+    }
+
+    #[test]
+    fn a_query_string_without_its_question_mark_is_repaired() {
+        assert_eq!(
+            repair_url("https://panel.example.com/api/v1/client/subscribe&token=abc").as_deref(),
+            Some("https://panel.example.com/api/v1/client/subscribe?token=abc")
+        );
+        // Only the broken shape, and only once: a `?` already there means the
+        // URL is somebody's deliberate construction, not a slip.
+        assert_eq!(repair_url("https://x.example/sub?token=abc"), None);
+        assert_eq!(repair_url("https://x.example/sub&"), None);
+        assert_eq!(repair_url("https://x.example/sub"), None);
+    }
+
+    #[test]
+    fn only_a_web_url_is_offered_as_a_home_page() {
+        assert!(is_web_url("https://panel.example.com/dashboard"));
+        assert!(is_web_url("http://panel.example.com"));
+        // The interface shows this link and may offer to open it.
+        assert!(!is_web_url("javascript:alert(1)"));
+        assert!(!is_web_url("file:///etc/passwd"));
+        assert!(!is_web_url("data:text/html,x"));
+        assert!(!is_web_url("https://example.com/a b"));
+    }
+
     fn fetched(body: &str) -> Fetched {
         Fetched {
+            home: None,
+            name: None,
             body: body.to_owned(),
             user_info: UserInfo {
                 upload: 1,
@@ -1503,6 +1717,7 @@ mod tests {
             bytes: 42,
             user_info: UserInfo::default(),
             source: FetchSource::ViaClashProxy("http://127.0.0.1:7890".to_owned()),
+            suggested_name: None,
             unchanged: true,
             attempts: vec![
                 Attempt::failed(FetchSource::Direct, &Error::invalid("url", "no route")),

@@ -476,6 +476,19 @@ pub const RULE_KINDS: &[(&str, &str)] = &[
     ("NOT", "NOT"),
 ];
 
+/// Rule types the core accepts in a *document*, as the document spells them.
+///
+/// Not the same list as [`RULE_KINDS`], which is a translation table. The core
+/// reports both `IP-CIDR` and `IP-CIDR6` as the `IPCIDR` adapter — verified by
+/// starting a core with one of each and reading `GET /rules`: two `IPCIDR`
+/// entries — so `IP-CIDR6` has no row of its own, and a check built on the
+/// table reported a rule type the core loads (which `mihomo -t` confirms) as
+/// one it does not know.
+pub fn is_config_rule_kind(kind: &str) -> bool {
+    const CONFIG_ONLY: &[&str] = &["IP-CIDR6"];
+    CONFIG_ONLY.contains(&kind) || RULE_KINDS.iter().any(|(_, config)| *config == kind)
+}
+
 /// Translate a PascalCase rule type from the API into config spelling.
 ///
 /// Unknown types are still converted, by splitting on case boundaries, so a

@@ -307,7 +307,13 @@ impl Overlay {
 
         for (raw, items) in &self.prepend {
             let p = Path::parse(raw)?;
-            log.extend(prepend_items(config, &p, items, raw)?);
+            log.extend(prepend_items(
+                config,
+                &p,
+                items,
+                raw,
+                self.append_before_terminal && is_rules_list(&p),
+            )?);
         }
 
         for (raw, items) in &self.append {
@@ -326,26 +332,55 @@ impl Overlay {
 }
 
 /// Insert items at the front of a list, skipping duplicates.
-fn prepend_items(config: &mut Value, p: &Path, items: &[Value], raw: &str) -> Result<Vec<String>> {
-    let existing: Vec<Value> = path::get(config, p)
+fn prepend_items(
+    config: &mut Value,
+    p: &Path,
+    items: &[Value],
+    raw: &str,
+    tracks_terminal: bool,
+) -> Result<Vec<String>> {
+    let mut existing: Vec<Value> = path::get(config, p)
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
 
     let mut fresh: Vec<Value> = Vec::new();
+    let mut replaced_catch_all = false;
     for item in items {
         if is_noise(item) || contains_item(&existing, item) || contains_item(&fresh, item) {
+            continue;
+        }
+        // A *terminal* rule is not prepended. Putting a catch-all at the top
+        // of the list makes every rule below it dead — including the one the
+        // base profile used as its own catch-all, which would then sit there
+        // matching nothing — so it takes the existing catch-all's place
+        // instead, exactly as an appended one does. The user asked for this
+        // rule to be in charge; leaving the old one behind would say it is
+        // while the document says otherwise.
+        if tracks_terminal && is_terminal_rule(item) {
+            match existing.iter().position(is_terminal_rule) {
+                Some(position) => {
+                    existing[position] = item.clone();
+                    replaced_catch_all = true;
+                }
+                None => fresh.push(item.clone()),
+            }
             continue;
         }
         fresh.push(item.clone());
     }
     let count = fresh.len();
-    if count == 0 {
+    if count == 0 && !replaced_catch_all {
         return Ok(Vec::new());
     }
     fresh.extend(existing);
     replace_list(config, p, fresh)?;
-    Ok(vec![format!("prepended {count} item(s) to {raw}")])
+    let note = if replaced_catch_all {
+        format!("prepended {count} item(s) to {raw}, replacing its catch-all")
+    } else {
+        format!("prepended {count} item(s) to {raw}")
+    };
+    Ok(vec![note])
 }
 
 /// Insert items at the back of a list, before a terminal rule when asked.
@@ -423,22 +458,58 @@ fn append_items(
 fn shape_conflict(list: &Path, set: &Path, value: &Value) -> Option<String> {
     let list = list.segments();
     let set = set.segments();
+
     if list == set {
+        // The two write the same path. The list edit replaces whatever is
+        // there with a list, so a `set` that puts something else there is
+        // describing a document that cannot exist.
         return (!value.is_array())
             .then(|| "replaces it with something that is not a list".to_owned());
     }
-    let (shorter, longer) = if list.len() < set.len() {
-        (list, set)
-    } else {
-        (set, list)
-    };
-    if longer[..shorter.len()] != *shorter {
-        return None; // Unrelated paths; neither can decide the other's shape.
+
+    if set.len() < list.len() {
+        if !list.starts_with(set) {
+            return None; // Unrelated paths.
+        }
+        // The `set` writes an ancestor, so whether the two agree depends on
+        // *what* it writes: a list can be created inside a mapping and nowhere
+        // else. `{a: {}}` with `append: {a.b: [...]}` is consistent and
+        // common; `{a: 5}` with the same append is not.
+        let mut node = value;
+        for segment in &list[set.len()..] {
+            let path::Segment::Key(key) = segment else {
+                // Reaching into a list is fine, and the list edit is what
+                // makes it a list in the first place.
+                return None;
+            };
+            node = match node {
+                // Absent is not a disagreement: it is materialised as a mapping
+                // on the way down, which is what lets the list be created.
+                Value::Object(map) => map.get(key)?,
+                // A null is materialised as a mapping too.
+                Value::Null => return None,
+                _ => {
+                    return Some(
+                        "sets an ancestor of it to something that is not a mapping".to_owned(),
+                    );
+                }
+            };
+        }
+        return (!node.is_array() && !node.is_null())
+            .then(|| "sets it below to something that is not a list".to_owned());
     }
-    longer[shorter.len()..]
-        .iter()
-        .any(|segment| matches!(segment, path::Segment::Key(_)))
-        .then(|| "needs to walk through it as a mapping".to_owned())
+
+    if !set.starts_with(list) {
+        return None; // Unrelated paths.
+    }
+    // The `set` reaches into or below the list. Only the *first* step past it
+    // decides the container's shape: a key there needs a mapping, while an
+    // index or a selector addresses one of the list's elements — which is
+    // exactly how an element is reached, and not a disagreement at all.
+    match &set[list.len()] {
+        path::Segment::Key(_) => Some("needs to walk through it as a mapping".to_owned()),
+        _ => None,
+    }
 }
 
 /// Whether this path targets the routing rule list.

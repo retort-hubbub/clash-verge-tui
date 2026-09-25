@@ -5,6 +5,105 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-26
+
+### Added
+
+- The node chosen in a group is remembered on the profile and replayed after
+  every apply. A reload rebuilds every group, so without this the choice lasts
+  until the next configuration change — which, for a subscription that updates
+  on a schedule, is not long.
+- `cvt proxies select` and `unpin`, and the interface's equivalents, record and
+  forget the choice. The replay waits for a group to answer again before
+  choosing and then confirms the choice took: the core applies a reload in the
+  background, and the first version of this replayed into that window, where
+  the selection was silently discarded. It cost an afternoon of believing the
+  feature worked; the end-to-end check is what caught it.
+- The whole replay shares one deadline rather than taking one per group, so a
+  profile with many remembered groups and a core that has lost them all cannot
+  hold an apply for half a minute.
+
+### Changed
+
+- `ApplyReport` carries `selections_restored`, because a choice is something a
+  user made and one that could not be replayed is worth being able to see.
+
+### Log Rotation and Header Names
+
+Three gaps from `docs/FEATURE-COVERAGE.md`, which was written by reading the
+code rather than by intent and then turned out to be a work list.
+
+### Added
+
+- Log rotation and pruning, on `logs.max_size_bytes`, `logs.keep` and
+  `logs.keep_days`, applied to both the core's log and this program's. It runs
+  when the core is started, which is the only moment either file can be moved:
+  a running core holds its log open, so renaming it underneath would leave a
+  live process writing into a file nothing will read again.
+- `PrfItem::home`, recorded from `profile-web-page-url` — http(s) only, because
+  the interface shows it. A panel that has stopped sending the header does not
+  erase the value: what was true once is worth more than a blank.
+- A subscription's suggested name, read from `Content-Disposition` in both the
+  RFC 5987 and the older quoted spelling, and adopted by `profiles add` when
+  `--name` was not given.
+- Repair of a `path&a=b` subscription URL — a query string whose question mark
+  a panel forgot, which otherwise answers 404. Attempted only when the URL as
+  written fails to validate.
+
+### Changed
+
+- `logs.keep` above 64 is refused. The three log options are on the settings
+  screen, where a rule that profiles may not set a value has to be reachable
+  from if it is to be usable at all.
+
+### Control Plane Ownership & Audit Fixes
+
+A third adversarial review checked the fixes from the second and found ten more
+problems with them, including the other half of a path traversal the second had
+found and two regressions those fixes had introduced. All ten are closed, and
+its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.rs`).
+
+### Added
+
+- `core.external_controller` and `core.secret`, and two rows on the settings
+  screen for them. The control plane is the application's, so a subscription
+  update cannot overwrite it and an imported bundle cannot redirect it.
+- `W-RULE-KIND` and `E-RULE-MALFORMED` report a rule type this build does not
+  know, and a line that is not a rule at all.
+- `docs/FEATURE-COVERAGE.md`: what this project does about each feature of
+  `clash-verge-rev`, including the eighteen it does not implement and why.
+- `crates/cvt-core/tests/regression_config_and_profiles.rs` and `regression_validation_and_overrides.rs`: two independent
+  adversarial reviews, kept in the build.
+
+### Changed
+
+- The control plane comes from the settings or from a base profile. An
+  enhancement that introduces `external-controller`, `secret`,
+  `external-controller-cors` and the rest is refused, with a warning naming the
+  key and where to put it instead; one that changes what the base declared has
+  it put back, also with a warning.
+- A prepended catch-all rule takes the existing catch-all's place rather than
+  stacking above it, which left two of them and every rule below dead.
+- `E-UNREACHABLE-RULES` became `W-UNREACHABLE-RULES`. The core loads a document
+  with two catch-alls, and `Service::start_core` refuses to start when any
+  error is present — so this was the difference between "a warning" and "your
+  core will not start".
+- `E-MATCH-WITH-PAYLOAD` became `W-MATCH-WITH-PAYLOAD` in 0.2.0 for the same
+  reason.
+
+### Fixed
+
+- `PrfItem::file` was an unvalidated path component, like the uid before it: an
+  index carrying `file: ../outside.yaml` made the store write, read and
+  *delete* outside `profiles/`, and an import copied a file from outside its
+  source directory into one.
+- `IP-CIDR6` was reported as a rule type this build does not know. The core
+  loads it, and reports it through `GET /rules` as an `IPCIDR` rule — the same
+  adapter as `IP-CIDR`, which is why it had no row of the translation table.
+- The overlay contradiction check refused working overlays: a `set` reaching
+  into a list (`a[0].b`) is how an element is addressed, and one writing an
+  *ancestor* of a list was never compared against the value it writes.
+
 ## [0.1.1] - 2026-09-26
 
 ### Fixed
@@ -149,5 +248,6 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0
 [0.1.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

@@ -214,6 +214,19 @@ impl Report for SelectionReport {
 
 async fn select(ctx: &Ctx, group: &str, node: &str) -> Result<()> {
     ctx.client()?.select(group, node).await?;
+    // Remembered so that the next apply, which rebuilds every group, does not
+    // throw the choice away. Recorded after the core accepted it, and a failure
+    // to record is reported rather than fatal: the selection is live either
+    // way, and saying so is more useful than pretending neither happened.
+    if let Err(error) = ctx.service().remember_selection(group, node) {
+        ctx.out().verbose(
+            1,
+            format!(
+                "selected, but the choice could not be recorded: {}",
+                error.short()
+            ),
+        );
+    }
     ctx.out().emit(&SelectionReport {
         group: group.to_owned(),
         node: Some(node.to_owned()),
@@ -223,6 +236,15 @@ async fn select(ctx: &Ctx, group: &str, node: &str) -> Result<()> {
 
 async fn unpin(ctx: &Ctx, group: &str) -> Result<()> {
     ctx.client()?.clear_selection(group).await?;
+    if let Err(error) = ctx.service().forget_selection(group) {
+        ctx.out().verbose(
+            1,
+            format!(
+                "unpinned, but the choice could not be forgotten: {}",
+                error.short()
+            ),
+        );
+    }
     ctx.out().emit(&SelectionReport {
         group: group.to_owned(),
         node: None,

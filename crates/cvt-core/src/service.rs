@@ -35,6 +35,49 @@ use crate::model::config::Config;
 use crate::paths::AppPaths;
 use crate::profile::store::ProfileStore;
 use crate::settings::Settings;
+/// How long a reloaded group may take to reappear, and how long a selection
+/// may take to take effect.
+///
+/// Generous by the standards of a local API and small by the standards of a
+/// person: the whole wait is bounded so a core that is reloading cannot make
+/// an apply hang.
+const REPLAY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+const REPLAY_STEP: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Wait until the core answers for a group again.
+async fn wait_for_group(client: &Client, group: &str, deadline: std::time::Instant) -> bool {
+    loop {
+        if client.group(group).await.is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(REPLAY_STEP).await;
+    }
+}
+
+/// Wait until the core reports the member that was asked for.
+async fn confirm_selection(
+    client: &Client,
+    group: &str,
+    member: &str,
+    deadline: std::time::Instant,
+) -> bool {
+    loop {
+        match client.group(group).await {
+            Ok(view) if view.now.as_deref() == Some(member) => return true,
+            // A group that has gone means this document no longer has it, and
+            // the next attempt would fail the same way.
+            Err(_) => return false,
+            Ok(_) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(REPLAY_STEP).await;
+    }
+}
 
 /// How a configuration change should reach the core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +151,13 @@ pub struct ApplyReport {
     pub reload: Option<ReloadOutcome>,
     /// `true` when the generated document was written to disk.
     pub written: bool,
+    /// How many remembered node choices were replayed onto the core.
+    ///
+    /// Zero is the ordinary answer for a profile nobody has chosen a node in.
+    /// It is reported rather than done silently because a *choice* is
+    /// something a user made, and one that could not be replayed — a group the
+    /// subscription renamed, a node it dropped — is worth being able to see.
+    pub selections_restored: usize,
 }
 
 impl ApplyReport {
@@ -189,7 +239,10 @@ impl Service {
     /// The pipeline that generates runtime configurations.
     #[must_use]
     pub fn pipeline(&self) -> Pipeline {
-        Pipeline::new(self.paths.clone())
+        Pipeline::new(self.paths.clone()).with_control_plane(
+            self.settings.core.external_controller.as_deref(),
+            self.settings.core.secret.as_deref(),
+        )
     }
 
     /// Where the controller is, as far as can be determined.
@@ -294,7 +347,36 @@ impl Service {
             });
         }
         supervisor.validate_config(&binary, &config)?;
+        // Logs are rotated here or never: the child holds its log open for as
+        // long as it runs, so this is the only moment either file can be moved
+        // without a live process writing into a file nobody will read.
+        self.rotate_logs(&supervisor);
         supervisor.start(&binary, &config)
+    }
+
+    /// Rotate and prune both logs, best effort.
+    ///
+    /// Deliberately not fallible: a user who cannot rotate a log file still
+    /// wants their core started, and a full disk that stops a log from moving
+    /// is not a reason to refuse to run. What did happen is logged.
+    fn rotate_logs(&self, supervisor: &Supervisor) {
+        let settings = &self.settings.logs;
+        for log in [self.paths.core_log(), self.paths.app_log()] {
+            match supervisor.rotate_log(&log, settings.max_size_bytes, settings.keep) {
+                Ok(Some(path)) => tracing::info!(file = %path.display(), "log rotated"),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(log = %log.display(), error = %error, "could not rotate the log");
+                }
+            }
+            match supervisor.prune_logs(&log, settings.keep_days) {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!(removed, "old rotated logs deleted"),
+                Err(error) => {
+                    tracing::warn!(log = %log.display(), error = %error, "could not prune the logs");
+                }
+            }
+        }
     }
 
     /// Stop the core.
@@ -324,13 +406,90 @@ impl Service {
         let pipeline = self.pipeline();
         pipeline.commit(&outcome, force)?;
         let reload = self.reload(mode).await?;
+        // A reload rebuilds every group, so the choice a user made this morning
+        // is gone by the afternoon. It is replayed here rather than at each
+        // caller, because "apply" is the operation that discards it.
+        let selections_restored = self.restore_selections().await.unwrap_or(0);
         Ok(ApplyReport {
             outcome,
             reload: Some(reload),
             written: true,
+            selections_restored,
         })
     }
 
+    /// Record a node choice on the current profile.
+    ///
+    /// # Errors
+    /// Whatever reading or writing the profile index returns.
+    pub fn remember_selection(&self, group: &str, member: &str) -> Result<()> {
+        let mut store = self.store()?;
+        store.remember_selection(group, member)?;
+        store.save()
+    }
+
+    /// Forget a group's choice, which is what unpinning means.
+    ///
+    /// # Errors
+    /// Whatever reading or writing the profile index returns.
+    pub fn forget_selection(&self, group: &str) -> Result<()> {
+        let mut store = self.store()?;
+        store.forget_selection(group)?;
+        store.save()
+    }
+
+    /// Replay the current profile's remembered choices onto the core.
+    ///
+    /// Best effort per group: a group the subscription has renamed, or a member
+    /// it has dropped, is skipped rather than failing the others — the choice
+    /// was made against a document that no longer exists, and the remaining
+    /// ones are still good.
+    ///
+    /// # Errors
+    /// [`Error::ControllerUnreachable`] when there is no core to talk to.
+    pub async fn restore_selections(&self) -> Result<usize> {
+        let selections = self.store()?.selections();
+        if selections.is_empty() {
+            return Ok(0);
+        }
+        let client = self.client()?;
+        // One deadline for the whole replay, not one per group. A deadline per
+        // group is a deadline that multiplies: a profile with twenty remembered
+        // groups and a core that has lost them all would hold an apply for half
+        // a minute, and the user would see a program that had stopped
+        // responding rather than one that was waiting for something.
+        let deadline = std::time::Instant::now() + REPLAY_TIMEOUT;
+        let mut applied = 0;
+        for selection in selections {
+            if std::time::Instant::now() >= deadline {
+                tracing::debug!("giving up on the rest of the remembered selections");
+                break;
+            }
+            // A reload is applied by the core *in the background*: for a
+            // moment the group is not there at all, and a selection made in
+            // that window is silently discarded — which is exactly what the
+            // first version of this did, so the choice appeared to be replayed
+            // and was not. Wait for the group, choose, then confirm.
+            if !wait_for_group(&client, &selection.name, deadline).await {
+                tracing::debug!(group = %selection.name, "the group is not there to replay into");
+                continue;
+            }
+            if let Err(error) = client.select(&selection.name, &selection.now).await {
+                tracing::debug!(group = %selection.name, error = %error, "replay refused");
+                continue;
+            }
+            if confirm_selection(&client, &selection.name, &selection.now, deadline).await {
+                applied += 1;
+            } else {
+                tracing::debug!(
+                    group = %selection.name,
+                    member = %selection.now,
+                    "the choice did not take; the configuration may have replaced the group"
+                );
+            }
+        }
+        Ok(applied)
+    }
     /// Hand the already-written runtime configuration to the core.
     ///
     /// Implements the decision tree described in the module docs. Never
@@ -674,6 +833,16 @@ rules:
         let f = fixture();
         let err = f.service.generate().unwrap_err();
         assert!(err.to_string().contains("current"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn replaying_nothing_asks_the_core_for_nothing() {
+        // The ordinary answer for a profile nobody has chosen a node in: no
+        // core is needed, and none is dialled — the check is that this returns
+        // without one rather than that it returns a particular number.
+        let f = fixture();
+        f.seed();
+        assert_eq!(f.service.restore_selections().await.unwrap(), 0);
     }
 
     #[test]

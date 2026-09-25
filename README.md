@@ -94,6 +94,9 @@ homes it found.
   together and why.
 - [`docs/adr/`](docs/adr/) — the decisions behind the design, with the
   alternatives that were rejected.
+- [`docs/FEATURE-COVERAGE.md`](docs/FEATURE-COVERAGE.md) — what this project
+  does about each feature of `clash-verge-rev`, including the ones it does not
+  implement and why.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — the GitFlow workflow, commit
   conventions, and the architecture rules that are not negotiable.
 

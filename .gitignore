@@ -12,3 +12,10 @@
 # crates/cvt-core/tests/invariants.rs with their reasoning, so the seed file
 # only churns whenever somebody runs that suite with `--ignored`.
 *.proptest-regressions
+
+# Left behind by a cargo invocation that ran without CARGO_HOME set, which
+# puts the registry cache in the working directory. Never part of the project.
+/.global-cache
+/.package-cache
+/.package-cache-mutate
+/registry/

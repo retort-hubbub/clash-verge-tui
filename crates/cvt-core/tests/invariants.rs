@@ -5,21 +5,27 @@
 //! works. Where a claim survived, the test stays green and the report records
 //! how many generated cases it took to convince me.
 //!
-//! # Counterexamples are kept, not deleted
+//! # Counterexamples became tests, not deletions
 //!
-//! A test whose name starts with `f<n>_` is a **preserved counterexample**: it
-//! is `#[ignore]`d so the suite stays green for the author, and it fails by
-//! design until the finding is fixed. Run them all with:
+//! This suite was written by an agent whose job was to attack the code rather
+//! than confirm it, and it found counterexamples to a dozen of the invariants
+//! below. Each was preserved as an `#[ignore]`d test named `f<n>_` with its
+//! reproduction in the body, so a defect had a failing test attached to it and
+//! could not be quietly forgotten.
 //!
-//! ```text
-//! cargo test -p cvt-core --test invariants -- --ignored
-//! ```
+//! Every one of them is now a passing test with an ordinary name: nothing here
+//! is `#[ignore]`d any more. Two findings turned out to be over-strong *claims*
+//! rather than defects, and those became tests of the behaviour the
+//! documentation now states — a positional removal is the one case where an
+//! overlay is not idempotent, and saying so is worth more than a promise that
+//! is quietly false.
+//! `f2_an_index_of_i64_min_resolves_to_nothing` keeps its name because it was
+//! fixed while the audit was still running; it is the regression test for a
+//! panic.
 //!
-//! Each `#[ignore]` reason names the finding, and the test body carries the
-//! reproduction: the input that breaks the invariant and why the code
-//! violates it. Nothing here depends on the audit that produced these — its
-//! report is a document *about* the code, lists defects that are still open,
-//! and is deliberately kept out of the repository.
+//! Nothing here depends on the audit's report: it is a document *about* the
+//! code, it lists the defects that were still open when it was written, and it
+//! is deliberately kept out of the repository.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
@@ -753,9 +759,9 @@ proptest! {
     ) {
         let mut out = json!({ "rules": rules });
         let original_rules: Vec<Value> = out["rules"].as_array().cloned().unwrap_or_default();
-        // `append_before_terminal` is set explicitly because
-        // `Default::default()` disagrees with the documented (and serde)
-        // default: see finding F17.
+        // `append_before_terminal` is set explicitly even though it is now the
+        // default as well: the test is about the placement rule, not about the
+        // default, and finding F17 is the reason the two used to differ.
         let overlay = Overlay {
             append: BTreeMap::from([("rules".to_owned(), items.clone())]),
             append_before_terminal: true,
@@ -818,8 +824,7 @@ fn a_positional_removal_is_the_documented_exception_to_idempotence() {
 }
 
 #[test]
-#[ignore = "finding F13: appending a catch-all places it before the existing one, deadening it"]
-fn f13_appending_a_terminal_rule_deadens_the_existing_catch_all() {
+fn appending_a_terminal_rule_takes_the_existing_catch_alls_place() {
     let overlay = Overlay::from_yaml("append:\n  rules: [\"MATCH,REJECT\"]\n").unwrap();
     let mut doc = json!({"rules": ["DOMAIN,a.test,PROXY", "MATCH,DIRECT"]});
     overlay.apply(&mut doc).unwrap();
@@ -829,8 +834,9 @@ fn f13_appending_a_terminal_rule_deadens_the_existing_catch_all() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    // The overlay promises to keep `rules` well-formed; the result has a
-    // terminal rule above another one, which `validate` then rejects.
+    // The overlay promises to keep `rules` well-formed. Stacking the new
+    // catch-all above the old one would leave two terminal rules in the list —
+    // a document `validate` rejects, whose second rule can never fire.
     assert_eq!(rules.last(), Some(&"MATCH,REJECT"), "{rules:?}");
     assert!(
         !rules.contains(&"MATCH,DIRECT"),
@@ -887,7 +893,7 @@ proptest! {
 
     /// A `null` anywhere in the patch must delete that key.
     ///
-    /// Fails today: see `f4_...`.
+    /// F4: a null in a patch means nothing is there, wherever it sits.
     #[test]
         fn claim6_a_null_in_the_patch_deletes_the_key(
         base in arb_document(),
@@ -1037,7 +1043,8 @@ proptest! {
         check_touched_keys(before, after);
     }
 
-    /// Fails today: see `f14_...` and `f15_...`.
+    /// F14 and F15: a named-list reorder is a change, and a top-level key
+    /// that contains `.` is still that key.
     #[test]
     fn claim7_touched_keys_are_exactly_the_changed_keys(
         before in small_object(),
@@ -2074,13 +2081,13 @@ proptest! {
 }
 
 #[test]
-#[ignore = "finding F12: null is rejected for every list field except `connections`"]
-fn f12_null_where_a_list_is_expected() {
+fn a_null_list_field_parses_as_an_empty_one() {
     // The spec records exactly one list the core sends as `null`
     // (`connections`), and the module doc says "every list that could be
     // `null` is an `Option`". These are the other list-shaped fields; a
     // defensive client should treat `null` as "empty" rather than as a parse
-    // failure. This test asserts the defensive behaviour and fails today.
+    // failure. The module doc's claim is checked against every list-shaped
+    // field it makes, not only the one the spec records.
     assert!(
         serde_json::from_str::<ProxyView>(r#"{"name":"x","history":null}"#).is_ok(),
         "`history: null` must mean 'no samples'"

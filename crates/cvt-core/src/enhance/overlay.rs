@@ -326,22 +326,42 @@ fn append_items(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    // Insert before the catch-all so an appended rule can actually fire.
-    let mut insert_at = if before_terminal
-        && is_rules_list(p)
-        && let Some(position) = existing.iter().position(is_terminal_rule)
-    {
-        position
+    // Where appended rules go, and it depends on what they are.
+    //
+    // A rule that is *not* terminal has to land above the catch-all, or it
+    // could never match anything. A rule that *is* terminal takes the
+    // catch-all's place instead of stacking above it: two terminal rules in
+    // one list is a document the validator rejects, and the second one can
+    // never fire — so leaving the old one behind would mean this overlay
+    // produced a configuration that is both invalid and misleading about which
+    // rule is in charge.
+    let existing_terminal = if before_terminal && is_rules_list(p) {
+        existing.iter().position(is_terminal_rule)
     } else {
-        existing.len()
+        None
     };
+
     let mut added = 0usize;
     for item in items {
-        if is_noise(item) || contains_item(&existing, item) {
+        if is_noise(item) {
             continue;
         }
+        let replaces_the_catch_all = existing_terminal.is_some() && is_terminal_rule(item);
+        if replaces_the_catch_all {
+            if existing.contains(item) {
+                // The same catch-all is already there; nothing to do.
+                continue;
+            }
+            let position = existing_terminal.unwrap_or(existing.len());
+            existing[position] = item.clone();
+            added += 1;
+            continue;
+        }
+        if contains_item(&existing, item) {
+            continue;
+        }
+        let insert_at = existing_terminal.unwrap_or(existing.len());
         existing.insert(insert_at, item.clone());
-        insert_at += 1;
         added += 1;
     }
     if added == 0 {

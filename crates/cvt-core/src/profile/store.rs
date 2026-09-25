@@ -31,6 +31,16 @@ pub struct Index {
     pub items: Vec<PrfItem>,
 }
 
+/// Whether a string is one plain path component.
+///
+/// A uid becomes a file name, which makes it the one field of an index entry
+/// that can reach outside the profiles directory. Separators, the two
+/// directory names, and anything empty are refused; the rest of a uid's shape
+/// is not this function's business.
+fn is_plain_component(uid: &str) -> bool {
+    !uid.is_empty() && uid != "." && uid != ".." && !uid.contains(['/', '\\', '\0'])
+}
+
 /// Where a profile's document is stored.
 #[must_use]
 pub fn document_path(paths: &AppPaths, item: &PrfItem) -> PathBuf {
@@ -160,6 +170,12 @@ impl ProfileStore {
     ///
     /// Returns the uid that was assigned.
     pub fn add(&mut self, mut item: PrfItem) -> String {
+        // The funnel every caller goes through, so the file-name guard belongs
+        // here as well as at the import: a uid that is not one plain path
+        // component would put the document outside the profiles directory.
+        if !is_plain_component(&item.uid) {
+            item.uid = self.generate_uid(item.kind);
+        }
         // A uid the index already holds is reassigned rather than honoured.
         // Keeping it would put two entries in the index with the same uid and
         // therefore the same document, so the second would overwrite the
@@ -377,23 +393,34 @@ impl ProfileStore {
             // The document lives under the *source* filename, which is not
             // necessarily `{uid}.yaml` for hand-edited installations.
             let source_file = item.file_name();
-
-            // The uid may be free while the *document* is not. A crash between
-            // adding a profile and saving the index, a restored older index,
-            // or a second front end writing into `profiles/` all leave a file
-            // that no index entry owns — and copying over it would destroy the
-            // only copy of whatever it holds, silently, in the name of an
-            // import that was asked to add something, not to replace it.
-            let orphaned = document_path(&self.paths, &item).exists();
-            if self.get(&item.uid).is_some() || orphaned {
-                item.uid = self.generate_uid(item.kind);
-                report.renamed += 1;
-            }
             let ext = if item.kind == ProfileType::Script {
                 "js"
             } else {
                 "yaml"
             };
+
+            // A foreign index is untrusted input, and its uid becomes a file
+            // name here: `uid: "../profiles"` would put the document at
+            // `profiles/../profiles.yaml` — the index itself. That was a path
+            // traversal, not a naming quirk.
+            let mut uid = item.uid.clone();
+            let mut reassigned = !is_plain_component(&uid);
+
+            // The uid may be free while the *document* is not, and the
+            // document that matters is the one about to be written — named
+            // after the uid. Checking the *source* file name instead meant the
+            // protection did nothing whenever the two differed, which is
+            // exactly the hand-edited installation it exists for.
+            let destination_for =
+                |uid: &str| self.paths.profiles_dir().join(format!("{uid}.{ext}"));
+            while self.get(&uid).is_some() || destination_for(&uid).exists() {
+                uid = self.generate_uid(item.kind);
+                reassigned = true;
+            }
+            if reassigned {
+                report.renamed += 1;
+            }
+            item.uid = uid;
             item.file = Some(format!("{}.{ext}", item.uid));
 
             let uid = self.add(item);

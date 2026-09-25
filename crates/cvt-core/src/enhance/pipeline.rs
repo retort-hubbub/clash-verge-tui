@@ -94,6 +94,16 @@ pub const CONTROL_PLANE: &[&str] = &[
     "external-controller-pipe",
     "external-controller-routing-mark",
     "external-controller-cors",
+    // What the core serves at `/ui`, which is the controller's own origin.
+    //
+    // These were left out deliberately — they decide what a *browser* sees
+    // rather than how this program reaches the core — and the ninth review
+    // pointed out that the same argument is why `external-controller-cors` is
+    // on the list: a profile that redirects the UI is serving its own
+    // JavaScript from the API's origin, which is the door CORS opens. A
+    // subscription does not get to decide what runs there.
+    "external-ui",
+    "external-ui-url",
     "secret",
 ];
 
@@ -221,6 +231,13 @@ impl Pipeline {
         // nothing downstream can move it. Empty until a base has been read.
         let mut control_plane: Vec<(&'static str, Value)> = Vec::new();
         let mut protected: Vec<(&'static str, Value)> = self.protected.clone();
+        // Which of those keys the *base* actually declared. The difference
+        // matters in exactly one case — a key the document does not have — and
+        // there it is the whole answer: `dns: null` in an override deleted a
+        // section the base had, and restoring it is the protection working;
+        // a `dns` the base never had is a caller passing a value for something
+        // that was never there, and writing it in would invent a section.
+        let mut base_declared: Vec<&'static str> = Vec::new();
 
         let mut config = Value::Object(serde_json::Map::new());
         let mut started = false;
@@ -262,10 +279,30 @@ impl Pipeline {
                     // `protect_dns` is the base profile's own switch, and what
                     // it protects is its own `dns` section — captured here,
                     // where the base's document is the one in hand.
-                    if item.option.protect_dns == Some(true)
-                        && let Some(dns) = config.get("dns").filter(|value| !value.is_null())
-                    {
-                        protected.push(("dns", dns.clone()));
+                    // Reassigned, not appended: a later base takes the
+                    // protection over exactly as it takes the control plane
+                    // over, or the first base's `dns` outlives the base that
+                    // asked for it.
+                    protected = if item.option.protect_dns == Some(true) {
+                        config
+                            .get("dns")
+                            .filter(|value| !value.is_null())
+                            .map(|dns| vec![("dns", dns.clone())])
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    // The application's values win, key by key, exactly as they
+                    // do for the control plane (`from_setting.or(from_base)`).
+                    // Appending instead left two entries for one key, so the
+                    // warning named it twice and the *base* won a conflict the
+                    // user had already answered.
+                    base_declared = protected.iter().map(|(key, _)| *key).collect();
+                    for (key, value) in &self.protected {
+                        match protected.iter_mut().find(|(name, _)| name == key) {
+                            Some(slot) => *slot = (key, value.clone()),
+                            None => protected.push((key, value.clone())),
+                        }
                     }
                     applied.push(AppliedProfile::applied(
                         item,
@@ -278,6 +315,27 @@ impl Pipeline {
                 ProfileType::Merge => {
                     require_base(started, item)?;
                     let patch = parse_document(&text, item)?;
+                    // Refused rather than warned: a patch whose meaning is
+                    // unknown cannot be applied partially and reported after
+                    // the fact, and the alternative is a document that gains a
+                    // top-level key the core ignores.
+                    if let Some(directive) = merge::unknown_directive(&patch) {
+                        return Err(Error::invalid(
+                            "merge",
+                            format!(
+                                "`{}` in {} is not a directive this build knows; the \
+                                 merge would do nothing and say nothing. Known \
+                                 directives: {}",
+                                directive,
+                                item.label(),
+                                merge::DIRECTIVES
+                                    .iter()
+                                    .map(|(name, _)| *name)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        ));
+                    }
                     let before = config.clone();
                     let (patch, options) =
                         merge::expand_directives(&patch, &MergeOptions::default());
@@ -411,8 +469,31 @@ impl Pipeline {
         // so an enhancement adding a section the base never had is untouched.
         let mut kept: Vec<&str> = Vec::new();
         for (key, wanted) in &protected {
-            if config.get(*key) == Some(wanted) {
+            // The control plane's keys are the control plane's. A protection
+            // naming one would be written *after* that policy ran and would
+            // quietly undo it — and the policy's own resolution already gives
+            // the application's setting priority over the base's, which is the
+            // answer a user who set `core.external-controller` deliberately
+            // expects.
+            if CONTROL_PLANE.contains(key) {
                 continue;
+            }
+            // Only what the document *has* and an enhancement changed. A key
+            // that is not there is not restored, because the pipeline cannot
+            // tell "an enhancement removed it" from "the base never declared
+            // it" — and the second is the common case, where writing the value
+            // in would put a `dns` section in a document that never had one.
+            //
+            // The cost is stated rather than hidden: an enhancement that
+            // *deletes* a protected section is not undone. `dns: null` in an
+            // override is a deliberate act, and the warning below says nothing
+            // about it.
+            match config.get(*key) {
+                Some(current) if current == wanted => continue,
+                // Absent, and the base declared it: an enhancement deleted it,
+                // and putting it back is what the switch is for.
+                None if !base_declared.contains(key) => continue,
+                _ => {}
             }
             if let Some(object) = config.as_object_mut() {
                 object.insert((*key).to_owned(), wanted.clone());

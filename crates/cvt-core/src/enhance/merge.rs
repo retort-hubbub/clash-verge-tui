@@ -245,6 +245,20 @@ pub const DIRECTIVES: &[(&str, ArrayStrategy)] = &[
     ("append-proxy-groups", ArrayStrategy::Append),
 ];
 
+/// A `prepend-`/`append-` key this build has no entry for, if there is one.
+///
+/// A directive somebody wrote expecting it to work. Left in place it becomes a
+/// top-level key of the generated document, which the core loads without
+/// complaint — so the merge silently does nothing and nothing anywhere says so.
+#[must_use]
+pub fn unknown_directive(patch: &Value) -> Option<String> {
+    patch.as_object()?.keys().find_map(|key| {
+        ((key.starts_with("prepend-") || key.starts_with("append-"))
+            && !DIRECTIVES.iter().any(|(directive, _)| directive == key))
+        .then(|| key.clone())
+    })
+}
+
 /// Rewrite `prepend-*`/`append-*` directives into a plain patch.
 ///
 /// A merge profile written either way — or mixing both — produces the same
@@ -267,6 +281,7 @@ pub fn expand_directives(patch: &Value, options: &MergeOptions) -> (Value, Merge
     let Some(map) = patch.as_object() else {
         return (patch.clone(), options.clone());
     };
+
     let mut out: Map<String, Value> = map.clone();
     let mut opts = options.clone();
     for (directive, strategy) in DIRECTIVES {

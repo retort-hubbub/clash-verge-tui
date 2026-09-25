@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - 2026-09-26
 
+### Fixed
+
+- `external-ui` and `external-ui-url` are the control plane's. They decide what
+  the core serves at `/ui`, which is the controller's own origin — the same
+  door `external-controller-cors` opens, and the argument for excluding them
+  ("the list is about how this program reaches the core") is not the argument
+  that put CORS on it.
+- `protect_dns` does not invent a `dns` section. It restores a key the document
+  *has* and an enhancement changed, and a key the base declared that an
+  enhancement deleted; a key the document never had is left alone, which is
+  what the doc comment already promised.
+- The application's protection wins over the base's, key by key, as it does for
+  the control plane — and the warning names each key once rather than once per
+  entry.
+- A later base takes the protection over completely, as it takes the control
+  plane over; appending let the first base's `dns` outlive the base that asked
+  for it.
+- A `prepend-`/`append-` directive this build does not know is **refused** by
+  the merge profile rather than left in the document as a top-level key the
+  core ignores — a merge that silently does nothing, with nothing saying so.
+- A symbolic link is not read through anywhere in the backup path: not at
+  `backups/` itself, not at the scalar files a backup copies, and not at a link
+  *inside* a backup a restore is reading. The last two are the source side of
+  the same copy the destination guards were written for.
+- The diagnostic scan sees a code a `concat!` builds. `concat!("E-", "SPLIT")`
+  is in neither piece, so reading literals one at a time could not see it.
+
 ### Added
 
 - `protect_dns: true` on a base profile keeps its own `dns` section whatever an

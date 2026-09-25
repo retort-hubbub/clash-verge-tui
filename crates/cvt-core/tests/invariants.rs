@@ -1640,6 +1640,27 @@ fn constructed_codes() -> Vec<String> {
         }
         at = start + offset + 1;
     }
+    // And the ones a `concat!` builds. `concat!("E-", "SPLIT-CODE")` produces a
+    // code that is in neither piece: `"E-"` is too short and `"SPLIT-CODE"`
+    // does not start with a prefix, so reading literals one at a time cannot
+    // see it. Joining each `concat!`'s literals is what closes that, and the
+    // scan stays textual — a code assembled at *runtime* is still invisible,
+    // which is a limit worth knowing rather than one worth hiding.
+    let mut rest = source;
+    while let Some(at) = rest.find("concat!(") {
+        rest = &rest[at + "concat!(".len()..];
+        let mut joined = String::new();
+        for piece in rest.split(',') {
+            let piece = piece.trim();
+            match piece.strip_prefix('"').and_then(|p| p.split('"').next()) {
+                Some(literal) => joined.push_str(literal),
+                None => break,
+            }
+        }
+        if looks_like_a_code(&joined) {
+            found.push(joined);
+        }
+    }
     found.sort();
     found.dedup();
     found

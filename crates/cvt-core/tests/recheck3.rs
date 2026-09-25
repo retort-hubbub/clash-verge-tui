@@ -1033,14 +1033,19 @@ fn a_key_the_base_declares_is_restored_when_an_enhancement_moves_or_drops_it() {
     );
 }
 
-/// A browser-facing key the list deliberately excludes: `external-ui` decides
-/// what the controller serves at `/ui`, which is the same kind of door as the
-/// CORS block the list protects. Recorded as behaviour, not reported as a
-/// defect — the exclusion is explicit and reasoned — but the reasoning given
-/// for the list ("how this program reaches the core") is not the reasoning that
-/// puts `external-controller-cors` on it.
+/// A browser-facing key the list used to exclude, and no longer does.
+///
+/// `external-ui` decides what the controller serves at `/ui` — the API's own
+/// origin — which is the same kind of door as the CORS block the list
+/// protects. This was recorded as behaviour rather than reported as a defect,
+/// because the exclusion was explicit and reasoned; the reasoning was that the
+/// list is about "how this program reaches the core", and the ninth review
+/// pointed out that `external-controller-cors` is on it for the other reason
+/// and that the other reason covers this key verbatim.
+///
+/// So the observation is now the opposite, and the assertion says which.
 #[test]
-fn observation_an_enhancement_can_still_point_the_controller_at_any_directory() {
+fn observation_an_enhancement_cannot_point_the_controller_at_any_directory() {
     let (_dir, service) = service_with("");
     seed(
         &service,
@@ -1053,8 +1058,13 @@ fn observation_an_enhancement_can_still_point_the_controller_at_any_directory() 
     let outcome = service.generate().unwrap();
     assert_eq!(
         outcome.config.as_value().get("external-ui"),
-        Some(&json!("/home/user")),
-        "recorded so the next reader knows it is reachable"
+        None,
+        "an enhancement may not decide what the core serves at `/ui`"
+    );
+    assert!(
+        outcome.warnings.iter().any(|w| w.contains("external-ui")),
+        "and it says so: {:?}",
+        outcome.warnings
     );
 }
 

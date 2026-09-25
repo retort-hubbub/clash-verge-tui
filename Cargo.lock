@@ -577,6 +577,7 @@ dependencies = [
  "cvt-core",
  "cvt-tui",
  "futures-util",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_norway",

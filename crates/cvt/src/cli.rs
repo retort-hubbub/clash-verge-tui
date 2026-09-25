@@ -65,6 +65,9 @@ pub enum Command {
         command: ProfilesCommand,
     },
 
+    /// Show the address and location the traffic comes out at
+    Geo(GeoArgs),
+
     /// Save or restore the profiles, settings and overrides
     Backup {
         /// Which backup operation to run
@@ -425,6 +428,18 @@ pub struct DelayArgs {
     /// Which arguments apply to a node test
     #[command(flatten)]
     pub node: NodeTestArgs,
+}
+
+/// Arguments of `geo`.
+#[derive(Debug, Args)]
+pub struct GeoArgs {
+    /// Ask without the proxy, for this machine's own address
+    #[arg(long)]
+    pub direct: bool,
+
+    /// How long to wait for an answer, in milliseconds
+    #[arg(long, value_name = "MS")]
+    pub timeout: Option<u64>,
 }
 
 /// Arguments of `test urls`.

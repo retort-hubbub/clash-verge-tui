@@ -13,6 +13,7 @@ pub mod config;
 pub mod connections;
 pub mod core;
 pub mod doctor;
+pub mod geo;
 pub mod logs;
 pub mod profiles;
 pub mod proxies;
@@ -54,6 +55,7 @@ pub async fn dispatch(ctx: &Ctx, command: &Command) -> Result<()> {
             Err(Exit::failure("internal error: doctor must run before the home is opened").into())
         }
         Command::Profiles { command } => profiles::run(ctx, command).await,
+        Command::Geo(args) => geo::run(ctx, args).await,
         Command::Backup { command } => backup::run(ctx, command).await,
         Command::Config { command } => config::run(ctx, command).await,
         Command::Proxies { command } => proxies::run(ctx, command).await,

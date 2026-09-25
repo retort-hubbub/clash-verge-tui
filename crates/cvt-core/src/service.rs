@@ -1048,30 +1048,57 @@ impl Service {
 
     /// Wait until the core answers for the groups this document declares.
     ///
-    /// Best effort and bounded: a group the core refuses to create is a
-    /// validation problem that has already been reported, and waiting for it
-    /// forever would turn a bad document into a hang.
+    /// Best effort and bounded, in the shape the replay needed three attempts
+    /// to find: **no call is outside the deadline**, and **no group waits on
+    /// its own**. Both halves matter and both were missing here first.
+    ///
+    /// A sequential wait gives the first declared group that never appears the
+    /// whole budget, so the groups after it are never asked about — the same
+    /// starvation the replay had. And a deadline checked *between* calls is a
+    /// deadline this function cannot enforce: `client.group` carries the
+    /// client's own timeout, which is at least five seconds from the settings,
+    /// so a core that answers `/version` and hangs `/group` held an `apply`
+    /// for twice the budget it was supposed to have.
     async fn wait_for_document(&self, config: &Config) {
         let Ok(client) = self.client() else {
             return;
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let groups = config.proxy_groups();
-        let names: Vec<&str> = groups.iter().map(|group| group.name.as_str()).collect();
-        for name in names {
-            if std::time::Instant::now() >= deadline {
+        let mut pending: Vec<&str> = groups.iter().map(|group| group.name.as_str()).collect();
+        if pending.is_empty() {
+            return;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !pending.is_empty() && std::time::Instant::now() < deadline {
+            let mut still = Vec::new();
+            for name in pending {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    still.push(name);
+                    continue;
+                }
+                match tokio::time::timeout(left, client.group(name)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(_)) => still.push(name),
+                    // The deadline itself: nothing more will be waited for.
+                    Err(_) => {
+                        tracing::debug!(group = name, "the core never served this group");
+                        return;
+                    }
+                }
+            }
+            if still.is_empty() {
                 return;
             }
-            loop {
-                if client.group(name).await.is_ok() {
-                    break;
-                }
-                if std::time::Instant::now() >= deadline {
-                    tracing::debug!(group = name, "the core never served this group");
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if std::time::Instant::now() >= deadline {
+                tracing::debug!(
+                    groups = still.len(),
+                    "the configuration is live except for these groups"
+                );
+                return;
             }
+            pending = still;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     }
 
@@ -1412,6 +1439,51 @@ rules:
             safety.join("profiles.yaml").is_file() && safety.join("cvt.yaml").is_file(),
             "the restore said the state it replaced was kept at {}, and it is not there",
             safety.display()
+        );
+    }
+
+    /// A core that answers nothing must not hold an apply for twice its budget.
+    ///
+    /// `wait_for_document` checked its deadline *between* `client.group()`
+    /// calls, and that call carries the client's own timeout — at least five
+    /// seconds from the settings. So a core that answered `/version` and hung
+    /// `/group` held `apply` for about ten: a deadline the function could not
+    /// enforce, which is the same mistake the selection replay was fixed for
+    /// three times over.
+    #[tokio::test]
+    async fn waiting_for_a_document_is_bounded_by_its_own_deadline() {
+        // A listener that accepts and never answers: the shape a reloading core
+        // has while it is rebuilding its groups.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            // Held open and never answered, which is the shape being tested.
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+            drop(held);
+        });
+
+        let mut f = fixture();
+        f.seed();
+        let mut settings = f.service.settings().clone();
+        settings.ui.refresh_ms = 1000;
+        settings.core.external_controller = Some(format!("127.0.0.1:{port}"));
+        f.service.set_settings(settings);
+        let config = Config::from_yaml(
+            "proxy-groups:\n  - {name: a, type: select, proxies: [DIRECT]}\n  \
+             - {name: b, type: select, proxies: [DIRECT]}\nrules: ['MATCH,a']\n",
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        f.service.wait_for_document(&config).await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(7),
+            "the wait took {elapsed:?} for a five-second budget; a call is \
+             outside the deadline"
         );
     }
 

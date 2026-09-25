@@ -259,6 +259,37 @@ node problem rather than a mistake.
 *JSON:* `cvt.test.delay.v1`, `cvt.test.dns.v1`, `cvt.test.urls.v1`,
 `cvt.test.targets.v1`.
 
+### `geo`
+
+| Flag | Meaning |
+|---|---|
+| `--direct` | ask without the proxy, for this machine's own address |
+| `--timeout MS` | how long to wait for an answer, default 10000 |
+
+Asks an IP-info service **through the core's proxy port**, so the answer
+describes the tunnel the user gets rather than the machine the program runs on:
+
+```console
+$ cvt geo
+ip       195.58.134.33
+country  GB
+city     London
+org      AS203758 EUGAMEHOST LTD
+via      the core's proxy on 127.0.0.1:17990
+delay    1485 ms
+source   https://ipinfo.io/json
+
+$ cvt geo --direct
+```
+
+`--direct` is the other half: the interesting fact is not your address or the
+node's, it is that they differ. Three sources are tried in order — `ipinfo.io`,
+`ip.sb` and Cloudflare's plain-text trace — because they are other people's
+services, and one being down or refusing a request from a given country is not
+a reason for this command to have nothing to say.
+
+*JSON:* `cvt.geo.v1`.
+
 ### `core`
 
 | Command | Effect |

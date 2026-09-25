@@ -320,7 +320,7 @@ pub fn check(config: &Config) -> Report {
                     format!("proxy group `{}` has unsupported type `{}`", g.name, g.kind),
                 )
                 .at(format!("proxy-groups[{i}]"))
-                .fix("use one of: select, url-test, fallback, load-balance, relay, smart"),
+                .fix("use one of: select, url-test, fallback, load-balance, relay"),
             );
         }
         for m in &g.proxies {

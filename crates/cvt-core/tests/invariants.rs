@@ -791,18 +791,32 @@ proptest! {
     }
 }
 
+/// F9 is **not** fixed, and deliberately so: it is a documented limitation
+/// rather than a defect. A removal by position cannot be idempotent, because
+/// the position is not stable — so `Overlay` promises idempotence for
+/// everything *except* this, in its own documentation, and this test pins the
+/// behaviour that promise excludes. Removing the capability instead would take
+/// away a legitimate one-shot use.
 #[test]
-#[ignore = "finding F9: a positional `remove` is not idempotent"]
-fn f9_removing_by_index_twice_removes_two_elements() {
+fn a_positional_removal_is_the_documented_exception_to_idempotence() {
     let overlay = Overlay::from_yaml("remove: [\"rules[1]\"]\n").unwrap();
     let mut doc = json!({"rules": ["A,DIRECT", "B,DIRECT", "C,DIRECT"]});
     overlay.apply(&mut doc).unwrap();
-    let once = doc.clone();
+    assert_eq!(doc["rules"], json!(["A,DIRECT", "C,DIRECT"]));
+
+    // Whatever moved into the slot is what the second application removes.
+    // That is the whole reason the promise excludes this case.
     overlay.apply(&mut doc).unwrap();
-    assert_eq!(
-        doc, once,
-        "applying the same overlay twice must change nothing"
-    );
+    assert_eq!(doc["rules"], json!(["A,DIRECT"]));
+
+    // Removing by name does not have the problem, and the promise holds.
+    let named = Overlay::from_yaml("remove: [\"proxies[name=JP 02]\"]\n").unwrap();
+    let mut doc = json!({"proxies": [{"name": "JP 01"}, {"name": "JP 02"}]});
+    named.apply(&mut doc).unwrap();
+    assert_eq!(doc["proxies"], json!([{"name": "JP 01"}]));
+    let once = doc.clone();
+    named.apply(&mut doc).unwrap();
+    assert_eq!(doc, once, "naming the target keeps the promise");
 }
 
 #[test]
@@ -1232,7 +1246,6 @@ proptest! {
 }
 
 #[test]
-#[ignore = "finding F1: the built-in policies GLOBAL and PASS-RULE are reported as dangling"]
 fn the_built_in_policies_the_core_always_provides_are_not_dangling() {
     // Spec §4.1: `/proxies` "always contains the built-ins DIRECT, REJECT,
     // REJECT-DROP, PASS, PASS-RULE, COMPATIBLE and the policy group GLOBAL".

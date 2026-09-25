@@ -36,10 +36,18 @@
 //! Set [`Overlay::append_before_terminal`] to `false` for the literal
 //! behaviour.
 //!
-//! **Applying an override is idempotent.** `prepend` and `append` never
-//! introduce a duplicate, comparing structurally for mappings and by
-//! `name` for the named lists. Re-running the pipeline with an unchanged
-//! subscription produces an unchanged configuration.
+//! **Applying an override is idempotent — except for one case, and it is
+//! worth knowing which.** `set`, `prepend`, `append` and every removal that
+//! names its target (`proxy-groups[name=PROXY]`, `dns.fallback`) can be
+//! applied any number of times: `prepend` and `append` never introduce a
+//! duplicate, comparing structurally for mappings and by `name` for the named
+//! lists, so re-running the pipeline with an unchanged subscription produces
+//! an unchanged configuration. A removal by *position* (`proxies[1]`) cannot
+//! make that promise, because the position is not stable: the second
+//! application removes whatever has moved into the slot. It is supported
+//! anyway — dropping a rule the subscription always puts first is a real
+//! thing to want — but an override that uses it is one-shot, and a
+//! subscription update can change what it means.
 
 use std::collections::BTreeMap;
 

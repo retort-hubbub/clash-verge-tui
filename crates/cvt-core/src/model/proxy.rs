@@ -68,9 +68,11 @@ pub enum GroupKind {
     LoadBalance,
     /// Chains members in order.
     Relay,
-    /// mihomo's adaptive group.
-    Smart,
     /// A kind this build does not know about.
+    ///
+    /// There is no `smart` variant: `clash-verge-rev` accepts one, mihomo does
+    /// not, and a validator that passes a group the core will refuse to load
+    /// is worse than one that names the mistake. `E-GROUP-TYPE` reports it.
     Unknown,
 }
 
@@ -86,7 +88,6 @@ impl GroupKind {
             "fallback" => Self::Fallback,
             "load-balance" => Self::LoadBalance,
             "relay" => Self::Relay,
-            "smart" => Self::Smart,
             _ => Self::Unknown,
         }
     }
@@ -106,7 +107,6 @@ impl GroupKind {
             "Fallback" => Self::Fallback,
             "LoadBalance" => Self::LoadBalance,
             "Relay" => Self::Relay,
-            "Smart" => Self::Smart,
             // Tolerate a caller that passes the configuration spelling anyway.
             other => Self::from_wire(other),
         }
@@ -121,7 +121,6 @@ impl GroupKind {
             Self::Fallback => "fallback",
             Self::LoadBalance => "load-balance",
             Self::Relay => "relay",
-            Self::Smart => "smart",
             Self::Unknown => "?",
         }
     }
@@ -129,10 +128,7 @@ impl GroupKind {
     /// Whether the group supports latency testing its members.
     #[must_use]
     pub fn is_testable(self) -> bool {
-        matches!(
-            self,
-            Self::UrlTest | Self::Fallback | Self::LoadBalance | Self::Smart
-        )
+        matches!(self, Self::UrlTest | Self::Fallback | Self::LoadBalance)
     }
 
     /// Whether a member can be pinned with `PUT /proxies/{name}`.

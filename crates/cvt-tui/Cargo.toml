@@ -6,7 +6,7 @@ license.workspace = true
 description = "Ratatui widget & screen layer for clash-verge-tui"
 
 [dependencies]
-cvt-core = { path = "../cvt-core", version = "0.1.0" }
+cvt-core = { path = "../cvt-core", version = "0.1.1" }
 anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

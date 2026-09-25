@@ -31,6 +31,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -313,7 +314,7 @@ fn defect_3_a_backup_is_not_deleted_by_its_own_prune() {
     std::fs::write(paths.profiles_index(), "current: L1\nitems: []\n").unwrap();
     std::fs::write(paths.settings_file(), "ui:\n  refresh_ms: 250\n").unwrap();
     five_in_the_future(&paths, this_second());
-    let service = Service::open(paths.clone()).unwrap();
+    let service = Service::open(paths).unwrap();
 
     let created = service.backup().unwrap();
 
@@ -352,7 +353,7 @@ fn defect_3b_the_same_six_backups_prune_differently_in_two_creation_orders() {
         for name in order {
             fake_backup(&paths, &format!("{stamp}{name}"), name);
         }
-        let service = Service::open(paths.clone()).unwrap();
+        let service = Service::open(paths).unwrap();
         service.prune_backups(5).unwrap();
         let mut kept: Vec<String> = service
             .backups()
@@ -520,7 +521,7 @@ fn a_symlinked_directory_in_backups_is_not_a_backup() {
     let (_dir, paths) = home();
     let link = paths.backups_dir().join("1790363784");
     std::os::unix::fs::symlink(outside.path(), &link).unwrap();
-    let service = Service::open(paths.clone()).unwrap();
+    let service = Service::open(paths).unwrap();
 
     let listed = service.backups().unwrap();
     let removed = service.prune_backups(0).unwrap();
@@ -537,7 +538,10 @@ fn a_symlinked_directory_in_backups_is_not_a_backup() {
         listed.is_empty(),
         "a symlink is not a backup, and `backup list` reports {} of them: {:?}",
         listed.len(),
-        listed.iter().map(|b| b.name()).collect::<Vec<_>>()
+        listed
+            .iter()
+            .map(cvt_core::service::Backup::name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -758,12 +762,12 @@ fn respond(state: &mut PanelState, method: &str, target: &str, member: &str) -> 
                 "{\"message\":\"Selector update error: proxy not exist\"}".to_owned(),
             );
         }
-        match kind.as_str() {
-            "load-balance" => (400, "{\"message\":\"Must be a Selector\"}".to_owned()),
-            _ => {
-                state.now.insert(name.to_owned(), member.to_owned());
-                (204, String::new())
-            }
+        if kind == "load-balance" {
+            // Verified live: a `LoadBalance` group refuses a select.
+            (400, "{\"message\":\"Must be a Selector\"}".to_owned())
+        } else {
+            state.now.insert(name.to_owned(), member.to_owned());
+            (204, String::new())
         }
     } else {
         not_found
@@ -792,8 +796,10 @@ fn wire(status: u16, body: &str) -> String {
 
 /// Start a fake controller holding the named groups, in the given order.
 fn core_with(groups: &[(&str, &str)]) -> Panel {
-    let mut state = PanelState::default();
-    state.delay_ms = 5;
+    let mut state = PanelState {
+        delay_ms: 5,
+        ..PanelState::default()
+    };
     for (name, kind) in groups {
         state.groups.push(((*name).to_owned(), (*kind).to_owned()));
         state.members.insert(
@@ -811,8 +817,10 @@ fn core_with(groups: &[(&str, &str)]) -> Panel {
 
 /// The same, with `count` members on one group, for the concurrency checks.
 fn panel_with_nodes(count: usize) -> Panel {
-    let mut state = PanelState::default();
-    state.delay_ms = 1;
+    let mut state = PanelState {
+        delay_ms: 1,
+        ..PanelState::default()
+    };
     state.groups.push(("PROXY".to_owned(), "select".to_owned()));
     state.members.insert(
         "PROXY".to_owned(),
@@ -955,7 +963,7 @@ async fn defect_6_a_removed_group_still_starves_every_choice_after_it() {
 
     let mut selected = String::new();
     for n in 1..=6 {
-        selected.push_str(&format!("      - name: dead-{n}\n        now: node-b\n"));
+        let _ = writeln!(selected, "      - name: dead-{n}\n        now: node-b");
     }
     selected.push_str("      - name: live\n        now: node-b\n");
     let (_dir, paths) = home_with_index(
@@ -1002,7 +1010,7 @@ async fn a_removed_group_does_not_starve_the_choices_before_it() {
 
     let mut selected = String::from("      - name: live\n        now: node-b\n");
     for n in 1..=6 {
-        selected.push_str(&format!("      - name: dead-{n}\n        now: node-b\n"));
+        let _ = writeln!(selected, "      - name: dead-{n}\n        now: node-b");
     }
     let (_dir, paths) = home_with_index(
         &index_with(&selected),
@@ -1554,7 +1562,7 @@ fn defect_12_apply_reports_success_before_its_groups_are_readable() {
     }
 
     // The core is left running by the CLI, unlike the harness-driven tests.
-    let _ = Service::open(paths.clone()).map(|service| service.stop_core());
+    let _ = Service::open(paths).map(|service| service.stop_core());
 
     assert!(
         refusal.is_none(),
@@ -1657,7 +1665,7 @@ fn defect_14_a_backup_does_not_read_through_a_symlinked_directory() {
     let (_dir, paths) = home_with_index(&index_with(""), &[("L1.yaml", "mode: rule\n")]);
     std::fs::remove_dir_all(paths.profiles_dir()).unwrap();
     std::os::unix::fs::symlink(outside.path(), paths.profiles_dir()).unwrap();
-    let service = Service::open(paths.clone()).unwrap();
+    let service = Service::open(paths).unwrap();
 
     let backup = service.backup().unwrap();
 

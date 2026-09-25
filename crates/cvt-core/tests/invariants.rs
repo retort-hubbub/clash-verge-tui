@@ -1262,8 +1262,7 @@ fn the_built_in_policies_the_core_always_provides_are_not_dangling() {
 }
 
 #[test]
-#[ignore = "finding F11: `type: smart` is accepted although mihomo has no smart group"]
-fn f11_a_smart_group_is_not_a_real_mihomo_group_type() {
+fn a_smart_group_is_not_a_real_mihomo_group_type() {
     // Spec §10.19: "There is no 'smart' proxy group in mihomo: grep for Smart
     // across the whole source tree returns nothing, and no `smart` group type
     // exists in docs/config.yaml".
@@ -1643,10 +1642,9 @@ fn importing_leaves_a_document_the_index_does_not_know_about_alone() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(4000))]
 
-    /// Fails today: see `f5_...`.
+    /// F5: a patch that names the same value twice is one value.
     #[test]
-    #[ignore = "finding F5: a repeated prepend entry is duplicated"]
-    fn claim10_apply_never_introduces_a_duplicate(
+        fn claim10_apply_never_introduces_a_duplicate(
         base in prop::collection::vec(arb_string(), 0..5),
         patch in prop::collection::vec(arb_string(), 0..3),
         append in prop::collection::vec(arb_string(), 0..3),
@@ -1667,10 +1665,9 @@ proptest! {
         }
     }
 
-    /// Fails today: see `f5_...`.
+    /// F5: a patch that names the same value twice is one value.
     #[test]
-    #[ignore = "finding F5: `apply_values` re-adds an item that is already present"]
-    fn claim10_apply_values_never_introduces_a_duplicate(
+        fn claim10_apply_values_never_introduces_a_duplicate(
         base in prop::collection::vec(arb_name(), 0..5),
         prepend in prop::collection::vec(arb_name(), 0..3),
         append in prop::collection::vec(arb_name(), 0..3),
@@ -1726,8 +1723,7 @@ fn claim10_deletion_wins_over_an_identical_readd() {
 }
 
 #[test]
-#[ignore = "finding F5: `apply` duplicates a repeated prepend entry"]
-fn f5_a_repeated_prepend_entry_is_duplicated() {
+fn a_repeated_prepend_entry_is_added_once() {
     let seq = SeqPatch {
         prepend: vec!["X".into(), "X".into()],
         append: vec![],
@@ -1737,8 +1733,7 @@ fn f5_a_repeated_prepend_entry_is_duplicated() {
 }
 
 #[test]
-#[ignore = "finding F5: `apply_values` re-adds an item that is already in the base"]
-fn f5_apply_values_readds_an_existing_item() {
+fn apply_values_does_not_readd_an_item_it_already_holds() {
     let base: Vec<Value> = vec![json!("A"), json!("B")];
     let seq = SeqPatch {
         prepend: vec!["A".into()],

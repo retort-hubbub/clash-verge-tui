@@ -1099,11 +1099,34 @@ fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
     }
 }
 
-/// Write a typed-in value into a setting.
+/// Write a typed-in value into a setting, and refuse one the settings refuse.
 ///
-/// Validating here rather than on save means a mistyped URL is refused while
-/// the prompt is still open, with the reason attached to it.
+/// The doc used to say "validating here rather than on save means a mistyped URL
+/// is refused while the prompt is still open" — true of the URL arms and not of
+/// the numeric ones, which took any parseable number. `test.timeout_ms: 99999`
+/// was accepted into memory, sat there until a save failed, and was read by
+/// everything that consults the settings in between.
+///
+/// The wrapper makes the sentence true for every arm: the value is written,
+/// checked against the same `validate` a save runs, and rolled back with the
+/// reason if it does not hold.
 fn set_setting_text(settings: &mut Settings, key: &str, text: &str) -> Result<(), String> {
+    let before = settings.clone();
+    let result = set_setting_text_inner(settings, key, text);
+    if let Err(reason) = result {
+        *settings = before;
+        return Err(reason);
+    }
+    match settings.validate() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            *settings = before;
+            Err(error.short())
+        }
+    }
+}
+
+fn set_setting_text_inner(settings: &mut Settings, key: &str, text: &str) -> Result<(), String> {
     let text = text.trim();
     match key {
         "core.binary" => {
@@ -4174,6 +4197,42 @@ mod tests {
     }
 
     // -- settings -----------------------------------------------------------
+
+    /// A typed-in number is held to the same ceiling a save is.
+    ///
+    /// The class the ninth review found for the command line, one crate over:
+    /// `--timeout 32768` was refused by the settings and accepted by the flag.
+    /// Here the flag's equivalent is the prompt, and it accepted any parseable
+    /// number — which then sat in memory until a save failed.
+    #[test]
+    fn a_typed_in_number_the_settings_refuse_is_refused_at_the_prompt() {
+        let mut settings = Settings::default();
+        let before = settings.test.timeout_ms;
+
+        let refused = set_setting_text(&mut settings, "test.timeout_ms", "99999");
+        assert!(refused.is_err(), "the core parses this as an int16");
+        assert_eq!(
+            settings.test.timeout_ms, before,
+            "and the value is rolled back rather than kept"
+        );
+
+        // The ceiling itself is accepted, so the check is the settings' and not
+        // a second, stricter one written here.
+        assert!(
+            set_setting_text(
+                &mut settings,
+                "test.timeout_ms",
+                &cvt_core::settings::MAX_TEST_TIMEOUT_MS.to_string()
+            )
+            .is_ok()
+        );
+
+        // And the same for the other ceiling, and for a value that is not a
+        // number at all.
+        assert!(set_setting_text(&mut settings, "test.concurrency", "0").is_err());
+        assert!(set_setting_text(&mut settings, "logs.keep", "65").is_err());
+        assert!(set_setting_text(&mut settings, "test.timeout_ms", "soon").is_err());
+    }
 
     #[test]
     fn every_setting_row_can_be_cycled_from_the_keyboard() {

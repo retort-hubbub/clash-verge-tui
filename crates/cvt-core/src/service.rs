@@ -338,7 +338,10 @@ impl Service {
     ///
     /// # Errors
     /// [`Error::ControllerUnreachable`] when the core is not running and
-    /// cannot be started; [`Error::Io`] when a rollback cannot be performed.
+    /// cannot be started, or when a restart does not come up in time;
+    /// [`Error::CoreUnavailable`] when no core binary can be found. A failed
+    /// reload whose cause cannot be undone reports *that* cause, never a
+    /// failure of the rollback bookkeeping.
     pub async fn reload(&self, mode: ReloadMode) -> Result<ReloadOutcome> {
         match mode {
             ReloadMode::Restart => return self.restart_with_rollback().await,
@@ -357,11 +360,17 @@ impl Service {
                     Ok(ReloadOutcome::Restarted { pid }) => Ok(ReloadOutcome::Restarted { pid }),
                     Ok(other) => Ok(other),
                     Err(e) => {
-                        if !self.settings.core.rollback_on_failure {
+                        if !self.settings.core.rollback_on_failure || !e.is_rollbackable() {
                             return Err(e);
                         }
-                        // The core would not come up with the new document.
-                        // Put back what was working.
+                        // The core would not come up with the new document, so
+                        // put back what was working. A first apply has nothing
+                        // to put back: report the restart failure — the only
+                        // real information there is — rather than replacing it
+                        // with a complaint about a missing snapshot.
+                        if self.pipeline().snapshots()?.is_empty() {
+                            return Err(e);
+                        }
                         let snapshot = self.pipeline().rollback()?;
                         self.stop_core()?;
                         self.start_core()?;
@@ -705,6 +714,87 @@ rules:
         assert_eq!(
             f.service.pipeline().output_path(),
             f.service.paths().runtime_config()
+        );
+    }
+
+    /// Point the service at a binary that exists but always fails, i.e. a core
+    /// that refuses every document. This is the case rollback exists for, and
+    /// it needs no real core on the test machine.
+    fn refuse_everything(f: &mut Fixture) {
+        let mut s = f.service.settings().clone();
+        s.core.binary = Some(PathBuf::from("/bin/false"));
+        s.core.rollback_on_failure = true;
+        f.service.set_settings(s);
+    }
+
+    /// Finding F19: `reload` replaced the reason a restart failed with
+    /// `InvalidValue { field: "rollback" }` — "there are no snapshots to
+    /// restore" — because `Pipeline::rollback` was called through `?` on a
+    /// service whose first document had never been committed. `config generate
+    /// --apply` therefore blamed rollback bookkeeping for a missing core and
+    /// for a document the core rejected.
+    #[tokio::test]
+    async fn a_failed_reload_reports_the_real_cause_not_the_rollback_bookkeeping() {
+        let mut f = fixture();
+        f.seed();
+        // A first apply: the document is written, but nothing was there
+        // before it, so the pipeline has no snapshot to restore.
+        let outcome = f.service.generate().unwrap();
+        f.service.pipeline().commit(&outcome, false).unwrap();
+        assert!(f.service.pipeline().snapshots().unwrap().is_empty());
+        refuse_everything(&mut f);
+
+        let err = f.service.reload(ReloadMode::Auto).await.unwrap_err();
+        assert!(
+            !matches!(
+                &err,
+                Error::InvalidValue {
+                    field: "rollback",
+                    ..
+                }
+            ),
+            "bookkeeping must never displace the cause: {err:?}"
+        );
+        assert!(
+            !err.to_string().contains("snapshot"),
+            "nothing to roll back to is not a diagnosis: {err}"
+        );
+        assert!(
+            matches!(err, Error::ProcessFailed { .. }),
+            "the core's own refusal is the real cause: {err:?}"
+        );
+    }
+
+    /// The complement: when a previous document *is* on disk, a rejected one is
+    /// still undone, so the test above cannot pass by disabling rollback.
+    #[tokio::test]
+    async fn a_rejected_document_is_still_rolled_back_when_there_is_one_to_restore() {
+        let mut f = fixture();
+        let uid = f.seed();
+        let first = f.service.generate().unwrap();
+        f.service.pipeline().commit(&first, false).unwrap();
+
+        {
+            let store = f.service.store().unwrap();
+            let item = store.get(&uid).unwrap().clone();
+            store
+                .write_document(&item, &BASE.replace("7890", "7891"))
+                .unwrap();
+            store.save().unwrap();
+        }
+        let second = f.service.generate().unwrap();
+        f.service.pipeline().commit(&second, false).unwrap();
+        assert_ne!(first.yaml, second.yaml, "the two documents must differ");
+
+        refuse_everything(&mut f);
+        // The restart cannot succeed with a core that refuses everything, but
+        // the document that was working has to be back on disk.
+        let _ = f.service.reload(ReloadMode::Auto).await;
+
+        let restored = std::fs::read_to_string(f.service.paths().runtime_config()).unwrap();
+        assert_eq!(
+            restored, first.yaml,
+            "the working document must be restored"
         );
     }
 }

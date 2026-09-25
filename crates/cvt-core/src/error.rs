@@ -201,6 +201,17 @@ impl Error {
         matches!(self, Self::Http { .. } | Self::ControllerUnreachable { .. })
     }
 
+    /// `true` when restoring the previous configuration could plausibly help.
+    ///
+    /// A document the core *refused* is worth undoing: the previous one was
+    /// working. A machine with no core binary, or an operation this core does
+    /// not support, is not — the previous document would fail in exactly the
+    /// same way, and undoing it would only destroy the evidence.
+    #[must_use]
+    pub fn is_rollbackable(&self) -> bool {
+        !matches!(self, Self::CoreUnavailable { .. } | Self::Unsupported(_))
+    }
+
     /// A short, single-line rendering suitable for a TUI status bar.
     #[must_use]
     pub fn short(&self) -> String {
@@ -213,5 +224,57 @@ impl Error {
         } else {
             first.to_owned()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_refused_document_is_worth_rolling_back() {
+        // The previous document would fail in exactly the same way.
+        assert!(
+            !Error::CoreUnavailable {
+                reason: "searched: /usr/bin".to_owned()
+            }
+            .is_rollbackable()
+        );
+        assert!(!Error::Unsupported("no /script route".to_owned()).is_rollbackable());
+
+        // Each of these could plausibly be fixed by restoring what worked.
+        assert!(
+            Error::ProcessFailed {
+                program: "mihomo -t".to_owned(),
+                status: "exit status: 1".to_owned(),
+                stderr: "rules: invalid".to_owned(),
+            }
+            .is_rollbackable()
+        );
+        assert!(
+            Error::ControllerUnreachable {
+                endpoint: "127.0.0.1:9090".to_owned(),
+                source: "connection refused".into(),
+            }
+            .is_rollbackable()
+        );
+        assert!(Error::invalid("mode", "not a mode").is_rollbackable());
+    }
+
+    #[test]
+    fn a_short_rendering_is_one_line_and_bounded() {
+        let long = Error::Validation {
+            problems: vec!["first problem".to_owned(), "second problem".to_owned()],
+        };
+        assert_eq!(long.short(), "configuration validation failed:");
+        assert!(!long.short().contains('\n'));
+
+        let wide = Error::InvalidValue {
+            field: "reason",
+            reason: "x".repeat(400),
+        };
+        let short = wide.short();
+        assert!(short.chars().count() <= 120, "{}", short.chars().count());
+        assert!(std::str::from_utf8(short.as_bytes()).is_ok());
     }
 }

@@ -212,8 +212,23 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// Policies that are always in scope.
-const BUILTIN_POLICIES: &[&str] = &["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"];
+/// Policies that are always in scope, even though nothing in the document
+/// defines them.
+///
+/// Verified against mihomo v1.19.31, which reports all seven through
+/// `GET /proxies` for a document with two proxies and two groups — eleven
+/// entries in total. `GLOBAL` and `PASS-RULE` are the two that are easy to
+/// mistake for a typo: a rule targeting either is legal, so calling it dangling
+/// would reject a configuration the core accepts and runs.
+const BUILTIN_POLICIES: &[&str] = &[
+    "DIRECT",
+    "REJECT",
+    "REJECT-DROP",
+    "PASS",
+    "PASS-RULE",
+    "COMPATIBLE",
+    "GLOBAL",
+];
 
 /// Validate a configuration, returning every problem found.
 #[must_use]
@@ -824,9 +839,56 @@ rules:
 "#);
         let r = check(&c);
         let cs = codes(&r);
-        assert!(cs.contains(&"E-DANGLING-POLICY"), "{cs:?}");
+        match r.diagnostics.iter().find(|d| d.code == "E-DANGLING-POLICY") {
+            Some(d) => assert!(d.message.contains("NOPE"), "{}", d.message),
+            None => panic!("expected a dangling policy: {:?}", codes(&r)),
+        }
         assert!(cs.contains(&"E-DANGLING-GROUP-MEMBER"), "{cs:?}");
         assert!(!r.is_ok());
+    }
+
+    /// Finding F1: `GLOBAL` and `PASS-RULE` are built in, so a rule may target
+    /// them without the document defining anything. The validator used to call
+    /// both dangling, which rejected a configuration the core accepts — the
+    /// live check installs exactly such a document and `PUT /configs` answers
+    /// `204 No Content`.
+    #[test]
+    fn the_builtin_policies_are_not_dangling() {
+        let c = cfg(r#"
+mixed-port: 7890
+external-controller: 127.0.0.1:9090
+proxies:
+  - { name: "JP 01", type: socks5, server: 1.2.3.4, port: 1080 }
+proxy-groups:
+  - { name: PROXY, type: select, proxies: ["JP 01", GLOBAL, PASS-RULE] }
+rules:
+  - DOMAIN-SUFFIX,a.example,GLOBAL
+  - DOMAIN-SUFFIX,b.example,PASS-RULE
+  - MATCH,PROXY
+"#);
+        let r = check(&c);
+        assert!(
+            !codes(&r).contains(&"E-DANGLING-POLICY"),
+            "the core accepts these: {:?}",
+            codes(&r)
+        );
+        assert!(
+            !codes(&r).contains(&"E-DANGLING-GROUP-MEMBER"),
+            "and a group may list them: {:?}",
+            codes(&r)
+        );
+
+        // Every built-in, so a future edit to the list cannot drop one quietly.
+        for builtin in BUILTIN_POLICIES {
+            let c = cfg(&format!(
+                "mixed-port: 7890\nexternal-controller: 127.0.0.1:9090\n\
+                 rules:\n  - DOMAIN-SUFFIX,x.example,{builtin}\n  - MATCH,DIRECT\n"
+            ));
+            assert!(
+                !codes(&check(&c)).contains(&"E-DANGLING-POLICY"),
+                "{builtin} is built in"
+            );
+        }
     }
 
     #[test]

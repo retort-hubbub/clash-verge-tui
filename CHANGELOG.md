@@ -5,7 +5,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-09-26
+## [Unreleased]
+
+### Fixed
+
+- A partial `test:` block in `cvt.yaml` is loadable again. Adding `urls` put
+  the new entry struct in front of `TestSettings` and took the section's
+  `#[serde(default, deny_unknown_fields)]` with it, so
+  `test: {timeout_ms: 3000}` was refused with "missing field `url`". Found by
+  the sixth review before it shipped.
+- `prune_backups` kept a different set depending on the order backups were
+  made in. Two backups in the same second share a timestamp, and sorting on
+  the timestamp alone left their order to `read_dir`.
+- A symlink in `backups/` is no longer listed as a backup — `is_dir` follows
+  the link — and is removed rather than followed when the directory is pruned.
+- A restore no longer writes *through* a symlink. `std::fs::copy` opens the
+  destination for writing, which follows it, so a home whose
+  `profiles/L1.yaml` was a link into a dotfiles directory had that file
+  overwritten by a restore.
+
+### Added
+
+- `docs/DIAGNOSTICS.md`, and two tests that keep it honest: every code the
+  validator constructs must appear in the reachability table and in the
+  documentation, and neither may list a code that no longer exists.
+
+### Changed
+
+- `every_code_the_validator_produces_is_in_the_table` is new, and it found two
+  codes that were produced and had never been checked for reachability
+  (`E-RULE-MALFORMED`, `W-RULE-KIND`).
+- One assertion in `invariants.rs` was `!codes.contains(&"E-MATCH-WITH-PAYLOAD")`
+  — a code constructed nowhere in the library, so it was true of every input
+  and checked nothing. Replaced by a severity assertion, which then failed and
+  showed that the document it tested named a policy that does not exist.
+
+## [0.7.0] - 2026-09-26
 
 ### Added
 
@@ -28,7 +63,7 @@ than the front page: a robots file is a few hundred bytes, it is served over
 the same TLS connection, and fetching a video page to measure latency would be
 a strange thing for a monitoring tool to do.
 
-### Backup and Restore System
+## [0.6.0] - 2026-09-26
 
 A fifth adversarial review, of the newest work. It found twelve problems: eight
 in what it was sent to check, and four more that opened while it ran, because
@@ -91,11 +126,34 @@ calls it.
 - A rolled-back apply no longer replays the choices of the configuration that
   failed to apply.
 
-## [0.2.1] - 2026-09-26
+## [0.5.0] - 2026-09-26
+
+### Added
+
+- The node chosen in a group is remembered on the profile and replayed after
+  every apply. A reload rebuilds every group, so without this the choice lasts
+  until the next configuration change — which, for a subscription that updates
+  on a schedule, is not long.
+- `cvt proxies select` and `unpin`, and the interface's equivalents, record and
+  forget the choice. The replay waits for a group to answer again before
+  choosing and then confirms the choice took: the core applies a reload in the
+  background, and the first version of this replayed into that window, where
+  the selection was silently discarded. It cost an afternoon of believing the
+  feature worked; the end-to-end check is what caught it.
+- The whole replay shares one deadline rather than taking one per group, so a
+  profile with many remembered groups and a core that has lost them all cannot
+  hold an apply for half a minute.
+
+### Changed
+
+- `ApplyReport` carries `selections_restored`, because a choice is something a
+  user made and one that could not be replayed is worth being able to see.
+
+## [0.4.1] - 2026-09-26
 
 A fourth adversarial review checked 0.4.0's own code and found eleven
 problems. All of them are closed, and its 30 tests are kept
-(`crates/cvt-core/tests/regression_logs_and_subscriptions.rs`).
+(`crates/cvt-core/tests/recheck3.rs`).
 
 The one worth naming is the fourth instance of the same pattern: the guard on
 a document's file name covered the field the previous review had named and not
@@ -134,30 +192,7 @@ through the same guard now, and the fallback no longer keeps the uid verbatim.
   RFC 5987 spelling, which is the one that form actually uses, stopped being
   read at all.
 
-## [0.2.0] - 2026-09-26
-
-### Added
-
-- The node chosen in a group is remembered on the profile and replayed after
-  every apply. A reload rebuilds every group, so without this the choice lasts
-  until the next configuration change — which, for a subscription that updates
-  on a schedule, is not long.
-- `cvt proxies select` and `unpin`, and the interface's equivalents, record and
-  forget the choice. The replay waits for a group to answer again before
-  choosing and then confirms the choice took: the core applies a reload in the
-  background, and the first version of this replayed into that window, where
-  the selection was silently discarded. It cost an afternoon of believing the
-  feature worked; the end-to-end check is what caught it.
-- The whole replay shares one deadline rather than taking one per group, so a
-  profile with many remembered groups and a core that has lost them all cannot
-  hold an apply for half a minute.
-
-### Changed
-
-- `ApplyReport` carries `selections_restored`, because a choice is something a
-  user made and one that could not be replayed is worth being able to see.
-
-### Log Rotation and Header Names
+## [0.4.0] - 2026-09-26
 
 Three gaps from `docs/FEATURE-COVERAGE.md`, which was written by reading the
 code rather than by intent and then turned out to be a work list.
@@ -185,12 +220,12 @@ code rather than by intent and then turned out to be a work list.
   screen, where a rule that profiles may not set a value has to be reachable
   from if it is to be usable at all.
 
-### Control Plane Ownership & Audit Fixes
+## [0.3.0] - 2026-09-26
 
 A third adversarial review checked the fixes from the second and found ten more
 problems with them, including the other half of a path traversal the second had
 found and two regressions those fixes had introduced. All ten are closed, and
-its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.rs`).
+its tests are kept (`crates/cvt-core/tests/recheck2.rs`).
 
 ### Added
 
@@ -201,7 +236,7 @@ its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.r
   know, and a line that is not a rule at all.
 - `docs/FEATURE-COVERAGE.md`: what this project does about each feature of
   `clash-verge-rev`, including the eighteen it does not implement and why.
-- `crates/cvt-core/tests/regression_config_and_profiles.rs` and `regression_validation_and_overrides.rs`: two independent
+- `crates/cvt-core/tests/recheck.rs` and `recheck2.rs`: two independent
   adversarial reviews, kept in the build.
 
 ### Changed
@@ -233,7 +268,7 @@ its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.r
   into a list (`a[0].b`) is how an element is addressed, and one writing an
   *ancestor* of a list was never compared against the value it writes.
 
-## [0.1.1] - 2026-09-26
+## [0.2.0] - 2026-09-26
 
 ### Fixed
 
@@ -377,8 +412,12 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.7.0...develop
+[0.7.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.7.0
+[0.6.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.6.0
+[0.5.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.5.0
+[0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
+[0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
 [0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
-[0.2.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.1
 [0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0
-[0.1.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

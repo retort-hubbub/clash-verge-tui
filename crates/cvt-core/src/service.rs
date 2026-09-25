@@ -170,6 +170,13 @@ pub struct Backup {
     pub path: PathBuf,
     /// Unix timestamp of when it was taken.
     pub created: i64,
+    /// Which backup of that second it was, `1` for the first.
+    ///
+    /// Carried separately because two backups taken in the same second share a
+    /// timestamp, and sorting on the timestamp alone leaves their order to
+    /// whatever `read_dir` produced — so the same six backups pruned to
+    /// different survivors depending on the order they were made in.
+    pub sequence: u32,
     /// How many entries it holds, for a report.
     pub items: usize,
 }
@@ -215,6 +222,22 @@ fn copy_state(from: &Path, to: &Path) -> Result<()> {
 /// the source, so a file copied onto itself comes back empty and the call
 /// reports success.
 fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+    // A destination that is a *symlink* is refused rather than followed.
+    // `std::fs::copy` opens the destination for writing, which follows the link
+    // — so a home whose `profiles/L1.yaml` is a link into somebody's dotfiles
+    // made a restore overwrite that file, outside the home, silently. The link
+    // is the user's arrangement and is not this function's to replace, so it
+    // says so and stops.
+    if std::fs::symlink_metadata(destination).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(Error::invalid(
+            "backup",
+            format!(
+                "{} is a symbolic link; a restore would write through it to \
+                 wherever it points. Remove the link, or restore by hand.",
+                destination.display()
+            ),
+        ));
+    }
     let same = std::fs::canonicalize(source).ok();
     if same.is_some() && same == std::fs::canonicalize(destination).ok() {
         return Ok(());
@@ -657,25 +680,35 @@ impl Service {
         };
         let mut found: Vec<Backup> = entries
             .flatten()
-            .filter(|entry| entry.path().is_dir())
             .filter_map(|entry| {
+                // `symlink_metadata`, not `is_dir`: that follows the link, so a
+                // symlink pointing at somebody else's directory was listed as a
+                // backup and offered for restore. A backup is a directory this
+                // program wrote, and a link is not one.
+                let kind = entry.file_type().ok()?;
+                if !kind.is_dir() {
+                    return None;
+                }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                // `1790363784` or `1790363784-2` when that second was taken.
-                let created = name
-                    .split('-')
-                    .next()
-                    .and_then(|stamp| stamp.parse::<i64>().ok())?;
+                let (stamp, sequence) = name.split_once('-').map_or(
+                    (name.as_str(), 1),
+                    |(stamp, rest)| (stamp, rest.parse::<u32>().unwrap_or(1)),
+                );
+                let created = stamp.parse::<i64>().ok()?;
                 let items = std::fs::read_dir(entry.path())
                     .map(|inner| inner.flatten().count())
                     .unwrap_or(0);
                 Some(Backup {
                     path: entry.path(),
                     created,
+                    sequence,
                     items,
                 })
             })
             .collect();
-        found.sort_by_key(|backup| std::cmp::Reverse(backup.created));
+        // Newest first, and *within a second* by the order they were taken.
+        // `created` alone left ties in `read_dir` order.
+        found.sort_by_key(|backup| std::cmp::Reverse((backup.created, backup.sequence)));
         Ok(found)
     }
 
@@ -739,8 +772,31 @@ impl Service {
     /// [`Error::Io`] when a directory exists and cannot be removed.
     pub fn prune_backups(&self, keep: usize) -> Result<usize> {
         let mut removed = 0;
-        for backup in self.backups()?.into_iter().skip(keep) {
-            std::fs::remove_dir_all(&backup.path).map_err(|e| Error::io(&backup.path, e))?;
+        let mut doomed: Vec<PathBuf> = self
+            .backups()?
+            .into_iter()
+            .skip(keep)
+            .map(|backup| backup.path)
+            .collect();
+        // Entries that are not backups are removed too, and a link above all: a
+        // symlink in this directory is not something this program writes, and
+        // leaving it means `backup restore <name>` can be pointed at a
+        // directory outside the home. Anything else a person put here stays —
+        // this directory is the program's, but deleting a file it did not write
+        // and cannot explain is worse than leaving it.
+        if let Ok(entries) = std::fs::read_dir(self.paths.backups_dir()) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                    doomed.push(entry.path());
+                }
+            }
+        }
+        for path in doomed {
+            if path.is_dir() && !path.is_symlink() {
+                std::fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
+            } else {
+                std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
+            }
             removed += 1;
         }
         Ok(removed)

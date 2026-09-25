@@ -538,7 +538,11 @@ fn a_payload_less_rule_keeps_its_flags_and_reports_a_stray_payload() {
     // `no-resolve` is a flag a rule may carry, so the line above is legal. A
     // field that is not a flag is a payload by position, and that is what the
     // validator now reports instead of dropping it.
-    let config = Config::from_yaml("rules: ['MATCH,GHOST,extra']\n").unwrap();
+    // `MATCH,DIRECT,extra`, not `MATCH,GHOST,extra`. The first version named a
+    // policy that does not exist, so the rule was reported for that instead —
+    // `E-DANGLING-POLICY` — and the assertion beside it could not tell the
+    // difference because it was checking a code that is never constructed.
+    let config = Config::from_yaml("rules: ['MATCH,DIRECT,extra']\n").unwrap();
     let codes: Vec<&str> = validate::check(&config)
         .diagnostics
         .iter()
@@ -552,9 +556,23 @@ fn a_payload_less_rule_keeps_its_flags_and_reports_a_stray_payload() {
         codes.contains(&"W-MATCH-WITH-PAYLOAD"),
         "`MATCH,GHOST,extra` carries a field MATCH ignores, but check() produced {codes:?}"
     );
+    // This used to be `!codes.contains(&"E-MATCH-WITH-PAYLOAD")`, and that code
+    // is constructed nowhere in the library — so the assertion was true of
+    // every possible input and checked nothing. It also stated the intent in
+    // terms of a *name*, when the intent is about a **severity**: the core
+    // loads this, so nothing about it may be reported as an error. Said that
+    // way it can fail, and it keeps working if the code is ever renamed.
+    let report = validate::check(&config);
+    let errors: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == validate::Severity::Error)
+        .map(|diagnostic| diagnostic.code)
+        .collect();
     assert!(
-        !codes.contains(&"E-MATCH-WITH-PAYLOAD"),
-        "the core loads this, so it cannot be an error: {codes:?}"
+        errors.is_empty(),
+        "the core loads this, so it cannot be an error: {errors:?}\n{}",
+        report.render()
     );
 }
 
@@ -1299,11 +1317,17 @@ fn a_smart_group_is_not_a_real_mihomo_group_type() {
     );
 }
 
-/// Every code the module can emit must be reachable from a config that
-/// deserves it. The table is one entry per code in `validate.rs`.
-#[test]
-fn claim8_every_documented_code_is_reachable() {
-    let cases: &[(&str, &str)] = &[
+/// Configurations that must produce each diagnostic, one per code.
+///
+/// Hand-written, and `every_code_the_validator_produces_is_in_the_table`
+/// below is what keeps it honest: it reads the codes the validator
+/// *constructs* out of `validate.rs` and fails if one is missing here.
+/// Before that test existed the table could fall behind silently, and had:
+/// `E-RULE-MALFORMED` and `W-RULE-KIND` were produced by the validator and
+/// had never been checked for reachability at all.
+#[allow(clippy::too_many_lines)]
+fn code_cases() -> &'static [(&'static str, &'static str)] {
+    &[
         (
             "E-DUPLICATE-PROXY",
             "proxies:\n  - {name: a, type: socks5, server: 1.2.3.4, port: 1}\n  - {name: a, type: socks5, server: 5.6.7.8, port: 1}\nrules: ['MATCH,DIRECT']\n",
@@ -1365,6 +1389,14 @@ fn claim8_every_documented_code_is_reachable() {
         (
             "W-DUPLICATE-RULE",
             "rules: ['DOMAIN,a.test,DIRECT', 'DOMAIN,a.test,DIRECT', 'MATCH,DIRECT']\n",
+        ),
+        (
+            "E-RULE-MALFORMED",
+            "rules: ['no-commas-at-all', 'MATCH,DIRECT']\n",
+        ),
+        (
+            "W-RULE-KIND",
+            "rules: ['NOT-A-TYPE,a,DIRECT', 'MATCH,DIRECT']\n",
         ),
         (
             "E-CIDR-NO-PREFIX",
@@ -1442,12 +1474,18 @@ fn claim8_every_documented_code_is_reachable() {
             "W-TUN-AUTOROUTE-NO-DNS",
             "tun:\n  enable: true\n  stack: mixed\n  auto-route: true\nrules: ['MATCH,DIRECT']\n",
         ),
-    ];
+    ]
+}
 
-    // `E-MATCH-WITH-PAYLOAD` is deliberately absent from this table: see
-    // `f10_...` below, which shows that no config can reach it.
+/// Every code the module can emit must be reachable from a config that
+/// deserves it. The table is one entry per code in `validate.rs`.
+///
+/// What this cannot say is whether the table is *complete* — see the test
+/// below, which reads the set out of the source instead of trusting the list.
+#[test]
+fn claim8_every_documented_code_is_reachable() {
     let mut missing = Vec::new();
-    for (code, yaml) in cases {
+    for (code, yaml) in code_cases() {
         let config = Config::from_yaml(yaml).unwrap();
         let report = validate::check(&config);
         let codes: Vec<&str> = report.diagnostics.iter().map(|d| d.code).collect();
@@ -1461,6 +1499,137 @@ fn claim8_every_documented_code_is_reachable() {
         missing.len(),
         missing.join("\n---\n")
     );
+}
+
+/// Every code the validator can *construct* must appear in the table above.
+///
+/// The reachability test answers "does this config produce this code". It
+/// cannot answer "is this list complete", and for a while it did not have to:
+/// `E-RULE-MALFORMED` and `W-RULE-KIND` were produced by `validate.rs` and were
+/// not in the table, so nothing checked that any config could reach them. A new
+/// code added without a case would have gone the same way, silently.
+///
+/// So the set is read out of the source rather than trusted. `include_str!`
+/// rather than a filesystem read, so this is compiled into the test and cannot
+/// be fooled by a working directory.
+#[test]
+fn every_code_the_validator_produces_is_in_the_table() {
+    /// Codes the validator constructs that the table deliberately omits.
+    ///
+    /// A list rather than a special case in the code, so adding the next one is
+    /// a decision somebody makes and writes down. Each must have a test that
+    /// shows why it cannot be reached.
+    const DELIBERATE: &[(&str, &str)] = &[(
+        "W-MATCH-WITH-PAYLOAD",
+        "reached by `a_payload_less_rule_keeps_its_flags_and_reports_a_stray_payload` \
+         below, which asserts the severity rather than the code",
+    )];
+
+    let produced = constructed_codes();
+    assert!(
+        produced.len() > 20,
+        "the scan found only {} codes, so it is probably looking in the wrong \
+         place: {produced:?}",
+        produced.len()
+    );
+
+    let tested: Vec<&str> = code_cases().iter().map(|(code, _)| *code).collect();
+    let missing: Vec<&String> = produced
+        .iter()
+        .filter(|code| !tested.contains(&code.as_str()))
+        .filter(|code| !DELIBERATE.iter().any(|(name, _)| name == code))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} code(s) the validator can produce are not reachability-tested, and \
+         are not on the deliberate list: {missing:?}",
+        missing.len()
+    );
+
+    // And the other direction: a table entry for a code that no longer exists
+    // is a test of nothing, which is worse than no test.
+    let stale: Vec<&&str> = tested
+        .iter()
+        .filter(|code| !produced.contains(&(**code).to_owned()))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "the table lists {stale:?}, which the validator does not produce"
+    );
+}
+
+/// Every code the validator produces must have an entry in the diagnostics
+/// page, and the page must not list a code that no longer exists.
+///
+/// A code is what a user searches for. A message is written for one
+/// configuration; the code is the thing that has to work for all of them, and
+/// a code with nowhere to look it up is a code that will be read as noise.
+#[test]
+fn every_code_the_validator_produces_is_documented() {
+    let page = include_str!("../../../docs/DIAGNOSTICS.md");
+    let produced = constructed_codes();
+
+    let missing: Vec<&String> = produced
+        .iter()
+        .filter(|code| !page.contains(code.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} code(s) are produced by the validator and have no entry in \
+         docs/DIAGNOSTICS.md: {missing:?}",
+        missing.len()
+    );
+
+    // The other direction, over the *tables* rather than the prose. A row for a
+    // code that is never produced sends a reader looking for something that
+    // cannot happen — while prose is allowed to name a retired code, because
+    // saying why a check was removed is the most useful thing on the page.
+    let documented: Vec<&str> = page
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|rest| rest.split('`').next())
+        .filter(|code| {
+            code.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+        })
+        .collect();
+    let stale: Vec<&&str> = documented
+        .iter()
+        .filter(|code| !produced.contains(&(**code).to_owned()))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "docs/DIAGNOSTICS.md lists {stale:?}, which the validator does not produce"
+    );
+}
+
+/// The diagnostic codes `validate.rs` constructs, read out of its source.
+///
+/// Deliberately textual. The alternative is for `validate.rs` to keep a list,
+/// which is the same hand-maintained list this exists to check.
+fn constructed_codes() -> Vec<String> {
+    let source = include_str!("../src/validate.rs");
+    let mut found = Vec::new();
+    let mut rest = source;
+    while let Some(at) = rest.find("Diagnostic::") {
+        rest = &rest[at + "Diagnostic::".len()..];
+        let Some(paren) = rest.find('(') else { break };
+        let constructor = &rest[..paren];
+        if !matches!(constructor, "error" | "warn" | "note" | "info") {
+            continue;
+        }
+        let after = rest[paren + 1..].trim_start();
+        let Some(quoted) = after.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = quoted.find('"') else {
+            continue;
+        };
+        found.push(quoted[..end].to_owned());
+    }
+    found.sort();
+    found.dedup();
+    found
 }
 
 // ================================================================ claim 9

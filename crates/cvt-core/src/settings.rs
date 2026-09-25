@@ -91,7 +91,11 @@ impl Default for UiSettings {
     }
 }
 
-/// Latency testing.
+/// One URL a node can be tested against.
+///
+/// `default` on both fields so an entry that names only one of them is a
+/// validation error rather than a parse error: the message can then say which
+/// entry is wrong, which a parse failure cannot.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TestTarget {
@@ -143,8 +147,9 @@ impl TestSettings {
     }
 }
 
-/// How a node is probed.
+/// Latency testing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct TestSettings {
     /// URL probed for latency. Must return 204 without a body to measure
     /// connection setup rather than transfer.

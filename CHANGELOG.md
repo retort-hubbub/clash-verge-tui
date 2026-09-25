@@ -5,30 +5,54 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-09-26
+## [Unreleased]
 
-### Added
+Nothing yet.
 
-- The node chosen in a group is remembered on the profile and replayed after
-  every apply. A reload rebuilds every group, so without this the choice lasts
-  until the next configuration change — which, for a subscription that updates
-  on a schedule, is not long.
-- `cvt proxies select` and `unpin`, and the interface's equivalents, record and
-  forget the choice. The replay waits for a group to answer again before
-  choosing and then confirms the choice took: the core applies a reload in the
-  background, and the first version of this replayed into that window, where
-  the selection was silently discarded. It cost an afternoon of believing the
-  feature worked; the end-to-end check is what caught it.
-- The whole replay shares one deadline rather than taking one per group, so a
-  profile with many remembered groups and a core that has lost them all cannot
-  hold an apply for half a minute.
+## [0.4.1] - 2026-09-26
 
-### Changed
+A fourth adversarial review checked 0.4.0's own code and found eleven
+problems. All of them are closed, and its 30 tests are kept
+(`crates/cvt-core/tests/recheck3.rs`).
 
-- `ApplyReport` carries `selections_restored`, because a choice is something a
-  user made and one that could not be replayed is worth being able to see.
+The one worth naming is the fourth instance of the same pattern: the guard on
+a document's file name covered the field the previous review had named and not
+the arm of the same expression next to it, so an index entry that *omits*
+`file` carried a hostile `uid` into a path — a subscription refresh could write
+over a file outside `profiles/`, and `remove` could delete one. Both arms go
+through the same guard now, and the fallback no longer keeps the uid verbatim.
 
-### Log Rotation and Header Names
+### Fixed
+
+- `PrfItem::file_name`'s uid-derived fallback was unvalidated (above).
+- `start_core` rotated the live log before the "already running" check, so a
+  *refused* start moved the log of the core that was still running, which then
+  wrote into `.1` with nothing left to create `core.log`.
+- The `path&a=b` URL repair was dead code for its own shape: that shape is a
+  valid URL, so validating first never reached the repair. The shape is
+  detected now, narrowly — no query yet, and an `=` after the first `&`.
+- `prune_logs` deleted `core.log.0`, `.01` and `.+1`, none of which this module
+  writes, and returned at the first file it could not remove, leaving the pass
+  half done in an order-dependent way.
+- `logs.keep` was capped only on the way to disk, so `cvt.yaml` could hold a
+  hundred million and make every start probe that many paths.
+- A symlinked log was rotated by renaming the *link*, so the bytes it pointed
+  at stayed put and the log destination silently stopped receiving output. It
+  is copied and truncated now.
+- Two catch-alls in one `prepend` are refused, as the same patch written as an
+  `append` already was.
+- `IP-SUFFIX` and `SRC-IP-SUFFIX` were not checked, though the core refuses a
+  bare payload for all five CIDR-shaped kinds; and `W-CIDR-NO-PREFIX` said
+  "mihomo assumes a full-length mask", which the core contradicts — the rule
+  does not load. It is `E-CIDR-NO-PREFIX` and an error.
+- `name_from_url` decoded *after* choosing a segment, so
+  `%2e%2e%2f…%2fpasswd` came through as `../../etc/passwd`; it also offered the
+  host as a name for a URL with no path.
+- A quoted `filename` was cut at a `;` inside the quotes — and the unquoted
+  RFC 5987 spelling, which is the one that form actually uses, stopped being
+  read at all.
+
+## [0.4.0] - 2026-09-26
 
 Three gaps from `docs/FEATURE-COVERAGE.md`, which was written by reading the
 code rather than by intent and then turned out to be a work list.
@@ -52,16 +76,15 @@ code rather than by intent and then turned out to be a work list.
 
 ### Changed
 
-- `logs.keep` above 64 is refused. The three log options are on the settings
-  screen, where a rule that profiles may not set a value has to be reachable
-  from if it is to be usable at all.
+- `logs.keep` above 64 is refused, and the settings screen does not yet offer
+  the three log options; they are edited in `cvt.yaml`.
 
-### Control Plane Ownership & Audit Fixes
+## [0.3.0] - 2026-09-26
 
 A third adversarial review checked the fixes from the second and found ten more
 problems with them, including the other half of a path traversal the second had
 found and two regressions those fixes had introduced. All ten are closed, and
-its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.rs`).
+its tests are kept (`crates/cvt-core/tests/recheck2.rs`).
 
 ### Added
 
@@ -72,7 +95,7 @@ its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.r
   know, and a line that is not a rule at all.
 - `docs/FEATURE-COVERAGE.md`: what this project does about each feature of
   `clash-verge-rev`, including the eighteen it does not implement and why.
-- `crates/cvt-core/tests/regression_config_and_profiles.rs` and `regression_validation_and_overrides.rs`: two independent
+- `crates/cvt-core/tests/recheck.rs` and `recheck2.rs`: two independent
   adversarial reviews, kept in the build.
 
 ### Changed
@@ -104,7 +127,7 @@ its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.r
   into a list (`a[0].b`) is how an element is addressed, and one writing an
   *ancestor* of a list was never compared against the value it writes.
 
-## [0.1.1] - 2026-09-26
+## [0.2.0] - 2026-09-26
 
 ### Fixed
 
@@ -248,6 +271,9 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.4.1...develop
+[0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
+[0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
+[0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
 [0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0
-[0.1.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

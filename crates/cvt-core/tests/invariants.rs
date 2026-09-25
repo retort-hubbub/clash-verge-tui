@@ -1367,7 +1367,7 @@ fn claim8_every_documented_code_is_reachable() {
             "rules: ['DOMAIN,a.test,DIRECT', 'DOMAIN,a.test,DIRECT', 'MATCH,DIRECT']\n",
         ),
         (
-            "W-CIDR-NO-PREFIX",
+            "E-CIDR-NO-PREFIX",
             "rules: ['IP-CIDR,10.0.0.0,DIRECT', 'MATCH,DIRECT']\n",
         ),
         (

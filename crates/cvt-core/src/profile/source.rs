@@ -44,6 +44,7 @@ use reqwest::header::{ACCEPT, ETAG, USER_AGENT};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::profile::item::single_component;
 use crate::profile::item::{PrfItem, UserInfo};
 use crate::profile::store::ProfileStore;
 
@@ -653,22 +654,37 @@ fn validated_url(url: &str) -> Result<reqwest::Url> {
 /// [`Error::InvalidValue`] for a URL that is not `http`/`https`, or
 /// [`Error::Http`] when the request cannot be assembled.
 fn build_request(client: &reqwest::Client, url: &str) -> Result<reqwest::Request> {
-    // A panel that appends `&token=...` to a URL with no `?` produces one path
-    // segment and a 404. The repair is attempted here rather than at the call
-    // site so every route into a subscription benefits from it, and only when
-    // the original fails to validate — a URL that is already well-formed is
-    // never second-guessed.
-    let (url, parsed) = match validated_url(url) {
-        Ok(parsed) => (url.to_owned(), parsed),
-        Err(error) => {
-            let Some(repaired) = repair_url(url) else {
-                return Err(error);
-            };
-            let Ok(parsed) = validated_url(&repaired) else {
-                return Err(error);
-            };
+    // A panel that appends `&token=...` to a URL with no `?` asks for one path
+    // segment and gets a 404.
+    //
+    // The repair used to run only when the URL *failed* to validate, and the
+    // shape it exists for — `https://panel/sub&token=abc` — does not fail: `&`
+    // is a sub-delim, so it parses and the request went out with the ampersand
+    // in it. The repair was dead code for its own case. The shape is detected
+    // instead, narrowly: no query yet, and an `=` after the first `&`.
+    let repaired = if forgot_its_question_mark(url) {
+        repair_url(url).filter(|candidate| validated_url(candidate).is_ok())
+    } else {
+        None
+    };
+    let (url, parsed) = match repaired {
+        Some(repaired) => {
+            let parsed = validated_url(&repaired)
+                .unwrap_or_else(|_| unreachable!("filtered by `validated_url` just above"));
             (repaired, parsed)
         }
+        None => match validated_url(url) {
+            Ok(parsed) => (url.to_owned(), parsed),
+            Err(error) => {
+                let Some(repaired) = repair_url(url) else {
+                    return Err(error);
+                };
+                let Ok(parsed) = validated_url(&repaired) else {
+                    return Err(error);
+                };
+                (repaired, parsed)
+            }
+        },
     };
     client
         .get(parsed)
@@ -786,19 +802,10 @@ pub fn is_web_url(value: &str) -> bool {
 /// sends a strange one simply gets it ignored by whoever called.
 #[must_use]
 pub fn disposition_filename(header: &str) -> Option<String> {
-    let value = header
-        .split(';')
-        .map(str::trim)
-        .find_map(|part| part.strip_prefix("filename*="))
-        .and_then(|rest| rest.split_once("''").map(|(_, encoded)| encoded))
-        .map(|encoded| percent_decode(encoded.trim().trim_matches('"')))
-        .or_else(|| {
-            header
-                .split(';')
-                .map(str::trim)
-                .find_map(|part| part.strip_prefix("filename="))
-                .map(|value| value.trim().trim_matches('"').to_owned())
-        })?;
+    let value = header_parameter(header, "filename*=")
+        .and_then(|rest| rest.split_once("''").map(|(_, encoded)| encoded.to_owned()))
+        .map(|encoded| percent_decode(&encoded))
+        .or_else(|| header_parameter(header, "filename=").map(str::to_owned))?;
     let stem = Path::new(value.trim())
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())?;
@@ -809,19 +816,57 @@ pub fn disposition_filename(header: &str) -> Option<String> {
     (!stem.is_empty() && !stem.starts_with('.')).then_some(stem)
 }
 
+/// One parameter of a header, quoted or not.
+///
+/// A quoted value is read to its closing quote: splitting the header on `;`
+/// first — which is how this started — cut `filename="My;Airport.yaml"` at the
+/// semicolon *inside* the quotes, and that is a legal value. An unquoted one
+/// runs to the next `;`, which is the shape RFC 5987's extended form actually
+/// uses, so both spellings have to be read this way.
+fn header_parameter<'a>(header: &'a str, key: &str) -> Option<&'a str> {
+    let start = header.find(key)? + key.len();
+    let rest = header[start..].trim_start();
+    match rest.strip_prefix('"') {
+        Some(quoted) => quoted.find('"').map(|end| &quoted[..end]),
+        None => Some(rest.split(';').next().unwrap_or(rest).trim()),
+    }
+}
+
 /// The last meaningful segment of a URL, as a name.
 fn name_from_url(url: &str) -> Option<String> {
     let path = url.split(['?', '#']).next().unwrap_or(url);
-    let segment = path
+    let after_scheme = path.split_once("://").map_or(path, |(_, rest)| rest);
+    // Everything before the first `/` is the authority, and a name can only
+    // come from what follows it — so a URL with no path has none to offer. The
+    // earlier version took the last `/`-separated piece of the whole URL, which
+    // for `https://panel.example.com` is the host, and offering the host back
+    // as a *suggestion* is worse than offering nothing: the caller already
+    // falls back to it.
+    let (_, tail) = after_scheme.split_once('/')?;
+    // Decoded *before* the split. Splitting first and decoding the chosen
+    // segment afterwards let `%2e%2e%2f%2e%2e%2fetc%2fpasswd` through as
+    // `../../etc/passwd`: the separators were not separators until they were
+    // decoded, and by then the segment had already been picked.
+    let decoded = percent_decode(tail);
+    let segment = decoded
         .trim_end_matches('/')
         .rsplit('/')
         .find(|part| !part.is_empty())?;
-    // A URL whose last segment is the *host* names nothing useful.
-    if segment.contains('.') && !segment.starts_with("sub") {
-        return None;
+    // The same guard the file names go through. Nothing uses a profile name as
+    // a path today, and that is not a reason to hand out one that could be.
+    single_component(segment)
+}
+
+/// `true` when a URL looks like a query string whose `?` was forgotten.
+///
+/// No query or fragment yet, and an `=` after the first `&`. An ampersand in a
+/// path is legal on its own, which is why the second half is there.
+fn forgot_its_question_mark(url: &str) -> bool {
+    if url.contains(['?', '#']) {
+        return false;
     }
-    let decoded = percent_decode(segment);
-    (!decoded.is_empty()).then_some(decoded)
+    url.split_once('&')
+        .is_some_and(|(_, rest)| rest.contains('='))
 }
 
 /// Repair the `path&a=b` spelling of a query string.

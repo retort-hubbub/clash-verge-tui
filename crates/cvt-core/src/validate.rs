@@ -577,16 +577,40 @@ fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mu
         return;
     };
     match rule.kind.as_str() {
-        "IP-CIDR" | "IP-CIDR6" | "SRC-IP-CIDR" => {
+        // Five kinds take a prefix-shaped payload, and all five need one:
+        // `mihomo -t` answers every bare spelling below with `payloadRule
+        // error`, and every prefixed one with *test is successful*.
+        //
+        //   IP-CIDR,1.2.3.4,DIRECT        refused    1.2.3.0/24   accepted
+        //   IP-CIDR6,2001:db8::,DIRECT    refused    ...::/32     accepted
+        //   IP-SUFFIX,1.2.3.4,DIRECT      refused    1.2.3.0/24   accepted
+        //   SRC-IP-CIDR,1.2.3.4,DIRECT    refused    1.2.3.0/24   accepted
+        //   SRC-IP-SUFFIX,1.2.3.4,DIRECT  refused    1.2.3.0/24   accepted
+        //
+        // This was a *warning* whose text said "mihomo assumes a full-length
+        // mask", which the core contradicts: the rule does not load at all. A
+        // document this build called a warning is one that cannot start a
+        // core, which is the difference the severity carries.
+        "IP-CIDR" | "IP-CIDR6" | "SRC-IP-CIDR" | "IP-SUFFIX" | "SRC-IP-SUFFIX" => {
             if !payload.contains('/') {
                 report.diagnostics.push(
-                    Diagnostic::warn(
-                        "W-CIDR-NO-PREFIX",
-                        format!("`{rule}` has no prefix length; mihomo assumes a full-length mask"),
+                    Diagnostic::error(
+                        "E-CIDR-NO-PREFIX",
+                        format!(
+                            "`{rule}` has no prefix length, and mihomo refuses a rule without one"
+                        ),
                     )
                     .at(loc.clone())
-                    .fix("write an explicit prefix, e.g. `1.2.3.0/24`"),
+                    .fix("write the prefix, e.g. `1.2.3.0/24`"),
                 );
+            }
+            // The family check stays with the three kinds whose name states
+            // one. `IP-SUFFIX` takes the same payload shape but its accepted
+            // families are not something a single probe settles, and reporting
+            // a valid document as broken is the mistake this project keeps
+            // making.
+            if !matches!(rule.kind.as_str(), "IP-CIDR" | "IP-CIDR6" | "SRC-IP-CIDR") {
+                return;
             }
             let want_v6 = rule.kind == "IP-CIDR6";
             let looks_v6 = payload.contains(':');

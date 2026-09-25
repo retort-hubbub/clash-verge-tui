@@ -169,15 +169,19 @@ impl Overlay {
         // run. Refusing says so; appending both produces a document the
         // validator rejects, and appending one produces a list that quietly
         // names fewer rules than the patch did.
-        for (raw, items) in &self.append {
+        // Both list operations, not just `append`. A prepended catch-all takes
+        // the existing one's place, so a patch naming two of them has the same
+        // problem for the same reason: one of them must lose, and the log
+        // would claim both were added.
+        for (raw, items) in self.prepend.iter().chain(&self.append) {
             let parsed = Path::parse(raw)?;
             let catch_alls = items.iter().filter(|item| is_terminal_rule(item)).count();
             if is_rules_list(&parsed) && catch_alls > 1 {
                 return Err(Error::invalid(
                     "override",
                     format!(
-                        "`{raw}` appends {catch_alls} catch-all rules; only the last could \
-                         ever run, so write the one you mean"
+                        "`{raw}` names {catch_alls} catch-all rules in one list; only the last \
+                         could ever run, so write the one you mean"
                     ),
                 ));
             }
@@ -450,11 +454,22 @@ fn append_items(
 
 /// Whether a `set` and a list edit disagree about a path's shape.
 ///
-/// Returns the reason when they do. Exactly one of the two can be right about
-/// any given path: a list edit makes it a list, and a `set` that has to *walk
-/// through* it needs a mapping. Walking through a list is possible with an
-/// index or a selector (`a.b[0]`, `a[name=x]`), which is why those are not a
-/// disagreement — that is how an element of a list is addressed at all.
+/// Returns the reason when they do. A list edit makes its path a list, and a
+/// `set` that has to *walk through* that path needs a mapping — those two
+/// cannot both hold. Walking through a list with an index or a selector
+/// (`a.b[0]`, `a[name=x]`) is not a disagreement: that is how an element of a
+/// list is addressed at all.
+///
+/// This is a check about *shape agreement*, not about whether the overlay will
+/// apply. `validate` never sees the document, so it cannot know whether `a[0]`
+/// has an element to address: `set: {dns.nameserver[0]: 1.1.1.1}` together with
+/// `append: {dns.nameserver: [...]}` is consistent and is accepted, and it
+/// still fails to apply against a base that has no `dns` — because the list the
+/// index addresses does not exist yet. The point of this function is the
+/// narrower one: an overlay it accepts can be applied *twice* to the same
+/// document and mean the same thing, which is the idempotence the module
+/// promises. That it may not apply at all is a separate answer, and one only
+/// the document can give.
 fn shape_conflict(list: &Path, set: &Path, value: &Value) -> Option<String> {
     let list = list.segments();
     let set = set.segments();

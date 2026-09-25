@@ -241,7 +241,7 @@ impl UserInfo {
 /// `../../etc/passwd` would become `passwd`, which is a different document from
 /// the one the index meant, and silently pointing at that is worse than saying
 /// the name is unusable.
-fn single_component(name: &str) -> Option<String> {
+pub(crate) fn single_component(name: &str) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
         return None;
     }
@@ -376,25 +376,50 @@ impl PrfItem {
     /// The filename, derived from the uid when the index omitted it.
     #[must_use]
     pub fn file_name(&self) -> String {
-        let named = self
-            .file
-            .clone()
-            .unwrap_or_else(|| self.default_file_name());
         // The document lives *inside* the profiles directory, so this is one
-        // path component and nothing else. The uid guard covers the other
-        // field that reaches a path, and fixing only that one left this open:
-        // an index carrying `file: ../outside.yaml` — from another front end, a
-        // hand edit, a restored backup or a synced dotfiles directory, none of
-        // which `load` inspects — made every caller of `document_path` write,
-        // read and *delete* outside `profiles/`.
+        // path component and nothing else.
+        //
+        // Every arm goes through the guard, and that is the point: the last
+        // two attempts at this validated the field somebody had named — first
+        // `uid`, then `file` — and each left the *other* arm of this one
+        // expression open. A loaded index entry that omits `file` falls back
+        // to `{uid}.yaml`, so a hostile uid walked into a path through the
+        // fallback; and the fallback is derived from the uid, which is as
+        // untrusted as the name it replaces.
         //
         // A name that is not one component is replaced rather than refused: an
-        // entry with an unusable file name is still an entry, and the
-        // alternative is an index that cannot be opened at all.
-        match single_component(&named) {
-            Some(plain) => plain,
-            None => self.default_file_name(),
-        }
+        // entry with an unusable name is still an entry, and the alternative is
+        // an index that cannot be opened at all.
+        self.file
+            .as_deref()
+            .and_then(single_component)
+            .unwrap_or_else(|| self.fallback_file_name())
+    }
+
+    /// A name that is certainly one plain path component.
+    ///
+    /// Built from the uid with everything a path can act on removed, because
+    /// the uid is untrusted too. Deliberately *not* [`Self::default_file_name`]:
+    /// that one keeps the uid verbatim, which is right for a value this program
+    /// wrote and wrong for a value it read.
+    fn fallback_file_name(&self) -> String {
+        let ext = if self.kind == ProfileType::Script {
+            "js"
+        } else {
+            "yaml"
+        };
+        let stem: String = self
+            .uid
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        // `..` and `.` cannot survive the filter above, but an empty one can.
+        let stem = if stem.is_empty() {
+            "profile".to_owned()
+        } else {
+            stem
+        };
+        format!("{stem}.{ext}")
     }
 
     /// The filename this profile would have if named after its uid.
@@ -804,13 +829,40 @@ option:
             "o1.yaml"
         );
 
-        // An empty uid must not yield a bare extension.
+        // An empty uid must not yield a bare extension — `.yaml` is a
+        // dotfile, and a document nobody can find by name is worse than one
+        // with a placeholder stem.
         let unassigned = PrfItem::remote("", "n", "https://x");
-        assert_eq!(
-            unassigned.file_name(),
-            ".yaml",
-            "the store assigns the uid before use"
-        );
+        assert_eq!(unassigned.file_name(), "profile.yaml");
+    }
+
+    /// The fallback is derived from the uid, which is untrusted input too.
+    ///
+    /// Two earlier attempts at this validated the field somebody had named —
+    /// `uid`, then `file` — and each left the other arm of `file_name`'s one
+    /// expression open. This covers the arm that does not read `file` at all.
+    #[test]
+    fn an_unusable_uid_cannot_reach_a_path_through_the_fallback() {
+        for (uid, expected) in [
+            ("../canary", "canary.yaml"),
+            ("../profiles", "profiles.yaml"),
+            ("../../etc/passwd", "etcpasswd.yaml"),
+            ("/absolute/path", "absolutepath.yaml"),
+            ("a/b", "ab.yaml"),
+            ("..", "profile.yaml"),
+            (".", "profile.yaml"),
+            ("", "profile.yaml"),
+            ("a\0b", "ab.yaml"),
+        ] {
+            let mut item = PrfItem::remote(uid, "n", "https://x");
+            item.file = None;
+            assert_eq!(item.file_name(), expected, "uid {uid:?}");
+            assert!(
+                !item.file_name().contains(['/', '\\']),
+                "uid {uid:?} reached a path: {}",
+                item.file_name()
+            );
+        }
     }
 
     #[test]

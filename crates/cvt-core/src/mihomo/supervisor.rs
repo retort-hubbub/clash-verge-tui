@@ -94,6 +94,14 @@ mod rotation {
 
     use crate::error::{Error, Result};
 
+    /// The most files `keep` will ever be taken at face value.
+    ///
+    /// `Settings::validate` refuses more, but that only runs on the way *to*
+    /// disk: a `cvt.yaml` somebody edited, or one written by an older version,
+    /// is loaded without it. `rotate` probes one path per step, so a `keep` of
+    /// a hundred million is minutes of syscalls on every start, twice.
+    const KEEP_LIMIT: usize = 64;
+
     /// Where the `n`th rotated copy of `log` lives, `n` starting at 1.
     fn rotated(log: &Path, n: usize) -> PathBuf {
         let mut name = log.file_name().unwrap_or_default().to_os_string();
@@ -102,10 +110,31 @@ mod rotation {
     }
 
     pub(super) fn rotate(log: &Path, max_bytes: u64, keep: usize) -> Result<Option<PathBuf>> {
+        let keep = keep.min(KEEP_LIMIT);
         if max_bytes == 0 || keep == 0 {
             return Ok(None);
         }
-        let Ok(size) = std::fs::metadata(log).map(|m| m.len()) else {
+        let Ok(metadata) = std::fs::symlink_metadata(log) else {
+            return Ok(None);
+        };
+        // A directory is not a log. A *symlink* is, and is handled below: the
+        // size check follows it, so `rename(2)` would move the link and leave
+        // the bytes it points at exactly where they were — the rotated "copy"
+        // would point at a file nothing writes any more, and the user's log
+        // destination would stop receiving output with nothing said about it.
+        if metadata.is_dir() {
+            return Err(Error::invalid(
+                "log",
+                format!("{} is a directory, so it cannot be rotated", log.display()),
+            ));
+        }
+        let is_link = metadata.file_type().is_symlink();
+        let target = if is_link {
+            std::fs::canonicalize(log).unwrap_or_else(|_| log.to_path_buf())
+        } else {
+            log.to_path_buf()
+        };
+        let Ok(size) = std::fs::metadata(&target).map(|m| m.len()) else {
             return Ok(None);
         };
         if size < max_bytes {
@@ -122,7 +151,20 @@ mod rotation {
             }
         }
         let first = rotated(log, 1);
-        std::fs::rename(log, &first).map_err(|e| Error::io(&first, e))?;
+        if is_link {
+            // Copied, then the target truncated. Copying keeps the user's
+            // redirection intact — the link is the point of the setup — and
+            // the truncation is what makes the rotation mean anything for a
+            // file the writer may still hold open.
+            std::fs::copy(&target, &first).map_err(|e| Error::io(&first, e))?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&target)
+                .map_err(|e| Error::io(&target, e))?;
+        } else {
+            std::fs::rename(log, &first).map_err(|e| Error::io(&first, e))?;
+        }
         Ok(Some(first))
     }
 
@@ -144,28 +186,56 @@ mod rotation {
         let Ok(entries) = std::fs::read_dir(directory) else {
             return Ok(0);
         };
+        // Every candidate is visited even when one of them cannot be removed.
+        // It used to return at the first failure, which left the pass
+        // *partially* done and made which copies survived depend on the order
+        // `read_dir` happened to produce.
+        let mut failure: Option<Error> = None;
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            // Only the files this module writes: `<log>.<n>`.
-            let Some(suffix) = name.strip_prefix(stem) else {
+            // Only the files [`rotate`] writes: `<log>.<n>`, for an `n` of at
+            // least one, spelled the way `to_string` spells it. A looser test
+            // matched `core.log.0`, `.01`, `.+1` and `.007` — none of which
+            // this module creates, and `core.log.0` is a spelling other
+            // rotators do write.
+            let Some(suffix) = name.strip_prefix(stem).and_then(|s| s.strip_prefix('.')) else {
                 continue;
             };
-            if !suffix.starts_with('.') || suffix[1..].parse::<usize>().is_err() {
+            let Ok(index) = suffix.parse::<usize>() else {
+                continue;
+            };
+            if index == 0 || suffix != index.to_string() {
                 continue;
             }
+            // A directory or a symlink that happens to carry the name is not
+            // a rotated copy — this module writes regular files — so it is
+            // skipped rather than reported. An unreadable *file* is a real
+            // problem and is reported, after every other candidate has been
+            // dealt with.
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
+            if !metadata.is_file() {
+                continue;
+            }
             let Ok(modified) = metadata.modified() else {
                 continue;
             };
-            if modified < cutoff {
-                std::fs::remove_file(entry.path()).map_err(|e| Error::io(entry.path(), e))?;
-                removed += 1;
+            if modified >= cutoff {
+                continue;
+            }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(source) => {
+                    failure.get_or_insert_with(|| Error::io(entry.path(), source));
+                }
             }
         }
-        Ok(removed)
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(removed),
+        }
     }
 }
 

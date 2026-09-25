@@ -249,7 +249,15 @@ impl Settings {
         if text.trim().is_empty() {
             return Ok(Self::default());
         }
-        serde_norway::from_str(&text).map_err(|e| Error::parse("settings", &path, e))
+        let settings: Self =
+            serde_norway::from_str(&text).map_err(|e| Error::parse("settings", &path, e))?;
+        // The same checks `save` runs, run on the way in. Otherwise the cap is
+        // enforced only against values this program wrote, and the documented
+        // way to change one — editing `cvt.yaml` — bypasses it: a `keep` of a
+        // hundred million is accepted by the loader and then costs minutes of
+        // syscalls on every start, on both logs.
+        settings.validate()?;
+        Ok(settings)
     }
 
     /// Write the settings atomically.

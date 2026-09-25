@@ -5,7 +5,11 @@ members = ["crates/cvt-core", "crates/cvt-tui", "crates/cvt"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Not a guess: ratatui 0.30 declares 1.88, and it is the highest floor in the
+# dependency graph. The CI `msrv` job builds the workspace against exactly this
+# version, so lowering it without checking that job is a lie rather than an
+# optimisation.
+rust-version = "1.88"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/retort-hubbub/clash-verge-tui"
 homepage = "https://github.com/retort-hubbub/clash-verge-tui"

@@ -9,6 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  # `RUSTFLAGS` does not reach rustdoc, so a broken intra-doc link would pass
+  # the `Docs` step below unnoticed.
+  RUSTDOCFLAGS: -Dwarnings
 
 jobs:
   check:
@@ -55,4 +58,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check bans licenses sources
+          # `advisories` is included so a RustSec advisory against a dependency
+          # fails the build. `deny.toml` holds the allowed license set, which
+          # was enumerated from the lockfile rather than guessed.
+          command: check advisories bans licenses sources

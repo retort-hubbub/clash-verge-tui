@@ -6,3 +6,9 @@
 /.local/
 /tmp/
 *.log
+
+# proptest writes seeds for failing cases here. The counterexamples this
+# project has found are already frozen as `#[ignore]`d tests in
+# crates/cvt-core/tests/invariants.rs with their reasoning, so the seed file
+# only churns whenever somebody runs that suite with `--ignored`.
+*.proptest-regressions

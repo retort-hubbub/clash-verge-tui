@@ -10,8 +10,8 @@ name = "clash-verge-tui"
 path = "src/main.rs"
 
 [dependencies]
-cvt-core = { path = "../cvt-core" }
-cvt-tui = { path = "../cvt-tui" }
+cvt-core = { path = "../cvt-core", version = "0.1.0" }
+cvt-tui = { path = "../cvt-tui", version = "0.1.0" }
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

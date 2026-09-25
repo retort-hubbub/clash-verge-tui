@@ -1351,7 +1351,7 @@ fn claim8_every_documented_code_is_reachable() {
             "rules: ['MATCH,DIRECT', 'DOMAIN,a.test,DIRECT']\n",
         ),
         (
-            "E-UNREACHABLE-RULES",
+            "W-UNREACHABLE-RULES",
             "rules: ['MATCH,DIRECT', 'MATCH,REJECT']\n",
         ),
         (

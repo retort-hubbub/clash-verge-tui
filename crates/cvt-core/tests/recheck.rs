@@ -927,7 +927,7 @@ fn f8_an_orphan_document_named_after_the_uid_is_left_alone() {
     assert_eq!(std::fs::read_to_string(&orphan).unwrap(), "KEEP ME\n");
 }
 
-/// **FAILING:** the orphan check tests `profiles/<the source's file name>`,
+/// the orphan check tests `profiles/<the source's file name>`,
 /// but the copy goes to `profiles/<uid>.yaml`. When those two differ — and the
 /// module's own comment says a hand-edited installation is exactly where they
 /// differ — the orphan it was meant to protect is overwritten silently.
@@ -1205,7 +1205,7 @@ fn f11_smart_is_reported_as_an_unknown_group_type() {
     }
 }
 
-/// **FAILING:** the fix removed `smart` and left `relay`, which mihomo
+/// the fix removed `smart` and left `relay`, which mihomo
 /// v1.19.31 also refuses. `adapter/outboundgroup/parser.go` at that tag:
 ///
 /// ```text
@@ -1272,7 +1272,7 @@ fn f12_the_five_shapes_the_finding_names_now_parse() {
     }
 }
 
-/// **FAILING:** the same shape still fails everywhere the author did not add
+/// the same shape still fails everywhere the author did not add
 /// the attribute. `providerChains` is the sharpest of these: it sits next to
 /// `chains` in the very same object, and `proxies` next to `rules` in the very
 /// same API family.
@@ -1359,11 +1359,12 @@ fn f13_the_two_single_item_cases_behave_as_the_claim_says() {
     );
 }
 
-/// **FAILING:** a single `append` list holding a non-terminal rule *and* a
+/// a single `append` list holding a non-terminal rule *and* a
 /// terminal one. The second iteration replaces the item the first iteration
 /// had just inserted (the position of the catch-all is stale), so the appended
 /// non-terminal rule is lost and the old catch-all stays — two terminal rules,
-/// which `validate` reports as `E-UNREACHABLE-RULES`.
+/// which `validate` reports as `W-UNREACHABLE-RULES` — a warning, because
+/// `mihomo -t` answers this document with *test is successful*.
 ///
 /// Minimal input:
 /// ```yaml
@@ -1406,7 +1407,7 @@ fn f13_one_append_list_holding_a_rule_and_a_catch_all_keeps_at_most_one() {
     }
     let codes = error_codes(&config(&text));
     assert!(
-        !codes.contains(&"E-UNREACHABLE-RULES"),
+        !codes.contains(&"W-UNREACHABLE-RULES"),
         "the overlay produced a document validate rejects: {rules:?} {codes:?}"
     );
 }
@@ -2158,7 +2159,7 @@ async fn f19_a_rejected_document_is_still_rolled_back_when_there_is_one() {
 // "an overlay that gives a path a list while setting a key *inside* that path
 // is now refused rather than applying once and failing the second time"
 
-/// **FAILING:** the refusal is too broad. It fires whenever a `set` path
+/// the refusal is too broad. It fires whenever a `set` path
 /// merely *starts with* a list path followed by `[`, but a `set` of a list
 /// *element* needs that path to be a list, not a mapping — so this overlay
 /// works (and is idempotent) while `from_yaml` rejects it.
@@ -2199,7 +2200,7 @@ fn the_self_contradiction_check_refuses_a_working_overlay() {
     );
 }
 
-/// **FAILING:** the contradiction in the other direction is not refused at all,
+/// the contradiction in the other direction is not refused at all,
 /// so it *is* applied half-way: `set` writes, then the list edit fails and the
 /// document keeps the first edit even though `apply` returned `Err`. The
 /// module's promise for a refused overlay is that it does not touch the

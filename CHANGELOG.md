@@ -5,6 +5,177 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-26
+
+### Added
+
+- `protect_dns: true` on a base profile keeps its own `dns` section whatever an
+  enhancement says, and reports that it did. A subscription that ships a `dns`
+  block usually ships one tuned to its own resolvers, and an override written
+  for a different subscription quietly replacing it is how a working
+  configuration starts resolving through somebody else's server.
+
+  It is the same mechanism as the control plane — a key the base declared that
+  no enhancement may change — so it is a *list* on the pipeline rather than a
+  second special case beside it.
+
+### Dialer Proxy Topology
+
+### Added
+
+- `cvt proxies chain <node>` draws a proxy's `dialer-proxy` chain and says
+  whether it loops. The core reports the field and nothing draws the chain, so
+  a loop, or a name that does not exist, is something the user meets as a core
+  that will not start.
+- `E-DANGLING-DIALER` and `E-DIALER-CYCLE`, for the two shapes `mihomo -t`
+  refuses: a `dialer-proxy` naming something that is neither a proxy nor a group
+  (`` dialer-proxy [x] not found ``), and any chain returning to a name already
+  in it, including a proxy dialling through itself (`` has circular dialer-proxy
+  dependency ``). A chain, and a *group* as the dialer, stay accepted — both
+  were checked against the core.
+
+### Profile URL Editing & Audit Fixes
+
+### Fixed
+
+- A restore **checks every destination before it writes anything**. A refusal
+  used to come halfway through, leaving the home as two configurations at once
+  with nothing saying so.
+- A restore refuses a destination that is a *fifo* — `std::fs::copy` opens the
+  destination before it reads the source, and a fifo with no reader blocks that
+  open forever, so `cvt backup restore` was a hung process with no output.
+- A destination that is a *hard link* is replaced rather than written through.
+  `std::fs::copy` truncates the inode, so a document that was a second name for
+  a file outside the home had that file edited — the escape the symlink guard
+  refuses, one `symlink_metadata` further down. The name is unlinked first, so
+  the other name keeps what it had.
+- `backup()` **reserves** its directory instead of looking for a free name, and
+  prunes only entries older than the second it is writing. Two backups in one
+  second both chose the same name, both wrote into one directory, and each
+  pruned around the other; a pruned name was then re-reserved, so two callers
+  were handed the same directory. 24 concurrent backups left 3 of 3 returned
+  paths holding nothing.
+- A backup taken from a home with no profile index is restorable. The check
+  demanded `profiles.yaml`, which is the one file such a home does not have, so
+  this program refused a directory it had written itself.
+- The mapping from a backup's name to its sequence is injective. `<stamp>-2-3`,
+  `<stamp>-overflow` and `<stamp>-1` each parsed to something, two of them to
+  the same something, and a tie the sequence cannot break is the bug it exists
+  for.
+- `wait_until_ready` bounds each call. It promised ten seconds and took thirty
+  against a core that accepts the connection and answers nothing — the fifth
+  place in this codebase where a deadline was checked between calls rather than
+  around them.
+- `cvt profiles edit-url` puts the old URL back when the new one cannot be
+  fetched, reports through **one** schema (`cvt.profiles.url.v1`) rather than
+  two, and no longer says "added" about something that was not added.
+- `cvt geo` and `cvt unlock` hold `--timeout` to the same kind of check every
+  other command does. `--timeout 0` expired before a request was sent and every
+  service was reported as having said nothing.
+- `cvt geo` tries the next source when one answers without an address, as its
+  own documentation says; it used to take the first answer however empty.
+- `cvt unlock` reads a login wall or a rate-limit page as `unknown` rather than
+  `unlocked`. Both arrive as `HTTP 200`, and `docs/CLI.md` promises exactly the
+  opposite in as many words.
+- Both new commands read a bounded prefix of a response rather than the whole
+  body.
+
+### Added
+
+- `cvt profiles edit-url <uid> <url>` changes a subscription's address and
+  nothing else: the uid, the name and the document stay where they are, so a
+  chain naming the profile keeps working and a `config generate` between the
+  change and the next fetch still finds a document. It fetches from the new URL
+  by default, because a URL that has been changed and not fetched is the old
+  provider's document with the new provider's address beside it in the index —
+  an inconsistency that looks like a working profile until the next update
+  quietly replaces it. `--no-fetch` is for when the new provider is not
+  reachable yet, and it says what it left behind.
+
+### Removed
+
+- **`test.cache_ttl_secs`, which nothing read.** The settings screen showed and
+  edited "result cache lifetime" and no code path consulted it: ten references
+  in the tree, all of them the field, its default, or the screen that drew it.
+  A setting that does nothing is worse than no setting, because it is a promise
+  in a file the user edits. The premise does not hold for this architecture
+  either — the CLI measures once and exits, so there is nothing to reuse a
+  result across.
+
+  **This is a breaking change to a settings file**: `cvt.yaml` that sets
+  `cache_ttl_secs` will no longer load, because the settings struct refuses
+  unknown keys. Delete the line.
+
+### Fixed
+
+- The clamp on `--concurrency` is reported by `cvt test urls` too. Three of the
+  four commands that take the flags carry the number actually used and the
+  fourth did not — the member-versus-class shape one level up, in the *report*
+  rather than in the guard, and found by falsifying the comment that claimed
+  otherwise.
+- `MAX_TEST_TIMEOUT_MS` is written once. The settings had the constant and the
+  API client had two copies of `32_767` beside it.
+- `free_backup_path` checks its last-resort name, so the thousand-and-first
+  backup in one second does not write into the thousandth's directory.
+
+### Network Probes & Unlock Checks
+
+### Fixed
+
+- `--timeout` and `--concurrency` are read in one place and held to the
+  ceilings the settings are. `test.concurrency: 600` was refused with "would
+  exhaust file descriptors" while `--concurrency 600` reached
+  `buffer_unordered`; then `test urls` kept its own copy of the two flags and
+  did it again; and `--timeout 32768` was accepted by every command while the
+  settings refused it with "the core parses this as an int16". The two flags are
+  one struct now, flattened into every command that takes them, and resolved by
+  one function — because a ceiling that reaches three commands out of four is
+  the pattern this project has now fixed five times.
+- `copy_file` compares *files*, not paths. Two names for one inode — a hard
+  link, which is what `cp -al` leaves behind — passed the self-copy guard,
+  because the paths really are different, and `std::fs::copy` then truncated the
+  file before reading it. A restore emptied the document it was asked to put
+  back.
+- The name a backup falls back to when a second has a thousand of them keeps
+  the sequence it parses back to. `-overflow` read as sequence 1 — the bare
+  timestamp's — so the two collided and their order went back to `read_dir`'s,
+  which is the thing the sequence was added to stop.
+- `backup create` reports the timestamp and the entry count of the backup it
+  took, rather than the epoch and zero.
+
+### Added
+
+- `cvt unlock` — whether the exit can reach the services people actually ask
+  about. A latency number says a socket opened; it does not say whether the
+  other end will serve you, and a node can be fast, in the right country, and
+  on a range the streaming services have already blocked. Four services that
+  genuinely answer differently by region are asked through the core's proxy,
+  and **the evidence is printed beside every verdict**: a tool that says
+  `Netflix: unlocked` and cannot show why is one whose answer cannot be
+  checked, and these probes are wrong often enough — services change their
+  pages, a probe URL that worked last month may answer a login wall today —
+  that seeing the response is the difference between a reading and a guess. An
+  answer that says nothing either way is reported as `unknown` rather than
+  rounded to one of the other two.
+- `cvt geo` — the address and location the traffic comes out at, asked *through
+  the core's own proxy port* so the answer describes the tunnel rather than the
+  machine. `--direct` asks the same question without the proxy, and the pair is
+  the point: a node can be fast and in the wrong country. Three sources are
+  tried in order, because they are other people's services and one being down
+  is not a reason for this command to have nothing to say.
+
+### Fixed
+
+- `wait_for_document` bounds every call and polls its groups together. The
+  deadline was checked *between* `client.group()` calls, and that call carries
+  the client's own timeout — at least five seconds from the settings — so a core
+  that answered `/version` and hung `/group` held an `apply` for about ten
+  seconds against a five-second budget. And waiting on each group in turn gave
+  the first one that never appeared the whole budget, so the groups after it
+  were never asked about. It is the same pair of mistakes the selection replay
+  was fixed for three times, and the sixth review found this fourth instance by
+  reading rather than running.
+
 ## [0.3.1] - 2026-09-26
 
 ### Fixed
@@ -454,6 +625,7 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
 [0.3.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.1
 [0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
 [0.2.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.1

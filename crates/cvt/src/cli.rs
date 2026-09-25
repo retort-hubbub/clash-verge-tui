@@ -65,6 +65,12 @@ pub enum Command {
         command: ProfilesCommand,
     },
 
+    /// Show the address and location the traffic comes out at
+    Geo(GeoArgs),
+
+    /// Check whether the exit can reach the services people ask about
+    Unlock(UnlockArgs),
+
     /// Save or restore the profiles, settings and overrides
     Backup {
         /// Which backup operation to run
@@ -142,6 +148,18 @@ pub enum ProfilesCommand {
         uid: String,
         /// New display name
         name: String,
+    },
+
+    /// Point a remote profile at a different subscription URL
+    EditUrl {
+        /// Profile uid
+        uid: String,
+        /// The new subscription URL
+        url: String,
+
+        /// Change the URL without fetching it
+        #[arg(long)]
+        no_fetch: bool,
     },
 
     /// Make a profile the base of the generated configuration
@@ -293,6 +311,12 @@ pub enum ProxiesCommand {
         group: Option<String>,
     },
 
+    /// Show which proxies a proxy dials through, and where that ends
+    Chain {
+        /// Proxy name
+        node: String,
+    },
+
     /// Pin a group's selection to one of its nodes
     Select {
         /// Group name
@@ -332,11 +356,24 @@ pub struct NodeTestArgs {
     #[arg(long, value_name = "URL")]
     pub url: Option<String>,
 
-    /// Per-node timeout in milliseconds
+    /// Timeout and concurrency, shared with every other latency command
+    #[command(flatten)]
+    pub limits: TestLimits,
+}
+
+/// The two flags every latency command takes.
+///
+/// One struct rather than two copies of two fields, because the ceilings they
+/// are held to live in the settings and a ceiling that reaches three commands
+/// out of four is the pattern this project has now fixed five times. A command
+/// that takes these flags takes the checks with them.
+#[derive(Debug, Args)]
+pub struct TestLimits {
+    /// Per-request timeout in milliseconds
     #[arg(long, value_name = "MS")]
     pub timeout: Option<u32>,
 
-    /// How many nodes to test at once
+    /// How many are measured at once
     #[arg(long, value_name = "N")]
     pub concurrency: Option<usize>,
 }
@@ -427,6 +464,26 @@ pub struct DelayArgs {
     pub node: NodeTestArgs,
 }
 
+/// Arguments of `unlock`.
+#[derive(Debug, Args)]
+pub struct UnlockArgs {
+    /// How long to wait per service, in milliseconds
+    #[arg(long, value_name = "MS")]
+    pub timeout: Option<u64>,
+}
+
+/// Arguments of `geo`.
+#[derive(Debug, Args)]
+pub struct GeoArgs {
+    /// Ask without the proxy, for this machine's own address
+    #[arg(long)]
+    pub direct: bool,
+
+    /// How long to wait for an answer, in milliseconds
+    #[arg(long, value_name = "MS")]
+    pub timeout: Option<u64>,
+}
+
 /// Arguments of `test urls`.
 #[derive(Debug, Args)]
 pub struct UrlsArgs {
@@ -438,13 +495,9 @@ pub struct UrlsArgs {
     #[arg(long)]
     pub list: bool,
 
-    /// Per-URL timeout in milliseconds
-    #[arg(long, value_name = "MS")]
-    pub timeout: Option<u32>,
-
-    /// How many URLs to test at once
-    #[arg(long, value_name = "N")]
-    pub concurrency: Option<usize>,
+    /// Timeout and concurrency, shared with every other latency command
+    #[command(flatten)]
+    pub limits: TestLimits,
 }
 
 /// Arguments of `test dns`.

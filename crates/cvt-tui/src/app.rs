@@ -751,7 +751,6 @@ const LOG_KEEP_PRESETS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
 
 /// How long a rotated copy may sit before it is deleted.
 const LOG_DAYS_PRESETS: &[i64] = &[0, 1, 3, 7, 14, 30, 90];
-const TTL_PRESETS: &[i64] = &[0, 300, 900, 1800, 3600, 86_400];
 const LOG_LEVELS: &[&str] = &["silent", "error", "warning", "info", "debug"];
 
 /// Every setting the screen offers, with its current value.
@@ -899,15 +898,6 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             value: settings.test.expected_status.clone(),
             help: "accept this status expression; `*` accepts anything",
             kind: SettingKind::Text,
-        },
-        SettingRow {
-            key: "test.cache_ttl_secs",
-            label: "result cache lifetime",
-            value: format!("{} s", settings.test.cache_ttl_secs),
-            help: "discard measurements older than this",
-            kind: SettingKind::Number {
-                presets: TTL_PRESETS,
-            },
         },
         SettingRow {
             key: "stream.traffic",
@@ -1076,16 +1066,6 @@ fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
             settings.test.concurrency = usize::try_from(next).unwrap_or(settings.test.concurrency);
             true
         }
-        "test.cache_ttl_secs" => {
-            let next = step_number(
-                i64::try_from(settings.test.cache_ttl_secs).unwrap_or(i64::MAX),
-                TTL_PRESETS,
-                forward,
-            );
-            settings.test.cache_ttl_secs =
-                u64::try_from(next).unwrap_or(settings.test.cache_ttl_secs);
-            true
-        }
         "stream.traffic" => {
             settings.stream.traffic = !settings.stream.traffic;
             true
@@ -1183,13 +1163,6 @@ fn set_setting_text(settings: &mut Settings, key: &str, text: &str) -> Result<()
         "test.concurrency" => {
             let value: usize = text.parse().map_err(|_| "expected a number".to_owned())?;
             settings.test.concurrency = value;
-            Ok(())
-        }
-        "test.cache_ttl_secs" => {
-            let value: u64 = text
-                .parse()
-                .map_err(|_| "expected a number of seconds".to_owned())?;
-            settings.test.cache_ttl_secs = value;
             Ok(())
         }
         other => Err(format!("`{other}` is not a text setting")),
@@ -4206,7 +4179,7 @@ mod tests {
     fn every_setting_row_can_be_cycled_from_the_keyboard() {
         let mut a = loaded();
         goto(&mut a, Screen::Settings);
-        assert_eq!(a.settings_rows.len(), 24);
+        assert_eq!(a.settings_rows.len(), 23);
         a.settings_rows
             .select_by_key("ui.color".to_owned(), |row| row.key.to_owned());
         assert_eq!(press(&mut a, KeyCode::Enter), Vec::new());

@@ -227,6 +227,36 @@ impl ProfileStore {
         Ok(())
     }
 
+    /// Point a remote profile at a different subscription URL.
+    ///
+    /// Only the URL changes: the uid, the name and the document on disk stay
+    /// where they are, so a chain that names this profile keeps working and a
+    /// `config generate` between this and the next fetch still sees a document.
+    /// The document is deliberately *not* touched — it is the old provider's
+    /// until a fetch replaces it, and pretending otherwise would mean a
+    /// half-updated profile whose index and content disagree.
+    ///
+    /// # Errors
+    /// [`Error::ProfileNotFound`] for an unknown uid, and
+    /// [`Error::InvalidValue`] for a profile that has no URL to change.
+    pub fn set_url(&mut self, uid: &str, url: &str) -> Result<()> {
+        let item = self.get_mut(uid).ok_or_else(|| Error::ProfileNotFound {
+            uid: uid.to_owned(),
+        })?;
+        if item.url.is_none() {
+            return Err(Error::invalid(
+                "url",
+                format!(
+                    "`{}` is a {} profile, which has no subscription URL to change",
+                    item.label(),
+                    item.kind.as_str()
+                ),
+            ));
+        }
+        url.clone_into(item.url.as_mut().unwrap_or(&mut String::new()));
+        Ok(())
+    }
+
     /// Replace the explicit chain.
     ///
     /// # Errors
@@ -574,6 +604,45 @@ mod tests {
         paths.ensure_dirs().unwrap();
         let store = ProfileStore::load(&paths).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn a_subscription_url_can_be_changed_without_touching_anything_else() {
+        let (_dir, mut store) = store();
+        let uid = store.add(PrfItem::remote("", "panel", "https://old.example/sub"));
+        let before = store.get(&uid).unwrap().clone();
+        store.write_document(&before, "mode: rule\n").unwrap();
+
+        store
+            .set_url(&uid, "https://new.example/sub")
+            .expect("a remote profile has a URL to change");
+
+        let after = store.get(&uid).unwrap();
+        assert_eq!(after.url.as_deref(), Some("https://new.example/sub"));
+        // Everything else is where it was, so a chain naming this profile keeps
+        // working and a generate before the next fetch still finds a document.
+        assert_eq!(after.uid, before.uid);
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.file, before.file);
+        assert_eq!(
+            store.read_document(after).unwrap(),
+            "mode: rule\n",
+            "the document is the old provider's until a fetch replaces it"
+        );
+    }
+
+    #[test]
+    fn a_profile_with_no_url_says_so_rather_than_being_given_one() {
+        let (_dir, mut store) = store();
+        let local = store.add(PrfItem::local("L1", "base"));
+        let error = store.set_url(&local, "https://x.example/").unwrap_err();
+        assert!(
+            error.to_string().contains("no subscription URL"),
+            "a local profile cannot be given a subscription: {error}"
+        );
+        // And an unknown uid is the error it always was.
+        let error = store.set_url("nope", "https://x.example/").unwrap_err();
+        assert!(error.to_string().contains("nope"), "{error}");
     }
 
     #[test]

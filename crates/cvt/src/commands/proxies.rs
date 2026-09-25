@@ -14,7 +14,7 @@ use crate::commands::{
     DelayReport, ProxyDelayReport, check_url_flag, measure_nodes, node_options, nodes_by_group,
 };
 use crate::context::Ctx;
-use crate::output::{self, Output, Report, Table};
+use crate::output::{self, Fields, Output, Report, Table};
 
 /// Run one `proxies` subcommand.
 ///
@@ -24,6 +24,7 @@ pub async fn run(ctx: &Ctx, command: &ProxiesCommand) -> Result<()> {
     match command {
         ProxiesCommand::List { group } => list(ctx, group.as_deref()).await,
         ProxiesCommand::Select { group, node } => select(ctx, group, node).await,
+        ProxiesCommand::Chain { node } => chain(ctx, node).await,
         ProxiesCommand::Test(args) => test(ctx, args).await,
         ProxiesCommand::TestAll(args) => test_all(ctx, args).await,
         ProxiesCommand::Unpin { group } => unpin(ctx, group).await,
@@ -219,6 +220,78 @@ impl Report for SelectionReport {
             None => format!("`{}` is back on its own strategy", self.group),
         }
     }
+}
+
+/// What `proxies chain` found.
+#[derive(Debug, Serialize)]
+pub struct ChainReport {
+    /// The proxy the question was asked about.
+    pub node: String,
+    /// The names it dials through, in order, ending with the one that dials
+    /// directly.
+    pub chain: Vec<String>,
+    /// `true` when following the chain comes back to a name already in it.
+    pub circular: bool,
+    /// The chain as one line.
+    pub summary: String,
+}
+
+impl Report for ChainReport {
+    fn schema(&self) -> &'static str {
+        "cvt.proxies.chain.v1"
+    }
+
+    fn render(&self, _out: Output) -> String {
+        let mut fields = Fields::new();
+        fields.push("chain", self.summary.clone());
+        if self.circular {
+            fields.push(
+                "problem",
+                "circular: the core refuses this with `has circular dialer-proxy dependency`"
+                    .to_owned(),
+            );
+        }
+        fields.render()
+    }
+}
+
+/// Show which proxies a proxy dials through.
+///
+/// A `dialer-proxy` chain is how a subscription says "reach this node by first
+/// going through that one", and it is invisible everywhere else: the core
+/// exposes the field through `GET /proxies` but nothing draws the chain, so a
+/// loop or a name that does not exist is something the user meets as a core
+/// that will not start.
+async fn chain(ctx: &Ctx, node: &str) -> Result<()> {
+    let client = ctx.client()?;
+    let proxies = client.proxies().await?;
+    let start = proxies
+        .proxies
+        .get(node)
+        .ok_or_else(|| Error::invalid("node", format!("no proxy named `{node}`")))?;
+
+    let mut names = vec![node.to_owned()];
+    let mut current = start.dialer_proxy().map(str::to_owned);
+    let mut circular = false;
+    while let Some(next) = current {
+        if names.contains(&next) {
+            names.push(next);
+            circular = true;
+            break;
+        }
+        names.push(next.clone());
+        current = proxies
+            .proxies
+            .get(&next)
+            .and_then(|proxy| proxy.dialer_proxy().map(str::to_owned));
+    }
+    let summary = names.join(" -> ");
+    ctx.out().emit(&ChainReport {
+        node: node.to_owned(),
+        chain: names,
+        circular,
+        summary,
+    })
 }
 
 async fn select(ctx: &Ctx, group: &str, node: &str) -> Result<()> {

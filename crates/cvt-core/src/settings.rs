@@ -178,8 +178,6 @@ pub struct TestSettings {
     pub concurrency: usize,
     /// Accept this status expression; `*` accepts anything.
     pub expected_status: String,
-    /// Discard results older than this, in seconds.
-    pub cache_ttl_secs: u64,
 }
 
 impl Default for TestSettings {
@@ -190,7 +188,6 @@ impl Default for TestSettings {
             timeout_ms: 5000,
             concurrency: 16,
             expected_status: "*".to_owned(),
-            cache_ttl_secs: 1800,
         }
     }
 }

@@ -570,13 +570,14 @@ dependencies = [
 
 [[package]]
 name = "cvt"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
  "cvt-core",
  "cvt-tui",
  "futures-util",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_norway",
@@ -589,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "cvt-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -612,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "cvt-tui"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",

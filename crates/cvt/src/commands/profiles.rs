@@ -30,6 +30,7 @@ pub async fn run(ctx: &Ctx, command: &ProfilesCommand) -> Result<()> {
         ProfilesCommand::Add(args) => add(ctx, args).await,
         ProfilesCommand::Remove { uid } => remove(ctx, uid),
         ProfilesCommand::Rename { uid, name } => rename(ctx, uid, name),
+        ProfilesCommand::EditUrl { uid, url, no_fetch } => edit_url(ctx, uid, url, *no_fetch).await,
         ProfilesCommand::Switch { uid } => switch(ctx, uid),
         ProfilesCommand::Update(args) => update(ctx, args).await,
         ProfilesCommand::Import { dir } => import(ctx, dir),
@@ -233,7 +234,10 @@ impl Report for AddReport {
 
     fn render(&self, _out: Output) -> String {
         let mut fields = Fields::new();
-        fields.push("added", format!("{} ({})", self.uid, self.url));
+        // The action, not the word "added": `profiles edit-url` reports through
+        // this shape too, and printing "added" for a URL that was changed is a
+        // report of something that did not happen.
+        fields.push(self.action, format!("{} ({})", self.uid, self.url));
         fields.push("download", self.result.describe());
         fields.push_opt(
             "hint",
@@ -275,6 +279,109 @@ fn rename(ctx: &Ctx, uid: &str, name: &str) -> Result<()> {
         name: name.to_owned(),
         detail: "the uid and the document are unchanged".to_owned(),
     })
+}
+
+/// Change a subscription's URL, and by default fetch from the new one.
+///
+/// Fetching by default because a URL that has been changed and not fetched is
+/// the *old* provider's document with the new provider's address beside it in
+/// the index — an inconsistency that looks like a working profile until the
+/// next update quietly replaces it. `--no-fetch` exists for the case where the
+/// new provider is not reachable yet, and says what it left behind.
+async fn edit_url(ctx: &Ctx, uid: &str, url: &str, no_fetch: bool) -> Result<()> {
+    let url = url.trim().to_owned();
+    if url.is_empty() {
+        return Err(Error::invalid("url", "the subscription URL is empty").into());
+    }
+    let previous = ctx.edit_store(|store| {
+        let previous = store.get(uid).and_then(|item| item.url.clone());
+        store.set_url(uid, &url)?;
+        Ok(previous)
+    })?;
+
+    if no_fetch {
+        ctx.out().warn(format!(
+            "`{uid}` now points at {url}, but its document is still the one fetched from {}; \
+             run `clash-verge-tui profiles update {uid}` before the next generate",
+            previous.as_deref().unwrap_or("its previous URL")
+        ));
+        return ctx.out().emit(&UrlChangeReport {
+            uid: uid.to_owned(),
+            url,
+            previous,
+            fetched: false,
+            download: None,
+        });
+    }
+
+    let result = fetch_one(ctx, uid).await;
+    let ok = result.ok;
+    if !ok {
+        // Put back. The index is written before the fetch because the fetcher
+        // reads the URL from it, and leaving the new one behind on a failure
+        // means every refusal leaves the profile pointing at something that
+        // cannot download — the state `--no-fetch` exists to *warn* about, and
+        // this path made it the default.
+        if let Some(previous) = previous.as_deref() {
+            ctx.edit_store(|store| store.set_url(uid, previous))?;
+        }
+    }
+    ctx.out().emit(&UrlChangeReport {
+        uid: uid.to_owned(),
+        url,
+        previous,
+        fetched: true,
+        download: Some(result),
+    })?;
+    if !ok {
+        return Err(Exit::failure(format!(
+            "`{uid}` points at the new URL but could not be downloaded from it; retry with \
+             `clash-verge-tui profiles update {uid}`"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// The result of `profiles edit-url`.
+///
+/// One shape for one command. The first version reported through `AddReport`
+/// when it fetched and `ProfileChangeReport` when it did not, so a caller
+/// parsing `--json` had to handle `cvt.profiles.added.v1` and
+/// `cvt.profiles.changed.v1` for the same operation — and the first of those
+/// says "added" about something that was not added.
+#[derive(Debug, Serialize)]
+pub struct UrlChangeReport {
+    /// The profile whose URL changed.
+    pub uid: String,
+    /// The URL it now points at.
+    pub url: String,
+    /// What it pointed at before, when it had a URL at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    /// Whether the new URL was downloaded from.
+    pub fetched: bool,
+    /// The download, when there was one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download: Option<UpdateRow>,
+}
+
+impl Report for UrlChangeReport {
+    fn schema(&self) -> &'static str {
+        "cvt.profiles.url.v1"
+    }
+
+    fn render(&self, _out: Output) -> String {
+        let mut fields = Fields::new();
+        fields.push("url", format!("{} -> {}", self.uid, self.url));
+        fields.push_opt("was", self.previous.clone());
+        if let Some(download) = &self.download {
+            fields.push("download", download.describe());
+        } else {
+            fields.push("document", "still the previous provider's".to_owned());
+        }
+        fields.render()
+    }
 }
 
 fn switch(ctx: &Ctx, uid: &str) -> Result<()> {

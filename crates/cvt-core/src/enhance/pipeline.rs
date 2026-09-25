@@ -148,6 +148,14 @@ pub struct Pipeline {
     /// The control plane the application itself insists on, if the user set
     /// one. It wins over every profile.
     control_plane: Vec<(&'static str, Value)>,
+    /// Top-level keys the base declared and no enhancement may change, with the
+    /// value the base gave them.
+    ///
+    /// A list rather than a second special case beside the control plane: the
+    /// control plane is one instance of this idea with an extra rule (a key it
+    /// does not declare is *removed*), and the next protection will be the
+    /// third. `protect_dns` fills this one in.
+    protected: Vec<(&'static str, Value)>,
 }
 
 impl Pipeline {
@@ -157,7 +165,20 @@ impl Pipeline {
         Self {
             paths,
             control_plane: Vec::new(),
+            protected: Vec::new(),
         }
+    }
+
+    /// Keys the base declared and an enhancement must not change.
+    ///
+    /// Values rather than names, because restoring a key means restoring what
+    /// it said. A key the base does *not* declare is not protected: there is
+    /// nothing to restore, and an enhancement that adds a `dns` section to a
+    /// base without one is doing what the user asked for.
+    #[must_use]
+    pub fn with_protected(mut self, protected: Vec<(&'static str, Value)>) -> Self {
+        self.protected = protected;
+        self
     }
 
     /// Force a control plane over every profile.
@@ -199,6 +220,7 @@ impl Pipeline {
         // What the base profile says about the control plane, kept so that
         // nothing downstream can move it. Empty until a base has been read.
         let mut control_plane: Vec<(&'static str, Value)> = Vec::new();
+        let mut protected: Vec<(&'static str, Value)> = self.protected.clone();
 
         let mut config = Value::Object(serde_json::Map::new());
         let mut started = false;
@@ -237,6 +259,14 @@ impl Pipeline {
                                 .map(|value| (*key, value.clone()))
                         })
                         .collect();
+                    // `protect_dns` is the base profile's own switch, and what
+                    // it protects is its own `dns` section — captured here,
+                    // where the base's document is the one in hand.
+                    if item.option.protect_dns == Some(true)
+                        && let Some(dns) = config.get("dns").filter(|value| !value.is_null())
+                    {
+                        protected.push(("dns", dns.clone()));
+                    }
                     applied.push(AppliedProfile::applied(
                         item,
                         format!(
@@ -374,6 +404,28 @@ impl Pipeline {
                  profile's to set — use `core.external-controller` and `core.secret` \
                  in the settings, or declare it in the base profile",
                 refused.join(", ")
+            ));
+        }
+
+        // Keys the base asked to keep. Only a key the base *declared* is here,
+        // so an enhancement adding a section the base never had is untouched.
+        let mut kept: Vec<&str> = Vec::new();
+        for (key, wanted) in &protected {
+            if config.get(*key) == Some(wanted) {
+                continue;
+            }
+            if let Some(object) = config.as_object_mut() {
+                object.insert((*key).to_owned(), wanted.clone());
+                kept.push(key);
+            }
+        }
+        if !kept.is_empty() {
+            warnings.push(format!(
+                "the base profile protects {}; {} was restored after an enhancement \
+                 changed it. Remove `protect_dns` from the base to let an \
+                 enhancement override it",
+                kept.join(", "),
+                kept.join(", ")
             ));
         }
 
@@ -618,6 +670,90 @@ rules:
         fn generate(&self) -> Outcome {
             self.pipeline.generate(&self.store).unwrap()
         }
+    }
+
+    /// A base that ships a DNS block usually ships one tuned to its own
+    /// resolvers, and an enhancement written for a *different* subscription
+    /// quietly replacing it is how a working configuration starts resolving
+    /// through somebody else's server.
+    #[test]
+    fn a_base_that_protects_its_dns_keeps_it() {
+        let mut f = fixture();
+        let mut base = PrfItem::local("L1", "base");
+        base.option.protect_dns = Some(true);
+        let uid = f.add(
+            base,
+            &format!("{BASE}dns:\n  enable: true\n  nameserver: [1.1.1.1]\n"),
+        );
+        f.store.set_current(&uid).unwrap();
+        f.add(
+            PrfItem::patch("M1", "patch", crate::profile::item::ProfileType::Merge),
+            "dns:\n  nameserver: [9.9.9.9]\n",
+        );
+
+        let outcome = f.generate();
+        assert!(outcome.is_applicable(), "{}", outcome.report.render());
+        assert!(
+            outcome.yaml.contains("1.1.1.1"),
+            "the base's own nameserver is the one that survives: {}",
+            outcome.yaml
+        );
+        assert!(
+            !outcome.yaml.contains("9.9.9.9"),
+            "and the enhancement's is not applied: {}",
+            outcome.yaml
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("protects")),
+            "a protection that took effect silently is one the user will fight: {:?}",
+            outcome.warnings
+        );
+    }
+
+    #[test]
+    fn a_base_that_does_not_protect_its_dns_lets_an_enhancement_change_it() {
+        let mut f = fixture();
+        let uid = f.add(
+            PrfItem::local("L1", "base"),
+            &format!("{BASE}dns:\n  enable: true\n  nameserver: [1.1.1.1]\n"),
+        );
+        f.store.set_current(&uid).unwrap();
+        f.add(
+            PrfItem::patch("M1", "patch", crate::profile::item::ProfileType::Merge),
+            "dns:\n  nameserver: [9.9.9.9]\n",
+        );
+
+        let outcome = f.generate();
+        assert!(
+            outcome.yaml.contains("9.9.9.9"),
+            "without the switch the enhancement wins, as it always did: {}",
+            outcome.yaml
+        );
+    }
+
+    #[test]
+    fn a_base_with_no_dns_of_its_own_protects_nothing() {
+        // `protect_dns` with no `dns` section has nothing to keep, and an
+        // enhancement adding one is doing what the user asked for.
+        let mut f = fixture();
+        let mut base = PrfItem::local("L1", "base");
+        base.option.protect_dns = Some(true);
+        let uid = f.add(base, BASE);
+        f.store.set_current(&uid).unwrap();
+        f.add(
+            PrfItem::patch("M1", "patch", crate::profile::item::ProfileType::Merge),
+            "dns:\n  nameserver: [9.9.9.9]\n",
+        );
+
+        let outcome = f.generate();
+        assert!(
+            outcome.yaml.contains("9.9.9.9"),
+            "there was nothing to restore: {}",
+            outcome.yaml
+        );
     }
 
     #[test]

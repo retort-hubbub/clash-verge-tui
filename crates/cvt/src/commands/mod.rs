@@ -13,6 +13,7 @@ pub mod config;
 pub mod connections;
 pub mod core;
 pub mod doctor;
+pub mod geo;
 pub mod logs;
 pub mod profiles;
 pub mod proxies;
@@ -20,9 +21,11 @@ pub mod rules;
 pub mod status;
 pub mod test;
 pub mod theme;
+pub mod unlock;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use cvt_core::enhance::diff::{Change, Diff};
@@ -30,13 +33,13 @@ use cvt_core::enhance::pipeline::{AppliedProfile, Outcome};
 use cvt_core::error::Error;
 use cvt_core::mihomo::client::Client;
 use cvt_core::mihomo::supervisor::CoreStatus;
-use cvt_core::model::config::ConfigStats;
+use cvt_core::model::config::{Config, ConfigStats};
 use cvt_core::validate::Report as ValidationReport;
 use futures_util::stream::{self, StreamExt as _};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::cli::{Command, NodeTestArgs};
+use crate::cli::{Command, NodeTestArgs, TestLimits};
 use crate::context::Ctx;
 use crate::exit::Exit;
 use crate::output::{self, Fields, Output, Report, Table};
@@ -54,6 +57,8 @@ pub async fn dispatch(ctx: &Ctx, command: &Command) -> Result<()> {
             Err(Exit::failure("internal error: doctor must run before the home is opened").into())
         }
         Command::Profiles { command } => profiles::run(ctx, command).await,
+        Command::Geo(args) => geo::run(ctx, args).await,
+        Command::Unlock(args) => unlock::run(ctx, args).await,
         Command::Backup { command } => backup::run(ctx, command).await,
         Command::Config { command } => config::run(ctx, command).await,
         Command::Proxies { command } => proxies::run(ctx, command).await,
@@ -609,6 +614,68 @@ pub fn test_defaults(ctx: &Ctx) -> (String, u32, usize) {
     (test.url.clone(), test.timeout_ms, test.concurrency.max(1))
 }
 
+/// The longest a request this program makes on its own behalf may wait.
+///
+/// A different value kind from `MAX_TEST_TIMEOUT_MS` — that one is the core's
+/// int16 for `/delay`, this one is a local HTTP client's timeout — but the same
+/// *flag name*, and a flag name checked in one place and not another is the
+/// class this project has fixed six times. `--timeout 0` expired before a
+/// request was sent, and every service was then reported as having said
+/// nothing.
+pub const MAX_REQUEST_TIMEOUT_MS: u64 = 120_000;
+
+/// A `--timeout` from a command that makes its own requests.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when it is zero or beyond [`MAX_REQUEST_TIMEOUT_MS`].
+pub fn check_request_timeout(asked: u64) -> Result<Duration> {
+    if asked == 0 || asked > MAX_REQUEST_TIMEOUT_MS {
+        return Err(Error::invalid(
+            "timeout",
+            format!("{asked} ms is outside the range 1 to {MAX_REQUEST_TIMEOUT_MS}"),
+        )
+        .into());
+    }
+    Ok(Duration::from_millis(asked))
+}
+
+/// A client pointed at the core's proxy port, or at nothing.
+pub fn proxied_client(proxy_port: Option<u16>, timeout: Duration) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent(concat!("clash-verge-tui/", env!("CARGO_PKG_VERSION")));
+    if let Some(port) = proxy_port {
+        builder = builder.proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}"))?);
+    }
+    builder.build().map_err(|e| Error::http("geo", e).into())
+}
+
+/// The port the core is listening on, from the generated configuration.
+pub fn proxy_port(ctx: &Ctx) -> Result<u16> {
+    let path = ctx.paths().runtime_config();
+    if !path.is_file() {
+        return Err(Error::invalid(
+            "runtime config",
+            format!(
+                "{} does not exist yet; run `clash-verge-tui config generate --apply`",
+                path.display()
+            ),
+        )
+        .into());
+    }
+    let yaml = ctx.paths().read(&path)?;
+    let config = Config::from_yaml(&yaml)?;
+    config.effective_proxy_port().ok_or_else(|| {
+        Error::invalid(
+            "mixed-port",
+            "the generated configuration has no `mixed-port`, `port` or `socks-port`, \
+             so there is no proxy to ask through; use `--direct` for this machine's own \
+             address",
+        )
+        .into()
+    })
+}
+
 /// `--url`, `--timeout` and `--concurrency`, falling back to settings.
 ///
 /// One function for every latency command, and every *check* belongs here for
@@ -623,16 +690,58 @@ pub fn test_defaults(ctx: &Ctx) -> (String, u32, usize) {
 /// target.
 pub fn node_options(ctx: &Ctx, args: &NodeTestArgs) -> Result<(String, u32, usize)> {
     check_url_flag(ctx, args.url.as_deref())?;
-    let (url, timeout, concurrency) = test_defaults(ctx);
-    // Clamped to the same ceiling the settings are held to. `--concurrency 600`
-    // went straight to `buffer_unordered` while `test.concurrency: 600` was
-    // refused with "would exhaust file descriptors" — one number, two answers,
-    // and the one that gets through is the one nobody validates.
-    let asked = args.concurrency.unwrap_or(concurrency);
+    let (url, timeout, concurrency) = resolve_limits(ctx, &args.limits)?;
     Ok((
         resolve_url(ctx, args.url.as_deref()).unwrap_or(url),
-        args.timeout.unwrap_or(timeout),
-        asked.clamp(1, cvt_core::settings::MAX_TEST_CONCURRENCY),
+        timeout,
+        concurrency,
+    ))
+}
+
+/// `--timeout` and `--concurrency`, held to the ceilings the settings are.
+///
+/// The one place those two flags are read, so a command cannot take them and
+/// skip the checks — which is what happened four times: `--concurrency 600`
+/// reached `buffer_unordered` while `test.concurrency: 600` was refused, then
+/// `test urls` kept its own copy of the flags and did it again, and `--timeout
+/// 32768` was accepted by every command while the settings refused it with "the
+/// core parses this as an int16".
+///
+/// # Errors
+/// [`Error::InvalidValue`] when a flag is outside the range the core accepts.
+pub fn resolve_limits(ctx: &Ctx, limits: &TestLimits) -> Result<(String, u32, usize)> {
+    let (url, timeout, concurrency) = test_defaults(ctx);
+    let asked_timeout = limits.timeout.unwrap_or(timeout);
+    if asked_timeout == 0 || asked_timeout > cvt_core::settings::MAX_TEST_TIMEOUT_MS {
+        return Err(Error::invalid(
+            "timeout",
+            format!(
+                "{asked_timeout} ms is outside the range the core accepts (1 to {}); \
+                 it parses this as an int16 and answers every request with an error",
+                cvt_core::settings::MAX_TEST_TIMEOUT_MS
+            ),
+        )
+        .into());
+    }
+    let asked = limits.concurrency.unwrap_or(concurrency);
+    if asked == 0 {
+        return Err(Error::invalid("concurrency", "must be at least 1").into());
+    }
+    // Clamped, and the clamp is *reported* — every report these flags feed
+    // carries the number actually used, so `--concurrency 600` prints 512
+    // rather than leaving the reader to believe 600.
+    //
+    // Clamped rather than refused, which is the opposite of what `--timeout`
+    // does one branch up, and the distinction is the value's kind rather than
+    // its size: `32768` ms is a number the core cannot parse, so it is invalid
+    // and the command stops; 600 concurrent requests is a perfectly valid
+    // number that this machine's file descriptors cannot carry, so the ceiling
+    // is a resource guard and a request to go faster is answered with "this is
+    // as fast as it goes" rather than an error.
+    Ok((
+        url,
+        asked_timeout,
+        asked.min(cvt_core::settings::MAX_TEST_CONCURRENCY),
     ))
 }
 

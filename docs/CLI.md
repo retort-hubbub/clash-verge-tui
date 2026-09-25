@@ -160,6 +160,30 @@ and re-adding would lose the name you chose. A failed download still exits `1`.
 `cvt.profiles.changed.v1`, `cvt.profiles.update.v1`,
 `cvt.profiles.import.v1`, `cvt.profiles.chain.v1`, `cvt.profiles.show.v1`.
 
+### `profiles edit-url`
+
+| Argument | Meaning |
+|---|---|
+| `<uid>` | the profile, as `profiles list` prints it |
+| `<url>` | the new subscription URL |
+| `--no-fetch` | change the URL without downloading from it |
+
+Changes the URL and nothing else — the uid, the name and the document stay
+where they are, so a chain naming the profile keeps working. It fetches from
+the new URL by default: a URL that has been changed and not fetched is the old
+provider's document with the new provider's address beside it in the index,
+which looks like a working profile until the next update quietly replaces it.
+
+```console
+$ cvt profiles edit-url R1 https://panel.example/sub?token=…
+download  ok
+$ cvt profiles edit-url R1 https://panel.example/new --no-fetch
+warning: `R1` now points at …, but its document is still the one fetched from …
+```
+
+A profile with no URL — a local, merge or override document — is refused with
+the reason, rather than being given one.
+
 ### `config`
 
 | Command | Effect |
@@ -205,6 +229,29 @@ with `--concurrency` requests in flight. Defaults come from settings
 
 *JSON:* `cvt.proxies.list.v1`, `cvt.proxies.selection.v1`,
 `cvt.proxies.test.v1`.
+
+### `proxies chain`
+
+| Argument | Meaning |
+|---|---|
+| `<node>` | the proxy whose dialer chain to show |
+
+A `dialer-proxy` chain is how a subscription says "reach this node by first
+going through that one". It is invisible everywhere else — the core reports the
+field, and nothing draws the chain — so a loop, or a name that does not exist,
+is something the user meets as a core that will not start.
+
+```console
+$ cvt proxies chain a
+chain  a -> b
+$ cvt proxies chain solo
+chain  solo
+```
+
+*JSON:* `cvt.proxies.chain.v1`, with `chain` as a list and `circular` as a
+boolean. The validator reports the two shapes the core refuses:
+`E-DANGLING-DIALER` for a name that is neither a proxy nor a group, and
+`E-DIALER-CYCLE` for a chain that comes back to where it started.
 
 ### `connections`
 
@@ -258,6 +305,63 @@ node problem rather than a mistake.
 
 *JSON:* `cvt.test.delay.v1`, `cvt.test.dns.v1`, `cvt.test.urls.v1`,
 `cvt.test.targets.v1`.
+
+### `geo`
+
+| Flag | Meaning |
+|---|---|
+| `--direct` | ask without the proxy, for this machine's own address |
+| `--timeout MS` | how long to wait for an answer, default 10000 |
+
+Asks an IP-info service **through the core's proxy port**, so the answer
+describes the tunnel the user gets rather than the machine the program runs on:
+
+```console
+$ cvt geo
+ip       195.58.134.33
+country  GB
+city     London
+org      AS203758 EUGAMEHOST LTD
+via      the core's proxy on 127.0.0.1:17990
+delay    1485 ms
+source   https://ipinfo.io/json
+
+$ cvt geo --direct
+```
+
+`--direct` is the other half: the interesting fact is not your address or the
+node's, it is that they differ. Three sources are tried in order — `ipinfo.io`,
+`ip.sb` and Cloudflare's plain-text trace — because they are other people's
+services, and one being down or refusing a request from a given country is not
+a reason for this command to have nothing to say.
+
+*JSON:* `cvt.geo.v1`.
+
+### `unlock`
+
+| Flag | Meaning |
+|---|---|
+| `--timeout MS` | how long to wait per service, default 15000 |
+
+Asks four services that genuinely answer differently by region, through the
+core's proxy, and prints **the evidence beside every verdict**:
+
+```console
+$ cvt unlock
+service          verdict   evidence
+youtube-premium  unlocked  HTTP 200, region GB
+netflix          unlocked  HTTP 200 for a region-locked title
+chatgpt          unlocked  HTTP 200 from the session endpoint
+disney-plus      unlocked  HTTP 200
+```
+
+`unknown` is a real answer here and means the response said nothing either way
+— a login wall, a rate limit, a redesign. Rounding one of those to `blocked`
+would be a guess presented as a reading, so it is not done. The evidence is
+printed for the same reason: these probes read other people's pages, and a
+verdict nobody can check is worth less than the response it came from.
+
+*JSON:* `cvt.unlock.v1`.
 
 ### `core`
 

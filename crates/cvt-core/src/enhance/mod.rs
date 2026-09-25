@@ -1,3 +1,5 @@
-//! Config enhancement: merging, overriding and generating the runtime config.
+//! Config enhancement: merging, diffing, overriding and runtime generation.
 
+pub mod diff;
+pub mod merge;
 pub mod path;

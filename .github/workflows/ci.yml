@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'release/**', 'hotfix/**']
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --workspace --all-features
+      - name: Docs
+        run: cargo doc --workspace --no-deps
+
+  msrv:
+    name: minimum supported rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          v=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Install MSRV toolchain
+        run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Build against MSRV
+        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-targets
+
+  deny:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources

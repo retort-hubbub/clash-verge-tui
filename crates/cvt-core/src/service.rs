@@ -37,19 +37,23 @@ use crate::model::config::Config;
 use crate::paths::AppPaths;
 use crate::profile::store::ProfileStore;
 use crate::settings::Settings;
-/// How long one group may take, how long the whole replay may take, and how
-/// often to look.
+/// How long one look at one group may take, how long the whole replay may
+/// take, and how often to look again.
 ///
-/// Two budgets rather than one, and the first version had neither right. A
-/// deadline per group is a deadline that multiplies — twenty groups that are
-/// gone cost twenty times the wait. A deadline for the whole replay, which is
-/// what replaced it, hands the entire budget to the *first* group that is
-/// gone: `grp-urltest` would consume it, the loop would break, and every choice
-/// after it would be silently dropped. One group costs one group's budget, and
-/// the total is still bounded.
+/// Three attempts got this wrong in three different ways, and the shape of the
+/// answer is the third: a deadline per group multiplies (twenty groups that are
+/// gone cost twenty waits); a single deadline for the whole replay hands
+/// everything to the first group that is gone; and waiting on each group *in
+/// turn* inside that deadline does the same thing more slowly — six groups the
+/// subscription has removed cost six waits, and the seventh choice, the one
+/// that would have worked, is never reached.
+///
+/// So nothing waits on a group. The ones that are there are replayed first, and
+/// the rest are polled together until they answer or the total runs out, which
+/// makes a group that is gone cost one read per round rather than a share of
+/// the budget.
 const REPLAY_PER_GROUP: std::time::Duration = std::time::Duration::from_millis(250);
-const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(800);
-const REPLAY_TOTAL: std::time::Duration = std::time::Duration::from_millis(4000);
+const REPLAY_TOTAL: std::time::Duration = std::time::Duration::from_millis(2000);
 const REPLAY_STEP: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// How long this group may take, given how much of the total is left.
@@ -109,19 +113,6 @@ async fn read_group(
         .await
         .ok()?
         .ok()
-}
-
-/// Wait until the core answers for a group again.
-async fn wait_for_group(client: &Client, group: &str, deadline: std::time::Instant) -> bool {
-    loop {
-        if read_group(client, group, deadline).await.is_some() {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(REPLAY_STEP).await;
-    }
 }
 
 /// Wait until the core reports the member that was asked for.
@@ -649,7 +640,15 @@ impl Service {
         // land in the same second whenever a person is doing it by hand.
         let destination = self.free_backup_path(Utc::now().timestamp());
         copy_state(self.paths.home(), &destination)?;
-        self.prune_backups(BACKUP_LIMIT)?;
+        // Pruned around the new one, never through it. Ordering by timestamp is
+        // right — the newest backups are the ones worth keeping — but it is the
+        // *filesystem's* timestamps, and a directory holding five entries named
+        // later than now (a clock that ran fast, a restored archive, a backup
+        // copied from another machine) puts the backup just taken at the end of
+        // the list. Pruning then deletes it and returns a path to a directory
+        // that no longer exists, which is what `restore` builds its safety copy
+        // with.
+        self.prune_backups_keeping(BACKUP_LIMIT, &destination)?;
         Ok(destination)
     }
 
@@ -690,10 +689,11 @@ impl Service {
                     return None;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let (stamp, sequence) = name.split_once('-').map_or(
-                    (name.as_str(), 1),
-                    |(stamp, rest)| (stamp, rest.parse::<u32>().unwrap_or(1)),
-                );
+                let (stamp, sequence) = name
+                    .split_once('-')
+                    .map_or((name.as_str(), 1), |(stamp, rest)| {
+                        (stamp, rest.parse::<u32>().unwrap_or(1))
+                    });
                 let created = stamp.parse::<i64>().ok()?;
                 let items = std::fs::read_dir(entry.path())
                     .map(|inner| inner.flatten().count())
@@ -766,39 +766,51 @@ impl Service {
         Ok(safety)
     }
 
+    /// Keep the newest `keep` backups, and `keep_this` whatever its age.
+    fn prune_backups_keeping(&self, keep: usize, keep_this: &Path) -> Result<usize> {
+        let mut removed = 0;
+        for backup in self.backups()?.into_iter().skip(keep) {
+            if backup.path == keep_this {
+                continue;
+            }
+            std::fs::remove_dir_all(&backup.path).map_err(|e| Error::io(&backup.path, e))?;
+            removed += 1;
+        }
+        removed += self.remove_links()?;
+        Ok(removed)
+    }
+
+    /// Remove the symlinks in the backups directory, which are never backups.
+    fn remove_links(&self) -> Result<usize> {
+        let mut removed = 0;
+        let Ok(entries) = std::fs::read_dir(self.paths.backups_dir()) else {
+            return Ok(0);
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                std::fs::remove_file(entry.path()).map_err(|e| Error::io(entry.path(), e))?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// Keep the newest `keep` backups and delete the rest.
     ///
     /// # Errors
     /// [`Error::Io`] when a directory exists and cannot be removed.
     pub fn prune_backups(&self, keep: usize) -> Result<usize> {
         let mut removed = 0;
-        let mut doomed: Vec<PathBuf> = self
-            .backups()?
-            .into_iter()
-            .skip(keep)
-            .map(|backup| backup.path)
-            .collect();
-        // Entries that are not backups are removed too, and a link above all: a
-        // symlink in this directory is not something this program writes, and
-        // leaving it means `backup restore <name>` can be pointed at a
-        // directory outside the home. Anything else a person put here stays —
-        // this directory is the program's, but deleting a file it did not write
-        // and cannot explain is worse than leaving it.
-        if let Ok(entries) = std::fs::read_dir(self.paths.backups_dir()) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
-                    doomed.push(entry.path());
-                }
-            }
-        }
-        for path in doomed {
-            if path.is_dir() && !path.is_symlink() {
-                std::fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
-            } else {
-                std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
-            }
+        for backup in self.backups()?.into_iter().skip(keep) {
+            std::fs::remove_dir_all(&backup.path).map_err(|e| Error::io(&backup.path, e))?;
             removed += 1;
         }
+        // A symlink in this directory is not something this program writes, and
+        // leaving it means `backup restore <name>` can be pointed at a
+        // directory outside the home. Anything else a person put here stays:
+        // deleting a file this program did not write and cannot explain is
+        // worse than leaving it.
+        removed += self.remove_links()?;
         Ok(removed)
     }
 
@@ -866,25 +878,49 @@ impl Service {
             }
         }
 
-        for selection in late {
-            if std::time::Instant::now() >= overall {
-                tracing::debug!("the replay budget is spent before the second pass finished");
+        // Everything that was not there, polled *together* rather than one
+        // after another. Waiting on each in turn gives the first group that is
+        // gone the whole of its own budget and then the next one the same:
+        // six groups a subscription has removed cost six waits, the total runs
+        // out, and the seventh choice — the one that would have worked — is
+        // never reached. A round costs one read per group still pending, and a
+        // group that answers 404 costs almost nothing, so the live one is
+        // replayed on the round after it appears however many dead ones precede
+        // it.
+        let mut pending = late;
+        while !pending.is_empty() && std::time::Instant::now() < overall {
+            let mut still = Vec::new();
+            for selection in pending {
+                let deadline = group_budget(overall, REPLAY_PER_GROUP);
+                if read_group(&client, &selection.name, deadline)
+                    .await
+                    .is_none()
+                {
+                    still.push(selection);
+                    continue;
+                }
+                if replay_one(&client, &selection.name, &selection.now, deadline).await {
+                    applied += 1;
+                } else {
+                    tracing::debug!(
+                        group = %selection.name,
+                        member = %selection.now,
+                        "the choice did not take; the configuration may have replaced the group"
+                    );
+                }
+            }
+            if still.is_empty() {
                 break;
             }
-            let deadline = group_budget(overall, REPLAY_WAIT);
-            if !wait_for_group(&client, &selection.name, deadline).await {
-                tracing::debug!(group = %selection.name, "the group is not there to replay into");
-                continue;
-            }
-            if replay_one(&client, &selection.name, &selection.now, deadline).await {
-                applied += 1;
-            } else {
+            if std::time::Instant::now() >= overall {
                 tracing::debug!(
-                    group = %selection.name,
-                    member = %selection.now,
-                    "the choice did not take; the configuration may have replaced the group"
+                    groups = still.len(),
+                    "the replay budget is spent before these groups came back"
                 );
+                break;
             }
+            pending = still;
+            tokio::time::sleep(REPLAY_STEP).await;
         }
 
         Ok(applied)
@@ -1242,6 +1278,71 @@ rules:
         let f = fixture();
         f.seed();
         assert_eq!(f.service.restore_selections().await.unwrap(), 0);
+    }
+
+    #[test]
+    fn the_backup_just_taken_is_never_pruned_by_its_own_prune() {
+        let f = fixture();
+        f.seed();
+        // Five entries named *later* than now: a clock that ran fast, an archive
+        // restored from another machine, a hand-made directory. The new backup
+        // sorts last, so pruning by age alone deletes the one thing the call
+        // exists to produce and returns a path to nothing.
+        let future = Utc::now().timestamp() + 1000;
+        for offset in 0..BACKUP_LIMIT {
+            let dir = f
+                .service
+                .paths()
+                .backups_dir()
+                .join((future + offset as i64).to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("profiles.yaml"), "current: L1\nitems: []\n").unwrap();
+        }
+
+        let created = f.service.backup().unwrap();
+        assert!(
+            created.join("profiles.yaml").is_file(),
+            "`backup()` returned {} and pruned it away",
+            created.display()
+        );
+        assert!(
+            f.service
+                .backups()
+                .unwrap()
+                .iter()
+                .any(|b| b.path == created),
+            "and it is not even listed"
+        );
+    }
+
+    #[test]
+    fn a_restore_keeps_the_state_it_replaces_even_when_the_backups_directory_is_full() {
+        let f = fixture();
+        f.seed();
+        f.service.save_settings().unwrap();
+        let future = Utc::now().timestamp() + 1000;
+        // A real backup to restore from, and five entries named *later* than it
+        // — so the safety copy `restore` takes, stamped now, sorts last of all.
+        let source = f.service.paths().backups_dir().join(future.to_string());
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("profiles.yaml"), "current: L1\nitems: []\n").unwrap();
+        std::fs::write(source.join("cvt.yaml"), "ui:\n  refresh_ms: 250\n").unwrap();
+        for offset in 1..=BACKUP_LIMIT {
+            let dir = f
+                .service
+                .paths()
+                .backups_dir()
+                .join((future + offset as i64).to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("profiles.yaml"), "current: L1\nitems: []\n").unwrap();
+        }
+
+        let safety = f.service.restore(&source).unwrap();
+        assert!(
+            safety.join("profiles.yaml").is_file() && safety.join("cvt.yaml").is_file(),
+            "the restore said the state it replaced was kept at {}, and it is not there",
+            safety.display()
+        );
     }
 
     #[test]

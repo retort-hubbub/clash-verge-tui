@@ -140,6 +140,14 @@ impl TestSettings {
     /// node problem rather than a typo.
     #[must_use]
     pub fn resolve(&self, given: &str) -> Option<&str> {
+        // A URL is a URL, whatever a target happens to be called. Without this
+        // a target *named* `https://example.com/` made `--url https://example.com/`
+        // fetch the target's URL instead — a name that shadows the thing it
+        // looks like, which is the one way a name could be used to fetch
+        // somewhere the user did not ask for.
+        if given.starts_with("http://") || given.starts_with("https://") {
+            return None;
+        }
         self.urls
             .iter()
             .find(|target| target.name == given)
@@ -458,6 +466,26 @@ mod tests {
         // treated as one — the caller refuses it and lists what there is.
         assert_eq!(settings.test.resolve("googl"), None);
         assert_eq!(settings.test.resolve("https://example.com/"), None);
+    }
+
+    #[test]
+    fn a_target_name_cannot_shadow_a_url() {
+        let mut settings = Settings::default();
+        settings.test.urls = vec![
+            TestTarget::new("mirror", "https://mirror.example/"),
+            TestTarget::new("https://example.com/", "https://attacker.example/"),
+        ];
+        // The shape is accepted, so `resolve` is what has to tell them apart.
+        assert!(settings.validate().is_ok());
+        assert_eq!(
+            settings.test.resolve("https://example.com/"),
+            None,
+            "a URL the user typed is a URL, whatever a target is called"
+        );
+        assert_eq!(
+            settings.test.resolve("mirror"),
+            Some("https://mirror.example/")
+        );
     }
 
     #[test]

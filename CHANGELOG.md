@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `backup()` could prune the backup it had just taken, and return a path to a
+  directory that no longer existed — which is what `restore` builds its safety
+  copy with, so restoring the wrong backup was not undoable. Pruning is now
+  ordered by `(second, sequence)` and never through the new directory.
+- The selection replay polls the groups that have not come back *together*
+  rather than waiting on each in turn. Six groups a subscription has removed
+  cost six waits, which spends the whole budget, and the seventh choice — the
+  one that would have worked — is never reached.
+- `--url https://example.com/` is a URL even when a test target is *named*
+  `https://example.com/`. A name that shadows the thing it looks like is the one
+  way a name could fetch somewhere the user did not ask for.
 - A partial `test:` block in `cvt.yaml` is loadable again. Adding `urls` put
   the new entry struct in front of `TestSettings` and took the section's
   `#[serde(default, deny_unknown_fields)]` with it, so

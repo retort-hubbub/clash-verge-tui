@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] - 2026-09-25
+
 ### Added
 
 - Workspace scaffold: `cvt-core`, `cvt-tui`, `cvt` binary.
@@ -80,4 +84,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/commits/develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.1.0...develop
+[0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

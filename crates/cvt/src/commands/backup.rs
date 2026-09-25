@@ -81,16 +81,31 @@ pub async fn run(ctx: &Ctx, command: &BackupCommand) -> Result<()> {
     match command {
         BackupCommand::Create => {
             let path = ctx.service().backup()?;
-            let name = path
-                .file_name()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            // Read back through `backups()` rather than filling the report from
+            // the path: the library already knows the timestamp and how many
+            // entries the directory holds, and a second answer built here said
+            // `created: 0, items: 0` for the backup it had just taken — the
+            // epoch, and nothing in it.
+            let taken = ctx
+                .service()
+                .backups()?
+                .into_iter()
+                .find(|backup| backup.path == path)
+                .ok_or_else(|| {
+                    Exit::failure(format!(
+                        "the backup at {} was taken but is not listed, which means \
+                         something removed it",
+                        path.display()
+                    ))
+                })?;
+            let name = taken.name();
             ctx.out().emit(&BackupInfo {
                 action: "created",
                 summary: format!("saved the profiles, settings and overrides as {name}"),
-                path: path.display().to_string(),
+                path: taken.path.display().to_string(),
                 name,
-                created: 0,
-                items: 0,
+                created: taken.created,
+                items: taken.items,
                 safety: None,
             })?;
         }

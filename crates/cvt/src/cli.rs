@@ -338,11 +338,24 @@ pub struct NodeTestArgs {
     #[arg(long, value_name = "URL")]
     pub url: Option<String>,
 
-    /// Per-node timeout in milliseconds
+    /// Timeout and concurrency, shared with every other latency command
+    #[command(flatten)]
+    pub limits: TestLimits,
+}
+
+/// The two flags every latency command takes.
+///
+/// One struct rather than two copies of two fields, because the ceilings they
+/// are held to live in the settings and a ceiling that reaches three commands
+/// out of four is the pattern this project has now fixed five times. A command
+/// that takes these flags takes the checks with them.
+#[derive(Debug, Args)]
+pub struct TestLimits {
+    /// Per-request timeout in milliseconds
     #[arg(long, value_name = "MS")]
     pub timeout: Option<u32>,
 
-    /// How many nodes to test at once
+    /// How many are measured at once
     #[arg(long, value_name = "N")]
     pub concurrency: Option<usize>,
 }
@@ -464,13 +477,9 @@ pub struct UrlsArgs {
     #[arg(long)]
     pub list: bool,
 
-    /// Per-URL timeout in milliseconds
-    #[arg(long, value_name = "MS")]
-    pub timeout: Option<u32>,
-
-    /// How many URLs to test at once
-    #[arg(long, value_name = "N")]
-    pub concurrency: Option<usize>,
+    /// Timeout and concurrency, shared with every other latency command
+    #[command(flatten)]
+    pub limits: TestLimits,
 }
 
 /// Arguments of `test dns`.

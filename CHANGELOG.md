@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `--timeout` and `--concurrency` are read in one place and held to the
+  ceilings the settings are. `test.concurrency: 600` was refused with "would
+  exhaust file descriptors" while `--concurrency 600` reached
+  `buffer_unordered`; then `test urls` kept its own copy of the two flags and
+  did it again; and `--timeout 32768` was accepted by every command while the
+  settings refused it with "the core parses this as an int16". The two flags are
+  one struct now, flattened into every command that takes them, and resolved by
+  one function — because a ceiling that reaches three commands out of four is
+  the pattern this project has now fixed five times.
+- `copy_file` compares *files*, not paths. Two names for one inode — a hard
+  link, which is what `cp -al` leaves behind — passed the self-copy guard,
+  because the paths really are different, and `std::fs::copy` then truncated the
+  file before reading it. A restore emptied the document it was asked to put
+  back.
+- The name a backup falls back to when a second has a thousand of them keeps
+  the sequence it parses back to. `-overflow` read as sequence 1 — the bare
+  timestamp's — so the two collided and their order went back to `read_dir`'s,
+  which is the thing the sequence was added to stop.
+- `backup create` reports the timestamp and the entry count of the backup it
+  took, rather than the epoch and zero.
+
 ### Added
 
 - `cvt unlock` — whether the exit can reach the services people actually ask

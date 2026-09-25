@@ -12,7 +12,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::cli::{DelayArgs, DnsArgs, TestCommand, UrlsArgs};
-use crate::commands::{DelayReport, check_url_flag, measure_nodes, node_options, nodes_by_group};
+use crate::commands::{
+    DelayReport, check_url_flag, measure_nodes, node_options, nodes_by_group, resolve_limits,
+};
 use crate::context::Ctx;
 use crate::exit::Exit;
 use crate::output::{Output, Report, Table};
@@ -111,9 +113,9 @@ async fn urls(ctx: &Ctx, args: &UrlsArgs) -> Result<()> {
     }
 
     let node = args.node.clone().unwrap_or_default();
-    let defaults = ctx.settings().test.clone();
-    let timeout = args.timeout.unwrap_or(defaults.timeout_ms);
-    let concurrency = args.concurrency.unwrap_or(defaults.concurrency).max(1);
+    // The same resolver every other latency command uses, so the ceilings
+    // cannot reach three of four — which they did, twice.
+    let (_, timeout, concurrency) = resolve_limits(ctx, &args.limits)?;
     let client = ctx.client()?;
 
     // A node the controller does not know is a mistake in the command, not a

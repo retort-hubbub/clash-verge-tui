@@ -205,6 +205,30 @@ fn copy_state(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether two paths name the same file, by the identity the filesystem gives
+/// it rather than by the path.
+///
+/// A hard link is one file with two names, and `std::fs::copy(x, y)` where `x`
+/// and `y` are those two names truncates the file before reading it — the copy
+/// then reports success having written nothing. Comparing canonical paths
+/// misses it, because the paths really are different.
+#[cfg(unix)]
+fn is_same_file(left: &Path, right: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    match (std::fs::metadata(left).ok(), std::fs::metadata(right).ok()) {
+        (Some(a), Some(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// The portable fallback: the most a path alone can say is whether it is the
+/// same path.
+#[cfg(not(unix))]
+fn is_same_file(left: &Path, right: &Path) -> bool {
+    let same = std::fs::canonicalize(left).ok();
+    same.is_some() && same == std::fs::canonicalize(right).ok()
+}
+
 /// Copy one file, refusing to copy it onto itself.
 ///
 /// The guard is here and not only at the entry points, because this is the
@@ -213,6 +237,14 @@ fn copy_state(from: &Path, to: &Path) -> Result<()> {
 /// the source, so a file copied onto itself comes back empty and the call
 /// reports success.
 fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+    // The same *file*, not merely the same path. Canonicalising compares names,
+    // and two names for one inode — a hard link, which is what `cp -al` leaves
+    // behind — are not the same name. `std::fs::copy` then truncates the file
+    // before reading it, and a restore emptied the document it was asked to put
+    // back.
+    if is_same_file(source, destination) {
+        return Ok(());
+    }
     // A destination that is a *symlink* is refused rather than followed.
     // `std::fs::copy` opens the destination for writing, which follows the link
     // — so a home whose `profiles/L1.yaml` is a link into somebody's dotfiles
@@ -228,10 +260,6 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
                 destination.display()
             ),
         ));
-    }
-    let same = std::fs::canonicalize(source).ok();
-    if same.is_some() && same == std::fs::canonicalize(destination).ok() {
-        return Ok(());
     }
     std::fs::copy(source, destination).map_err(|e| Error::io(destination, e))?;
     Ok(())
@@ -706,7 +734,13 @@ impl Service {
                 return candidate;
             }
         }
-        dir.join(format!("{stamp}-overflow"))
+        // A thousand backups in one second is not a scenario, but the name has
+        // to keep the one property the suffix exists for: `-overflow` parsed
+        // back as sequence 1 — the bare timestamp's — so the two collided and
+        // their order went back to `read_dir`'s, which is the whole thing the
+        // sequence was added to stop. `u32::MAX` sorts last, and last is what
+        // an overflow is.
+        dir.join(format!("{stamp}-{}", u32::MAX))
     }
 
     /// Every backup, newest first.
@@ -732,8 +766,11 @@ impl Service {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let (stamp, sequence) = name
                     .split_once('-')
+                    // A suffix that is not a number sorts last rather than
+                    // being read as the first: a name this program cannot
+                    // parse is not evidence that it is the oldest.
                     .map_or((name.as_str(), 1), |(stamp, rest)| {
-                        (stamp, rest.parse::<u32>().unwrap_or(1))
+                        (stamp, rest.parse::<u32>().unwrap_or(u32::MAX))
                     });
                 let created = stamp.parse::<i64>().ok()?;
                 let items = std::fs::read_dir(entry.path())

@@ -39,7 +39,7 @@ use futures_util::stream::{self, StreamExt as _};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::cli::{Command, NodeTestArgs};
+use crate::cli::{Command, NodeTestArgs, TestLimits};
 use crate::context::Ctx;
 use crate::exit::Exit;
 use crate::output::{self, Fields, Output, Report, Table};
@@ -665,16 +665,47 @@ pub fn proxy_port(ctx: &Ctx) -> Result<u16> {
 /// target.
 pub fn node_options(ctx: &Ctx, args: &NodeTestArgs) -> Result<(String, u32, usize)> {
     check_url_flag(ctx, args.url.as_deref())?;
-    let (url, timeout, concurrency) = test_defaults(ctx);
-    // Clamped to the same ceiling the settings are held to. `--concurrency 600`
-    // went straight to `buffer_unordered` while `test.concurrency: 600` was
-    // refused with "would exhaust file descriptors" — one number, two answers,
-    // and the one that gets through is the one nobody validates.
-    let asked = args.concurrency.unwrap_or(concurrency);
+    let (url, timeout, concurrency) = resolve_limits(ctx, &args.limits)?;
     Ok((
         resolve_url(ctx, args.url.as_deref()).unwrap_or(url),
-        args.timeout.unwrap_or(timeout),
-        asked.clamp(1, cvt_core::settings::MAX_TEST_CONCURRENCY),
+        timeout,
+        concurrency,
+    ))
+}
+
+/// `--timeout` and `--concurrency`, held to the ceilings the settings are.
+///
+/// The one place those two flags are read, so a command cannot take them and
+/// skip the checks — which is what happened four times: `--concurrency 600`
+/// reached `buffer_unordered` while `test.concurrency: 600` was refused, then
+/// `test urls` kept its own copy of the flags and did it again, and `--timeout
+/// 32768` was accepted by every command while the settings refused it with "the
+/// core parses this as an int16".
+///
+/// # Errors
+/// [`Error::InvalidValue`] when a flag is outside the range the core accepts.
+pub fn resolve_limits(ctx: &Ctx, limits: &TestLimits) -> Result<(String, u32, usize)> {
+    let (url, timeout, concurrency) = test_defaults(ctx);
+    let asked_timeout = limits.timeout.unwrap_or(timeout);
+    if asked_timeout == 0 || asked_timeout > cvt_core::settings::MAX_TEST_TIMEOUT_MS {
+        return Err(Error::invalid(
+            "timeout",
+            format!(
+                "{asked_timeout} ms is outside the range the core accepts (1 to {}); \
+                 it parses this as an int16 and answers every request with an error",
+                cvt_core::settings::MAX_TEST_TIMEOUT_MS
+            ),
+        )
+        .into());
+    }
+    let asked = limits.concurrency.unwrap_or(concurrency);
+    if asked == 0 {
+        return Err(Error::invalid("concurrency", "must be at least 1").into());
+    }
+    Ok((
+        url,
+        asked_timeout,
+        asked.min(cvt_core::settings::MAX_TEST_CONCURRENCY),
     ))
 }
 

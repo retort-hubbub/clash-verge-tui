@@ -5,7 +5,59 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] - 2026-09-26
+## [Unreleased]
+
+Nothing yet.
+
+## [0.3.0] - 2026-09-26
+
+A third adversarial review checked the fixes from the second and found ten more
+problems with them, including the other half of a path traversal the second had
+found and two regressions those fixes had introduced. All ten are closed, and
+its tests are kept (`crates/cvt-core/tests/recheck2.rs`).
+
+### Added
+
+- `core.external_controller` and `core.secret`, and two rows on the settings
+  screen for them. The control plane is the application's, so a subscription
+  update cannot overwrite it and an imported bundle cannot redirect it.
+- `W-RULE-KIND` and `E-RULE-MALFORMED` report a rule type this build does not
+  know, and a line that is not a rule at all.
+- `docs/FEATURE-COVERAGE.md`: what this project does about each feature of
+  `clash-verge-rev`, including the eighteen it does not implement and why.
+- `crates/cvt-core/tests/recheck.rs` and `recheck2.rs`: two independent
+  adversarial reviews, kept in the build.
+
+### Changed
+
+- The control plane comes from the settings or from a base profile. An
+  enhancement that introduces `external-controller`, `secret`,
+  `external-controller-cors` and the rest is refused, with a warning naming the
+  key and where to put it instead; one that changes what the base declared has
+  it put back, also with a warning.
+- A prepended catch-all rule takes the existing catch-all's place rather than
+  stacking above it, which left two of them and every rule below dead.
+- `E-UNREACHABLE-RULES` became `W-UNREACHABLE-RULES`. The core loads a document
+  with two catch-alls, and `Service::start_core` refuses to start when any
+  error is present — so this was the difference between "a warning" and "your
+  core will not start".
+- `E-MATCH-WITH-PAYLOAD` became `W-MATCH-WITH-PAYLOAD` in 0.2.0 for the same
+  reason.
+
+### Fixed
+
+- `PrfItem::file` was an unvalidated path component, like the uid before it: an
+  index carrying `file: ../outside.yaml` made the store write, read and
+  *delete* outside `profiles/`, and an import copied a file from outside its
+  source directory into one.
+- `IP-CIDR6` was reported as a rule type this build does not know. The core
+  loads it, and reports it through `GET /rules` as an `IPCIDR` rule — the same
+  adapter as `IP-CIDR`, which is why it had no row of the translation table.
+- The overlay contradiction check refused working overlays: a `set` reaching
+  into a list (`a[0].b`) is how an element is addressed, and one writing an
+  *ancestor* of a list was never compared against the value it writes.
+
+## [0.2.0] - 2026-09-26
 
 ### Fixed
 
@@ -149,5 +201,7 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[0.1.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.1
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.3.0...develop
+[0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
+[0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0
 [0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

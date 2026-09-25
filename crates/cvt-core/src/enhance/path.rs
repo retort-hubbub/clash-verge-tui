@@ -183,7 +183,10 @@ fn step<'a>(cur: &'a Value, seg: &Segment) -> Option<&'a Value> {
 
 fn resolve_index(i: i64, len: usize) -> Option<usize> {
     if i < 0 {
-        let back = usize::try_from(-i).ok()?;
+        // `-i` overflows for `i64::MIN`, and a path expression can contain it:
+        // `proxies[-9223372036854775808]` parses cleanly and used to panic here.
+        // `unsigned_abs` is total for every `i64`.
+        let back = usize::try_from(i.unsigned_abs()).ok()?;
         len.checked_sub(back)
     } else {
         let idx = usize::try_from(i).ok()?;
@@ -622,6 +625,58 @@ mod tests {
         assert_eq!(
             get(&v, &Path::parse("rules[-1]").unwrap()),
             Some(&json!("MATCH,DIRECT"))
+        );
+    }
+
+    #[test]
+    fn extreme_indices_resolve_without_panicking() {
+        // Regression: `i64::MIN` negates to an overflow, and the path parser
+        // accepts it, so reading and writing such a path must fail cleanly
+        // rather than panic.
+        let v = sample();
+        for text in [
+            "proxies[-9223372036854775808]",
+            "proxies[9223372036854775807]",
+        ] {
+            let p = Path::parse(text).unwrap_or_else(|e| panic!("{text} should parse: {e}"));
+            assert!(get(&v, &p).is_none(), "{text} resolved to something");
+        }
+
+        let mut w = sample();
+        let before = w.clone();
+        for text in [
+            "proxies[-9223372036854775808]",
+            "proxies[9223372036854775807]",
+        ] {
+            let p = Path::parse(text).unwrap();
+            assert!(
+                set(&mut w, &p, json!("x")).is_err(),
+                "{text} was accepted by set"
+            );
+            assert!(
+                remove(&mut w, &p).unwrap().is_none(),
+                "{text} removed something"
+            );
+        }
+        assert_eq!(w, before, "a rejected write must be a complete no-op");
+    }
+
+    #[test]
+    fn a_signed_zero_or_explicit_plus_is_just_a_number() {
+        // `-0` and `+1` are ordinary integers, and treating them as anything
+        // else would be surprising.
+        let v = sample();
+        assert_eq!(
+            get(&v, &Path::parse("proxies[-0]").unwrap()),
+            Some(&json!({"name": "A", "port": 1}))
+        );
+        assert_eq!(
+            get(&v, &Path::parse("proxies[+1].name").unwrap()),
+            Some(&json!("B"))
+        );
+        assert_eq!(
+            get(&v, &Path::parse("proxies[0]").unwrap()),
+            get(&v, &Path::parse("proxies[-0]").unwrap())
         );
     }
 

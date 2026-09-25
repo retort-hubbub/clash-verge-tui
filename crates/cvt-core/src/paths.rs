@@ -132,6 +132,19 @@ impl AppPaths {
         self.home.join("snapshots")
     }
 
+    /// Where whole-home backups are kept.
+    ///
+    /// Separate from [`Self::snapshots_dir`] on purpose, and the names are
+    /// close enough to be worth the sentence: a *snapshot* is one generated
+    /// configuration, kept so that a bad apply can be undone in seconds. A
+    /// *backup* is the profiles, the settings and the overrides — everything a
+    /// user would have to recreate by hand — and is kept so that a mistake
+    /// made a week ago can still be undone.
+    #[must_use]
+    pub fn backups_dir(&self) -> PathBuf {
+        self.home.join("backups")
+    }
+
     /// Directory holding log files.
     #[must_use]
     pub fn logs_dir(&self) -> PathBuf {
@@ -165,6 +178,7 @@ impl AppPaths {
             self.core_dir(),
             self.core_work_dir(),
             self.snapshots_dir(),
+            self.backups_dir(),
             self.logs_dir(),
         ] {
             std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;

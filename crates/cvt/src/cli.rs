@@ -65,6 +65,13 @@ pub enum Command {
         command: ProfilesCommand,
     },
 
+    /// Save or restore the profiles, settings and overrides
+    Backup {
+        /// Which backup operation to run
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+
     /// Work with the generated runtime configuration
     Config {
         /// Which configuration operation to run
@@ -194,6 +201,22 @@ pub struct ChainArgs {
     /// Drop the explicit chain and go back to the automatic order
     #[arg(long, conflicts_with = "uids")]
     pub clear: bool,
+}
+
+/// Backup operations.
+#[derive(Debug, Subcommand)]
+pub enum BackupCommand {
+    /// Copy the profiles, settings and overrides into a timestamped directory
+    Create,
+
+    /// List the backups, newest first
+    List,
+
+    /// Put a backup back, keeping a copy of what it replaces
+    Restore {
+        /// The backup's name, from `backup list`; the newest when omitted
+        name: Option<String>,
+    },
 }
 
 /// Configuration operations.

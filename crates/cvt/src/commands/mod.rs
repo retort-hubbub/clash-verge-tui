@@ -8,6 +8,7 @@
 //! can write the profile index is [`Ctx::edit_store`], so a command that never
 //! calls it is read-only.
 
+pub mod backup;
 pub mod config;
 pub mod connections;
 pub mod core;
@@ -52,6 +53,7 @@ pub async fn dispatch(ctx: &Ctx, command: &Command) -> Result<()> {
             Err(Exit::failure("internal error: doctor must run before the home is opened").into())
         }
         Command::Profiles { command } => profiles::run(ctx, command).await,
+        Command::Backup { command } => backup::run(ctx, command).await,
         Command::Config { command } => config::run(ctx, command).await,
         Command::Proxies { command } => proxies::run(ctx, command).await,
         Command::Connections { command } => connections::run(ctx, command).await,

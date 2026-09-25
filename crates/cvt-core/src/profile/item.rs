@@ -241,6 +241,22 @@ impl UserInfo {
 /// `../../etc/passwd` would become `passwd`, which is a different document from
 /// the one the index meant, and silently pointing at that is worse than saying
 /// the name is unusable.
+/// A stable 32-bit digest of a string, for making a sanitised name unique.
+///
+/// FNV-1a, written out rather than pulled from a crate: this is eight lines,
+/// the result is never persisted as a key, and all it has to do is be the same
+/// on every run and different for different input. It is not a security
+/// primitive and is not used as one — a collision here would mean two hostile
+/// uids sharing one document, which is a nuisance rather than an attack.
+fn digest(text: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in text.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 pub(crate) fn single_component(name: &str) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
         return None;
@@ -258,9 +274,30 @@ pub(crate) fn single_component(name: &str) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectedNode {
     /// The group the choice was made in.
+    ///
+    /// `default` on both fields, because this is the reference project's key
+    /// and its writer emits `now: null` for a group nobody has chosen in. A
+    /// missing field there made the whole index unreadable — every profile in
+    /// it, not just the entry — which is a large consequence for a key this
+    /// program merely reads. An entry that is empty once read is skipped by
+    /// whoever replays it.
+    #[serde(default)]
     pub name: String,
     /// The member that was chosen.
+    #[serde(default)]
     pub now: String,
+}
+
+impl SelectedNode {
+    /// `true` when this entry names both a group and a member.
+    ///
+    /// An entry that does not is one this program cannot replay, and one it
+    /// will not store: the reference project writes a placeholder for a group
+    /// nobody has chosen in, and a placeholder is not a choice.
+    #[must_use]
+    pub fn is_usable(&self) -> bool {
+        !self.name.trim().is_empty() && !self.now.trim().is_empty()
+    }
 }
 
 impl SelectedNode {
@@ -419,7 +456,15 @@ impl PrfItem {
         } else {
             stem
         };
-        format!("{stem}.{ext}")
+        // Sanitising is not injective: `a/b` and `a.b` both become `ab`, and
+        // two index entries that share a document mean one of them overwrites
+        // the other — the collision the uid guard exists to prevent, reached by
+        // a different route. A digest of the *original* uid keeps distinct uids
+        // distinct, and is only needed when the name had to be changed at all.
+        if stem == self.uid {
+            return format!("{stem}.{ext}");
+        }
+        format!("{stem}-{:08x}.{ext}", digest(&self.uid))
     }
 
     /// The filename this profile would have if named after its uid.
@@ -833,7 +878,11 @@ option:
         // dotfile, and a document nobody can find by name is worse than one
         // with a placeholder stem.
         let unassigned = PrfItem::remote("", "n", "https://x");
-        assert_eq!(unassigned.file_name(), "profile.yaml");
+        assert!(
+            unassigned.file_name().starts_with("profile-"),
+            "{}",
+            unassigned.file_name()
+        );
     }
 
     /// The fallback is derived from the uid, which is untrusted input too.
@@ -843,26 +892,43 @@ option:
     /// expression open. This covers the arm that does not read `file` at all.
     #[test]
     fn an_unusable_uid_cannot_reach_a_path_through_the_fallback() {
-        for (uid, expected) in [
-            ("../canary", "canary.yaml"),
-            ("../profiles", "profiles.yaml"),
-            ("../../etc/passwd", "etcpasswd.yaml"),
-            ("/absolute/path", "absolutepath.yaml"),
-            ("a/b", "ab.yaml"),
-            ("..", "profile.yaml"),
-            (".", "profile.yaml"),
-            ("", "profile.yaml"),
-            ("a\0b", "ab.yaml"),
+        let mut seen: Vec<String> = Vec::new();
+        for uid in [
+            "../canary",
+            "../profiles",
+            "../../etc/passwd",
+            "/absolute/path",
+            "a/b",
+            "a.b",
+            "a\\b",
+            "..",
+            ".",
+            "",
+            "a\0b",
         ] {
             let mut item = PrfItem::remote(uid, "n", "https://x");
             item.file = None;
-            assert_eq!(item.file_name(), expected, "uid {uid:?}");
+            let name = item.file_name();
             assert!(
-                !item.file_name().contains(['/', '\\']),
-                "uid {uid:?} reached a path: {}",
-                item.file_name()
+                !name.contains(['/', '\\']),
+                "uid {uid:?} reached a path: {name}"
             );
+            assert!(!name.starts_with('.'), "uid {uid:?} made a dotfile: {name}");
+            // Distinct uids must not share a document: sanitising `a/b` and
+            // `a.b` to the same `ab` would make one profile overwrite the
+            // other, which is the collision the uid guard exists to prevent.
+            assert!(
+                !seen.contains(&name),
+                "uid {uid:?} shares {name} with an earlier one: {seen:?}"
+            );
+            seen.push(name);
         }
+        // A uid that was already usable keeps the plain name, so nothing that
+        // worked before gains a suffix.
+        assert_eq!(
+            PrfItem::remote("Rabc1234", "n", "https://x").file_name(),
+            "Rabc1234.yaml"
+        );
     }
 
     #[test]

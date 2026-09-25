@@ -277,6 +277,14 @@ impl ProfileStore {
         let Some(uid) = self.current_uid().map(str::to_owned) else {
             return Ok(());
         };
+        // Nothing to record for a blank group or member: storing one would put
+        // an entry in the index that the reader has to filter out again.
+        if group.trim().is_empty() {
+            return Ok(());
+        }
+        if member.is_some_and(|member| member.trim().is_empty()) {
+            return Ok(());
+        }
         let item = self
             .get_mut(&uid)
             .ok_or_else(|| Error::ProfileNotFound { uid: uid.clone() })?;
@@ -296,6 +304,11 @@ impl ProfileStore {
         self.current()
             .map(|item| item.selected.clone())
             .unwrap_or_default()
+            .into_iter()
+            // A placeholder for a group nobody has chosen in is not a choice,
+            // and a blank group name would send the replay after `/group/`.
+            .filter(SelectedNode::is_usable)
+            .collect()
     }
 
     /// The ordered profiles that produce the runtime configuration.

@@ -15,7 +15,18 @@ dirs.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 regex.workspace = true
-libc.workspace = true
+# `rustix` rather than `libc` so that signalling a process needs no
+# `unsafe`, which the workspace denies outright.
+rustix = { version = "1.1.5", default-features = false, features = ["std", "process"] }
+tokio.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
+proptest = "1.11.0"
 tempfile = "3"
+
+[lints]
+workspace = true

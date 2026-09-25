@@ -6,11 +6,19 @@ license.workspace = true
 description = "Ratatui widget & screen layer for clash-verge-tui"
 
 [dependencies]
-cvt-core = { path = "../cvt-core" }
+cvt-core = { path = "../cvt-core", version = "0.1.0" }
 anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 ratatui = "0.30.2"
-crossterm = "0.29.0"
+crossterm = { workspace = true }
 futures-util = "0.3.34"
 unicode-width = "0.2.2"
+chrono.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+serde_json.workspace = true

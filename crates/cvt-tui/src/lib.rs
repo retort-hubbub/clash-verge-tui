@@ -1,29 +1,41 @@
-use ratatui::prelude::*;
-use ratatui::widgets::*;
+//! Ratatui presentation layer for `clash-verge-tui`.
+//!
+//! This crate owns everything that touches a terminal, including the run loop
+//! in [`run`], which takes the screen over and gives it back. It depends on
+//! `cvt-core` and never the other way round, and it performs no *application*
+//! I/O: it never spawns a process or opens a socket, and any side effect the
+//! interface wants is expressed as [`app::Effect`] and performed by the binary
+//! crate. That is what keeps the interface testable without a terminal — the
+//! loop is the only part that needs one, and it takes its input stream and its
+//! effect executor as arguments.
+//!
+//! ```text
+//! cvt (binary)  ->  cvt-tui  ->  cvt-core
+//! ```
 
-pub fn smoke_render(f: &mut Frame, tick: u64) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
-        .split(f.area());
-    let tabs = Tabs::new(vec!["Home", "Proxies", "Logs"])
-        .block(Block::bordered().title("cvt"))
-        .select((tick % 3) as usize)
-        .highlight_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
-    f.render_widget(tabs, chunks[0]);
-    let rows: Vec<Row> = (0..3)
-        .map(|i| Row::new(vec![Cell::from(format!("n{i}")), Cell::from("12 ms")]))
-        .collect();
-    let t = Table::new(rows, [Constraint::Length(20), Constraint::Length(8)])
-        .header(Row::new(vec!["Node", "Delay"]).style(Style::default().bold()))
-        .block(Block::bordered().title("proxies"));
-    f.render_widget(t, chunks[1]);
-    let g = Gauge::default()
-        .ratio(0.5f64)
-        .label(Span::raw("0.5"))
-        .gauge_style(Style::default().fg(Color::Cyan));
-    f.render_widget(g, chunks[2]);
-    let _spark = Sparkline::default().data([1u64, 5, 3]);
-    let _list = List::new(["a", "b"]).highlight_symbol(">> ");
-    let _p = Paragraph::new(Line::from(vec![Span::styled("x", Style::default())])).wrap(Wrap { trim: true });
-}
+#![warn(missing_docs)]
+
+pub mod action;
+pub mod app;
+pub mod keys;
+pub mod row;
+pub mod run;
+pub mod state;
+pub mod theme;
+pub mod ui;
+
+pub use action::{Action, Screen};
+pub use app::{
+    App, ConnectionSort, Data, Done, Effect, Event, Overlay, Preview, PromptKind, SettingKind,
+    SettingRow, Status, StatusKind,
+};
+pub use keys::{Binding, Context, Keymap};
+pub use row::{
+    ConnectionRow, Live, LogRow, NodeRow, ProfileRow, RuleRow, TestKind, TestResult, TestRow,
+};
+pub use run::{EffectFuture, EventSink, RunError};
+pub use state::{
+    Filterable, LogBuffer, Metrics, SortOrder, Table, human_age, human_bytes, human_delay,
+    human_rate,
+};
+pub use theme::Theme;

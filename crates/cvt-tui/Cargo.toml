@@ -1,0 +1,16 @@
+[package]
+name = "cvt-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ratatui widget & screen layer for clash-verge-tui"
+
+[dependencies]
+cvt-core = { path = "../cvt-core" }
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+futures-util = "0.3.34"
+unicode-width = "0.2.2"

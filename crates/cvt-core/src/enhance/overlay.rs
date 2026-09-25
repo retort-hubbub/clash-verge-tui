@@ -50,7 +50,7 @@ use crate::enhance::path::{self, Path};
 use crate::error::{Error, Result};
 
 /// A declarative patch document.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Overlay {
     /// Paths to delete. Deleting something absent is not an error, which keeps
@@ -73,6 +73,25 @@ pub struct Overlay {
 
 fn default_true() -> bool {
     true
+}
+
+/// Written out rather than derived, and deliberately so.
+///
+/// `#[derive(Default)]` would set `append_before_terminal` to `false` while the
+/// field's serde default is `true`, so an overlay built in code and an empty
+/// overlay parsed from a document would behave differently — and the derived
+/// one appends rules *after* a terminal `MATCH`, which makes them dead. Two
+/// ways to spell "no overlay" have to mean the same thing.
+impl Default for Overlay {
+    fn default() -> Self {
+        Self {
+            remove: Vec::new(),
+            set: BTreeMap::new(),
+            prepend: BTreeMap::new(),
+            append: BTreeMap::new(),
+            append_before_terminal: default_true(),
+        }
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if signature
@@ -616,5 +635,21 @@ append: {rules: ["B,DIRECT", "C,DIRECT"]}
         let mut c = base();
         o.apply(&mut c).unwrap();
         assert_eq!(c["dns"]["nameserver"], json!(["1.1.1.1", "9.9.9.9"]));
+    }
+
+    /// Finding F17: the derived `Default` disagreed with the serde default for
+    /// `append_before_terminal`, so `Overlay::default()` appended rules *after*
+    /// a terminal `MATCH` — dead code — while an empty document did not.
+    #[test]
+    fn a_default_overlay_is_the_same_as_an_empty_document() {
+        assert_eq!(
+            Overlay::default(),
+            Overlay::from_yaml("{}").unwrap(),
+            "two ways to spell `no overlay` must mean the same thing"
+        );
+        assert!(
+            Overlay::default().append_before_terminal,
+            "appending after a terminal MATCH would make the rule dead"
+        );
     }
 }

@@ -34,6 +34,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, List, ListState, Paragraph, Tabs, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use crate::action::Screen;
 use crate::app::{App, Overlay, PromptKind};
@@ -186,8 +187,30 @@ fn prompt(
     // the caret cell itself — which is a space past the end whenever the cursor
     // is there, which is where it is while anything is being typed.
     let inner = usize::from(width).saturating_sub(4);
-    let start = cursor.saturating_sub(inner);
-    let visible: String = chars[start..].iter().take(inner).collect();
+    // The window is measured in *columns* and walks back from the cursor until
+    // the cells are used up, rather than counting characters: one CJK character
+    // is two cells, and taking `inner` characters of them overflowed the popup
+    // by exactly as many as were wide.
+    // One of those cells is the caret's, which is a space past the end of the
+    // value whenever the cursor is there — where it is while anything is being
+    // typed. Reserving it is what stops a value that exactly fills the popup
+    // from pushing the caret off the edge.
+    let room = inner.saturating_sub(1);
+    let mut start = cursor;
+    let mut cells = 0;
+    while start > 0 {
+        let wide = UnicodeWidthStr::width(chars[start - 1].to_string().as_str()).max(1);
+        if cells + wide > room {
+            break;
+        }
+        cells += wide;
+        start -= 1;
+    }
+    let visible: String = chars[start..].iter().collect();
+    // A **character** index into `visible`, not the column count: `cells` is
+    // columns, and using it here took `before` past the cursor by one character
+    // for every wide one — 30 columns of CJK is 15 characters, so `take(30)`
+    // reached 60 columns and pushed the caret off the popup entirely.
     let caret = cursor - start;
     let before: String = visible.chars().take(caret).collect();
     let after: String = visible.chars().skip(caret + 1).collect();
@@ -310,27 +333,27 @@ fn preview(
 /// says. Twenty-nine of ninety names were still losing their buttons.
 pub(super) fn wrapped_rows(text: &str, width: usize) -> usize {
     let width = width.max(1);
+    // Columns, not characters: a CJK message is twice as wide as its character
+    // count says, and a terminal wraps on columns.
     let mut rows = 1;
     let mut used = 0;
-    for word in text.split_whitespace() {
-        let length = word.chars().count();
-        let gap = usize::from(used > 0);
-        if used + gap + length <= width {
-            used += gap + length;
-            continue;
-        }
-        if used > 0 {
+    let mut breaks = 0;
+    for ch in text.chars() {
+        let wide = UnicodeWidthStr::width(ch.to_string().as_str()).max(1);
+        if used + wide > width {
             rows += 1;
+            used = 0;
         }
-        // A word that does not fit on a line of its own is broken across as
-        // many as it needs.
-        let whole = length / width;
-        rows += whole;
-        used = length % width;
-        if used == 0 && whole > 0 {
-            rows -= 1;
-            used = width;
+        used += wide;
+        if ch == ' ' {
+            breaks += 1;
         }
     }
-    rows
+    // Deliberately an **over**-estimate. `Wrap` breaks at the last space that
+    // fits rather than at the column, so the real count is at least the
+    // character count and at most that plus one row per space. Rounding the
+    // other way lost the newest line of a log, which is the one line a
+    // following pane must never lose; rounding this way shows one line fewer
+    // than it could, which nobody notices.
+    rows + breaks
 }

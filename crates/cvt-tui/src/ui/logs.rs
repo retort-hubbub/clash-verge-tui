@@ -34,11 +34,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut used = 0;
     let mut first = candidates.len();
     for line in candidates.iter().rev() {
-        // What is measured is what is drawn: the stamp, the level and the
-        // message, which is what  puts on the row.
-        let full = format!("{} {} {}", line.at, line.level, line.message);
+        // What is measured is what is *drawn*: `render_line` pads the level to
+        // seven columns, so measuring the unpadded form under-counted every row
+        // and the pane kept the wrong end of the window.
+        let full = format!("{} {:<7} {}", line.at, line.level, line.message);
         let rows = super::wrapped_rows(&full, width);
-        if used + rows > height {
+        // At least the newest line, always. A single line taller than the pane
+        // is clipped by the `Paragraph`, which shows its beginning — better
+        // than the empty state, which is where the over-estimate below sent it
+        // when one line exceeded the height on its own.
+        if used + rows > height && first < candidates.len() {
             break;
         }
         used += rows;

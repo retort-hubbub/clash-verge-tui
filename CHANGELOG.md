@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The interface's settings prompt is seeded with the *editable* value, not the
+  rendering. `core.external_controller` that is unset shows `from the base
+  profile`, and two keystrokes — `s`, Enter — wrote that string into the
+  setting: the settings accepted it and the generator then refused **every**
+  configuration with `E-CONTROLLER-FORMAT`, while the row went on displaying
+  the same words for both. `core.secret` lost the user's secret the same way.
+- A refresh of the settings screen no longer discards an unsaved edit; the
+  user's copy wins and the screen says so.
+- `Effect::SaveSettings` sends `Done::SettingsSaved`, which is the variant that
+  clears the interface's dirty flag. It sent a *notice*, so the flag stayed set
+  after a successful save and the guard above would never have stopped
+  guarding.
+- `Settings::validate` checks `core.external_controller`, which is forced over
+  every profile — a value the generator refuses meant every configuration was
+  refused, from a file the settings had accepted. Checked with the generator's
+  own rule, not a second one.
+- `--concurrency` above the ceiling is **refused** rather than clamped. The
+  clamp came first; two later reviews asked for the settings' answer instead,
+  and a settings file is hand-written, which makes silently capping what
+  somebody wrote worse than refusing it.
+- `profiles add` validates the address before recording it, with the fetcher's
+  own rule: a profile whose address its own fetcher refuses cannot be updated.
+- A failed `backup()` removes the directory it reserved. It was left behind,
+  listed, admitted by `looks_like_a_backup`, counted against the keep limit —
+  and offered for restore as the newest backup of a home it never finished
+  copying.
+
+### Fixed
+
 - `protect_dns` applies to the keys the base declared and to nothing else. The
   doc said so and the code did not: a value supplied for a section the base had
   never heard of still overwrote what an enhancement put there, while the

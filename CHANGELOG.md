@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The TUI supports Simplified Chinese through the saved `ui.language` setting.
+  Tabs visibly show their existing `[1]`–`[9]` direct keys in an accent colour;
+  the tab bar uses compact names when the terminal is narrow.
+
 ### Fixed
 
 - Restoring an old backup reads its contents before retention pruning can
@@ -19,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- TUI setting labels use persisted setting keys, action labels use action
+  identities, and formatted text uses semantic message identifiers. This keeps
+  different meanings of the same English word separate across languages.
 - Backup copying and retention now live in a dedicated service module, with
   shared state-file lists and unchanged public import paths.
 - Contributor and architecture documentation now describe the actual I/O

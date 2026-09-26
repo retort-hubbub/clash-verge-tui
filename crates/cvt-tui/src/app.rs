@@ -30,7 +30,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use cvt_core::ReloadMode;
 use cvt_core::mihomo::supervisor::CoreStatus;
 use cvt_core::mihomo::types::{LogLevel, Traffic};
-use cvt_core::settings::Settings;
+use cvt_core::settings::{Language, Settings};
 
 use crate::action::{Action, Screen};
 use crate::keys::Keymap;
@@ -767,12 +767,13 @@ const LOG_KEEP_PRESETS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
 /// How long a rotated copy may sit before it is deleted.
 const LOG_DAYS_PRESETS: &[i64] = &[0, 1, 3, 7, 14, 30, 90];
 const LOG_LEVELS: &[&str] = &["silent", "error", "warning", "info", "debug"];
+const LANGUAGES: &[&str] = &["en", "zh-CN"];
 
 /// Every setting the screen offers, with its current value.
 #[must_use]
 pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
     let yes_no = |value: bool| if value { "yes" } else { "no" }.to_owned();
-    vec![
+    let mut rows = vec![
         SettingRow {
             key: "core.binary",
             label: "core binary",
@@ -802,8 +803,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
                 .external_controller
                 .clone()
                 .unwrap_or_default(),
-            help: "where the core's API listens; this wins over every profile, and a \
-                   profile is not allowed to set it",
+            help: "where the core API listens; overrides the base profile's address",
             kind: SettingKind::Text,
         },
         SettingRow {
@@ -834,6 +834,14 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             editable: yes_no(settings.core.rollback_on_failure),
             help: "restore the last snapshot when the core refuses the new one",
             kind: SettingKind::Bool,
+        },
+        SettingRow {
+            key: "ui.language",
+            label: "language",
+            value: settings.ui.language.native_name().to_owned(),
+            editable: settings.ui.language.code().to_owned(),
+            help: "interface language; changes immediately and is saved with settings",
+            kind: SettingKind::Choice { options: LANGUAGES },
         },
         SettingRow {
             key: "ui.refresh_ms",
@@ -994,7 +1002,24 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             help: "hand the configuration to the API instead of restarting",
             kind: SettingKind::Bool,
         },
-    ]
+    ];
+    if settings.ui.language == Language::Chinese {
+        for row in &mut rows {
+            if let Some((label, help)) = crate::i18n::setting_text(settings.ui.language, row.key) {
+                row.label = label;
+                row.help = help;
+            }
+            if row.kind == SettingKind::Bool
+                || row.key == "core.secret"
+                || (row.key == "core.binary" && settings.core.binary.is_none())
+                || (row.key == "core.external_controller"
+                    && settings.core.external_controller.is_none())
+            {
+                row.value = crate::i18n::text(settings.ui.language, &row.value).to_owned();
+            }
+        }
+    }
+    rows
 }
 
 /// Move a numeric setting to the next preset, or to the nearest one when the
@@ -1034,6 +1059,10 @@ fn step_choice(current: &str, options: &[&str]) -> Option<String> {
 /// caller opens a prompt for those instead.
 fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
     match key {
+        "ui.language" => {
+            settings.ui.language = settings.ui.language.next();
+            true
+        }
         "core.auto_start" => {
             settings.core.auto_start = !settings.core.auto_start;
             true
@@ -1451,6 +1480,24 @@ pub struct App {
 }
 
 impl App {
+    /// Language currently selected for the interface.
+    #[must_use]
+    pub fn language(&self) -> Language {
+        self.settings.ui.language
+    }
+
+    /// Translate an interface-owned message, preserving unknown text.
+    #[must_use]
+    pub fn tr<'a>(&self, english: &'a str) -> &'a str {
+        crate::i18n::text(self.language(), english)
+    }
+
+    /// Translate a context-specific interface label by its stable identity.
+    #[must_use]
+    pub(crate) fn tr_key(&self, key: crate::i18n::TextKey) -> &'static str {
+        crate::i18n::label(self.language(), key)
+    }
+
     /// A fresh application showing the dashboard, with no data.
     ///
     /// Reads nothing: the settings shown are the defaults until the binary
@@ -4293,7 +4340,7 @@ mod tests {
     fn every_setting_row_can_be_cycled_from_the_keyboard() {
         let mut a = loaded();
         goto(&mut a, Screen::Settings);
-        assert_eq!(a.settings_rows.len(), 23);
+        assert_eq!(a.settings_rows.len(), 24);
         a.settings_rows
             .select_by_key("ui.color".to_owned(), |row| row.key.to_owned());
         assert_eq!(press(&mut a, KeyCode::Enter), Vec::new());
@@ -4313,6 +4360,24 @@ mod tests {
         assert_eq!(a.settings.test.concurrency, 64);
         let _ = press(&mut a, KeyCode::Char(' '));
         assert_eq!(a.settings.test.concurrency, 1, "the cycle wraps");
+    }
+
+    #[test]
+    fn changing_language_rebuilds_settings_rows_immediately() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Settings);
+        app.settings_rows
+            .select_by_key("ui.language".to_owned(), |row| row.key.to_owned());
+        let _ = press(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.ui.language, Language::Chinese);
+        assert!(app.settings_dirty);
+        let row = app.settings_rows.selected_item().expect("language row");
+        assert_eq!(row.key, "ui.language");
+        assert_eq!(row.label, "界面语言");
+        assert_eq!(row.value, "简体中文");
+        let _ = press(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.ui.language, Language::English);
+        assert_eq!(app.settings_rows.selected_item().unwrap().label, "language");
     }
 
     #[test]

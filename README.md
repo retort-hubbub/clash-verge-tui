@@ -12,6 +12,13 @@ $ clash-verge-tui status       # one line about the current state
 $ clash-verge-tui doctor       # what is installed, what is missing, what the core supports
 ```
 
+In the TUI, each tab shows its direct key in brackets: `[1]` through `[9]`.
+Press that number to open the tab, or use Tab / Shift+Tab to move between tabs.
+Press `?` for the full key reference. The interface supports English and
+Simplified Chinese; change **language** on the Settings tab (key `8`) and press
+`s` to save it. The preference is stored as `ui.language: zh-CN` in `cvt.yaml`.
+Command-line output and configuration field names remain in English.
+
 ## What it does
 
 **Profiles.** Local and remote profiles with a merge chain, so a base

@@ -57,7 +57,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "no buffered line matches the filter"
         };
         frame.render_widget(
-            Paragraph::new(text)
+            Paragraph::new(app.tr(text))
                 .style(app.theme.key_label())
                 .wrap(Wrap { trim: true }),
             inner,
@@ -87,16 +87,25 @@ fn title(app: &App) -> String {
     };
     let hidden = app.log_window(0).1;
     let mut parts = vec![
-        "logs".to_owned(),
+        app.tr("logs").to_owned(),
         app.log_level.as_str().to_owned(),
-        follow.to_owned(),
-        format!("{} line(s)", app.logs.len()),
+        app.tr(follow).to_owned(),
+        crate::i18n::message(
+            app.language(),
+            crate::i18n::Message::LogLines(app.logs.len()),
+        ),
     ];
     if hidden > 0 {
-        parts.push(format!("{hidden} new"));
+        parts.push(crate::i18n::message(
+            app.language(),
+            crate::i18n::Message::LogNew(hidden),
+        ));
     }
     if app.logs.dropped() > 0 {
-        parts.push(format!("{} dropped", app.logs.dropped()));
+        parts.push(crate::i18n::message(
+            app.language(),
+            crate::i18n::Message::LogDropped(app.logs.dropped()),
+        ));
     }
     // The filter is reported by the list widget, so it is not repeated here.
     format!(" {} ", parts.join(" · "))

@@ -79,26 +79,57 @@ fn tab_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if area.is_empty() {
         return;
     }
-    let titles: Vec<Line<'static>> = Screen::all()
-        .iter()
-        .map(|screen| Line::from(format!(" {} ", screen.title())))
-        .collect();
     let index = Screen::all()
         .iter()
         .position(|screen| *screen == app.screen)
         .unwrap_or(0);
     let summary = w::core_summary(app);
-    let summary_width = u16::try_from(summary.chars().count()).unwrap_or(u16::MAX);
-    // The core state matters more than the tab names, but a tab bar with no
-    // tabs in it is not a tab bar: two thirds is the most the summary may take.
-    let capped = summary_width.min(area.width.saturating_mul(2) / 3);
+    let summary_width = u16::try_from(summary.width()).unwrap_or(u16::MAX);
+    // All nine direct keys need to remain visible on a standard 80-column
+    // terminal. The dashboard still shows core state below the tabs.
+    let capped = if area.width < 100 {
+        0
+    } else {
+        summary_width.min(area.width / 3)
+    };
     let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(capped)]).split(area);
+    let long_titles: Vec<&str> = Screen::all()
+        .iter()
+        .map(|screen| crate::i18n::tab_title(app.language(), *screen))
+        .collect();
+    let long_width: usize = long_titles
+        .iter()
+        .map(|title| title.width() + 3)
+        .sum::<usize>()
+        + 8;
+    let compact = area.width < 100 || long_width > usize::from(chunks[0].width);
+    let titles: Vec<Line<'static>> = Screen::all()
+        .iter()
+        .enumerate()
+        .map(|(at, screen)| {
+            let name = if compact {
+                crate::i18n::short_tab(app.language(), *screen)
+            } else {
+                crate::i18n::tab_title(app.language(), *screen)
+            };
+            Line::from(vec![
+                Span::styled(format!("[{}]", at + 1), app.theme.key_hint()),
+                Span::styled(
+                    name.to_owned(),
+                    if at == index {
+                        app.theme.tab_active()
+                    } else {
+                        app.theme.key_label()
+                    },
+                ),
+            ])
+        })
+        .collect();
     frame.render_widget(
         Tabs::new(titles)
             .select(index)
             .divider(" ")
-            .style(app.theme.key_label())
-            .highlight_style(app.theme.tab_active()),
+            .highlight_style(ratatui::style::Style::default()),
         chunks[0],
     );
     frame.render_widget(
@@ -232,11 +263,11 @@ fn prompt(
         Span::styled(under.to_string(), app.theme.selection()),
         Span::styled(after, app.theme.key_label()),
     ]);
-    let hint = match kind {
+    let hint = app.tr(match kind {
         PromptKind::Search => "type to narrow the list · Enter keep · Esc clear",
         _ => "Enter accept · Esc cancel",
-    };
-    let block = w::panel(Line::from(format!(" {label} ")), app.theme)
+    });
+    let block = w::panel(Line::from(format!(" {} ", app.tr(label))), app.theme)
         .title_bottom(Line::from(format!(" {hint} ")).style(app.theme.key_label()));
     frame.render_widget(Paragraph::new(line).block(block), popup);
 }
@@ -261,14 +292,17 @@ fn confirm(frame: &mut Frame<'_>, area: Rect, app: &App, question: &str, action:
         Line::from(Span::styled(question.to_owned(), app.theme.key_label())),
         Line::default(),
         Line::from(vec![
-            Span::styled(" [y] yes ", app.theme.error()),
+            Span::styled(app.tr(" [y] yes "), app.theme.error()),
             Span::styled("   ", app.theme.key_label()),
-            Span::styled("[n] no ", app.theme.key_label()),
+            Span::styled(app.tr("[n] no "), app.theme.key_label()),
         ]),
     ]);
     let block = w::empty_panel(app.theme)
         .border_style(app.theme.error())
-        .title(Line::from(format!(" {} ", action.label())))
+        .title(Line::from(format!(
+            " {} ",
+            crate::i18n::action_label(app.language(), action)
+        )))
         .title_style(app.theme.error());
     frame.render_widget(
         Paragraph::new(body).wrap(Wrap { trim: true }).block(block),
@@ -294,7 +328,10 @@ fn picker(
     frame.render_widget(Clear, popup);
     let rows: Vec<Line<'static>> = items.iter().map(|item| Line::from(item.clone())).collect();
     let list = List::new(rows)
-        .block(w::panel(Line::from(format!(" {title} ")), app.theme))
+        .block(w::panel(
+            Line::from(format!(" {} ", app.tr(title))),
+            app.theme,
+        ))
         .highlight_style(app.theme.selection())
         .highlight_symbol("▸ ");
     let mut state =
@@ -323,8 +360,12 @@ fn preview(
             .map(|line| Line::from(line.clone()))
             .collect::<Vec<_>>(),
     );
-    let block = w::panel(Line::from(format!(" {title} ")), app.theme).title_bottom(
-        Line::from(" j/k scroll · PgUp/PgDn page · Esc close ").style(app.theme.key_label()),
+    let block = w::panel(Line::from(format!(" {} ", app.tr(title))), app.theme).title_bottom(
+        Line::from(format!(
+            " {} ",
+            app.tr("j/k scroll · PgUp/PgDn page · Esc close")
+        ))
+        .style(app.theme.key_label()),
     );
     let offset = u16::try_from(scroll).unwrap_or(u16::MAX);
     frame.render_widget(

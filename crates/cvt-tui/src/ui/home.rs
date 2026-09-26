@@ -32,14 +32,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
 /// Where the core is, which binary it is, and where the data lives.
 fn status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let rows = [
-        ("state", app.core.label()),
+        ("state", crate::i18n::core_status(app.language(), &app.core)),
         (
             "version",
             app.version.clone().unwrap_or_else(|| "unknown".to_owned()),
         ),
-        ("home", app.home.display().to_string()),
+        ("data directory", app.home.display().to_string()),
     ];
-    w::details(frame, area, app.theme, " core ", &rows);
+    w::details(frame, area, app, " core ", &rows);
 }
 
 /// Traffic: a sparkline of recent samples and a gauge against the peak.
@@ -49,11 +49,11 @@ fn throughput(frame: &mut Frame<'_>, area: Rect, app: &App) {
             frame,
             area,
             app.theme,
-            "no traffic samples yet — start the core, and check that stream.traffic is on",
+            app.tr("no traffic samples yet — start the core, and check that stream.traffic is on"),
         );
         return;
     }
-    let block = w::panel(" throughput ", app.theme);
+    let block = w::panel(format!(" {} ", app.tr("throughput")), app.theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let rows = Layout::vertical([
@@ -65,12 +65,14 @@ fn throughput(frame: &mut Frame<'_>, area: Rect, app: &App) {
     .split(inner);
 
     let live = app.metrics.latest.unwrap_or_default();
-    let summary = format!(
-        "↓ {}   ↑ {}   total {}   {} connection(s)",
-        human_rate(live.down_rate),
-        human_rate(live.up_rate),
-        human_bytes(live.total()),
-        live.connections
+    let summary = crate::i18n::message(
+        app.language(),
+        crate::i18n::Message::HomeTraffic {
+            down: &human_rate(live.down_rate),
+            up: &human_rate(live.up_rate),
+            total: &human_bytes(live.total()),
+            connections: live.connections,
+        },
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(summary, app.theme.traffic()))),
@@ -91,7 +93,7 @@ fn throughput(frame: &mut Frame<'_>, area: Rect, app: &App) {
         frame,
         rows[2],
         app,
-        "down",
+        crate::i18n::TextKey::DownloadRate,
         live.down_rate,
         peak_down,
         app.theme.traffic(),
@@ -100,7 +102,7 @@ fn throughput(frame: &mut Frame<'_>, area: Rect, app: &App) {
         frame,
         rows[3],
         app,
-        "up",
+        crate::i18n::TextKey::UploadRate,
         live.up_rate,
         peak_up,
         app.theme.info(),
@@ -116,7 +118,7 @@ fn gauge(
     frame: &mut Frame<'_>,
     area: Rect,
     app: &App,
-    label: &str,
+    label: crate::i18n::TextKey,
     rate: u64,
     peak: u64,
     style: ratatui::style::Style,
@@ -133,7 +135,7 @@ fn gauge(
     let ratio = if ratio.is_finite() { ratio } else { 0.0 };
     let bar = Gauge::default()
         .ratio(ratio)
-        .label(format!("{label} {}", human_rate(rate)))
+        .label(format!("{} {}", app.tr_key(label), human_rate(rate)))
         .gauge_style(style)
         .style(app.theme.dim());
     frame.render_widget(bar, area);
@@ -150,7 +152,13 @@ fn readings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ("samples", app.metrics.len().to_string()),
     ];
     if app.queued_tests() > 0 {
-        rows.push(("tests", format!("{} queued or running", app.queued_tests())));
+        rows.push((
+            "tests",
+            crate::i18n::message(
+                app.language(),
+                crate::i18n::Message::QueuedTests(app.queued_tests()),
+            ),
+        ));
     }
     if let Some(preview) = &app.preview {
         rows.push(("last preview", preview.summary.clone()));
@@ -159,7 +167,7 @@ fn readings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if !filter.is_empty() {
         rows.push(("filter", filter));
     }
-    w::details(frame, area, app.theme, " readings ", &rows);
+    w::details(frame, area, app, " readings ", &rows);
 }
 
 /// The things that are wrong, or that will surprise the user later.
@@ -171,9 +179,9 @@ fn attention(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     match app.core {
         cvt_core::mihomo::supervisor::CoreStatus::NotInstalled => lines.push(Line::from(vec![
-            Span::styled("no mihomo binary ", app.theme.error()),
+            Span::styled(app.tr("no mihomo binary "), app.theme.error()),
             Span::styled(
-                "— set core.binary in Settings, or put one in the core directory",
+                app.tr("— set core.binary in Settings, or put one in the core directory"),
                 app.theme.key_label(),
             ),
         ])),
@@ -182,45 +190,52 @@ fn attention(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 format!("pid {pid} was recorded but does not answer "),
                 app.theme.warn(),
             ),
-            Span::styled("— start the core again", app.theme.key_label()),
+            Span::styled(app.tr("— start the core again"), app.theme.key_label()),
         ])),
         cvt_core::mihomo::supervisor::CoreStatus::Running { .. } => {}
         cvt_core::mihomo::supervisor::CoreStatus::Stopped => lines.push(Line::from(vec![
-            Span::styled("the core is not running ", app.theme.warn()),
-            Span::styled("— press s to start it", app.theme.key_label()),
+            Span::styled(app.tr("the core is not running "), app.theme.warn()),
+            Span::styled(app.tr("— press s to start it"), app.theme.key_label()),
         ])),
     }
     if app.profiles.total() == 0 {
         lines.push(Line::from(vec![
-            Span::styled("no profiles yet ", app.theme.warn()),
+            Span::styled(app.tr("no profiles yet "), app.theme.warn()),
             Span::styled(
-                "— press 2, then a, to add a subscription",
+                app.tr("— press 2, then a, to add a subscription"),
                 app.theme.key_label(),
             ),
         ]));
     }
     if app.settings.streams_disabled() {
         lines.push(Line::from(vec![
-            Span::styled("every live stream is switched off ", app.theme.warn()),
-            Span::styled("— the dashboard will stay empty", app.theme.key_label()),
+            Span::styled(
+                app.tr("every live stream is switched off "),
+                app.theme.warn(),
+            ),
+            Span::styled(
+                app.tr("— the dashboard will stay empty"),
+                app.theme.key_label(),
+            ),
         ]));
     }
     if app.settings.ui.show_footer && app.current_status().is_none() && lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "nothing needs attention",
+            app.tr("nothing needs attention"),
             app.theme.dim(),
         )));
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "press ? for every key",
+            app.tr("press ? for every key"),
             app.theme.dim(),
         )));
     }
     let height = usize::from(area.height.saturating_sub(2));
     lines.truncate(height);
     frame.render_widget(
-        Paragraph::new(Text::from(lines)).block(w::panel(" attention ", app.theme)),
+        Paragraph::new(Text::from(lines))
+            .block(w::panel(format!(" {} ", app.tr("attention")), app.theme)),
         area,
     );
 }

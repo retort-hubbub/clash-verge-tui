@@ -146,6 +146,7 @@ restoration; renderers consume state.
 |---|---|
 | `action` | User actions and labels |
 | `keys` | Screen-specific keys and overlay precedence |
+| `i18n` | Localized labels and formatted messages |
 | `theme` | Semantic color roles and monochrome rendering |
 | `state` | Tables, sorting, filtering, log buffers and metrics |
 | `row` | Convert model values into display rows |
@@ -156,6 +157,15 @@ restoration; renderers consume state.
 An open prompt consumes input before the screen key map, so `q` can be entered
 as text. Refreshes preserve table selection by identity rather than row index.
 These contracts are covered by state-machine and rendering tests.
+
+The TUI language is saved as `ui.language`. Setting copy is selected by its
+persisted setting key, action labels by `Action`, and formatted messages by
+typed message variants. Context-specific text has its own key: cursor movement,
+download traffic and an unavailable proxy may all read “down” in English but
+have different Chinese text. Renderers pass data into `i18n` and keep profile
+names, rule contents and core errors as user or external data. Shared legacy
+copy still uses an English-string lookup and falls back to English for unknown
+phrases; new context-sensitive copy should use a semantic key.
 
 ## CLI
 

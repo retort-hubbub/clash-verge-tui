@@ -33,11 +33,15 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         })
         .collect();
     let dirty = if app.settings_dirty {
-        " · unsaved changes"
+        app.tr(" · unsaved changes")
     } else {
         ""
     };
-    let title = format!(" settings ({}){dirty} ", app.settings_rows.len());
+    let title = format!(
+        " {} ({}){dirty} ",
+        app.tr("settings"),
+        app.settings_rows.len()
+    );
     w::list(
         frame,
         list_area,
@@ -70,20 +74,22 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         None => "press a to add a profile from the Profiles screen",
     };
     let rows = [
-        ("changing a row", how.to_owned()),
+        ("changing a row", app.tr(how).to_owned()),
         (
             "saving",
             if app.settings_dirty {
-                "the file is out of date — press s to write it".to_owned()
+                app.tr("the file is out of date — press s to write it")
+                    .to_owned()
             } else {
-                "everything here is on disk".to_owned()
+                app.tr("everything here is on disk").to_owned()
             },
         ),
         ("file", path.display().to_string()),
         (
             "validation",
-            "an invalid value is refused before it can be written".to_owned(),
+            app.tr("an invalid value is refused before it can be written")
+                .to_owned(),
         ),
     ];
-    w::details(frame, area, app.theme, " settings file ", &rows);
+    w::details(frame, area, app, " settings file ", &rows);
 }

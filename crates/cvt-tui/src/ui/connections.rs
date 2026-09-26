@@ -20,10 +20,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .into_iter()
         .map(|connection| row(connection, app))
         .collect();
-    let title = format!(
-        " connections ({}) · sorted by {} ",
-        app.connections.len(),
-        app.connection_sort.label()
+    let title = crate::i18n::message(
+        app.language(),
+        crate::i18n::Message::ConnectionsTitle {
+            count: app.connections.len(),
+            sort: app.tr(app.connection_sort.label()),
+        },
     );
     w::list(
         frame,
@@ -85,7 +87,8 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         None => rows.push((
             "hint",
-            "d closes the highlighted connection; s changes the sort order".to_owned(),
+            app.tr("d closes the highlighted connection; s changes the sort order")
+                .to_owned(),
         )),
     }
     let total: u64 = app
@@ -96,12 +99,14 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .sum();
     rows.push((
         "table",
-        format!(
-            "{} shown of {}, {} transferred",
-            app.connections.len(),
-            app.connections.total(),
-            crate::state::human_bytes(total)
+        crate::i18n::message(
+            app.language(),
+            crate::i18n::Message::ConnectionTotal {
+                shown: app.connections.len(),
+                total: app.connections.total(),
+                bytes: &crate::state::human_bytes(total),
+            },
         ),
     ));
-    w::details(frame, area, app.theme, " selected connection ", &rows);
+    w::details(frame, area, app, " selected connection ", &rows);
 }

@@ -708,7 +708,7 @@ mod tests {
         let first_row: String = (0..buffer.area().width)
             .map(|x| buffer[(x, 0)].symbol())
             .collect();
-        assert!(first_row.contains("Home"), "{first_row:?}");
+        assert!(first_row.contains("[1]Hm"), "{first_row:?}");
     }
 
     #[tokio::test]

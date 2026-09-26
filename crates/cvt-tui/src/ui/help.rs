@@ -25,7 +25,7 @@ const TWO_COLUMNS_FROM: u16 = 110;
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let sections = sections(app);
     if sections.is_empty() {
-        w::message(frame, area, app.theme, "the key map is empty");
+        w::message(frame, area, app.theme, app.tr("the key map is empty"));
         return;
     }
     let columns = if area.width >= TWO_COLUMNS_FROM { 2 } else { 1 };
@@ -44,7 +44,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 // on this screen, so a highlight would be a lie.
                 state: TableState::default(),
                 title: if index == 0 {
-                    format!(" key reference ({columns} column(s)) ")
+                    crate::i18n::message(app.language(), crate::i18n::Message::HelpTitle(columns))
                 } else {
                     String::new()
                 },
@@ -84,9 +84,10 @@ fn sections(app: &App) -> Vec<(String, Vec<Row<'static>>)> {
                 keys.join(" / ")
             })
             .style(app.theme.key_hint()),
-            Cell::from(binding.context.label()).style(app.theme.dim()),
-            Cell::from(label).style(app.theme.key_label()),
-            Cell::from(action.help()).style(app.theme.dim()),
+            Cell::from(app.tr(binding.context.label()).to_owned()).style(app.theme.dim()),
+            Cell::from(crate::i18n::action_label(app.language(), action).to_owned())
+                .style(app.theme.key_label()),
+            Cell::from(app.tr(action.help()).to_owned()).style(app.theme.dim()),
         ]);
         match sections.last_mut() {
             Some((name, rows)) if name == group => rows.push(row),
@@ -99,7 +100,7 @@ fn sections(app: &App) -> Vec<(String, Vec<Row<'static>>)> {
 /// A group heading, drawn as a row of its own.
 fn heading(group: &str, app: &App) -> Row<'static> {
     Row::new(vec![
-        Cell::from(group.to_owned()).style(app.theme.emphasis()),
+        Cell::from(app.tr(group).to_owned()).style(app.theme.emphasis()),
     ])
 }
 

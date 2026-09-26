@@ -278,6 +278,51 @@ fn the_tab_bar_reports_the_core_state_and_the_live_rate() {
 }
 
 #[test]
+fn numbered_tabs_are_visible_and_the_digit_has_its_own_colour() {
+    let app = ready(Screen::Home);
+    let mut terminal = Terminal::new(TestBackend::new(200, 40)).expect("backend");
+    terminal.draw(|frame| render(frame, &app)).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let first_line = text_of(buffer).lines().next().unwrap().to_owned();
+    for number in 1..=9 {
+        assert!(first_line.contains(&format!("[{number}]")), "{first_line}");
+    }
+    assert_eq!(buffer[(2, 0)].symbol(), "1");
+    assert_ne!(buffer[(2, 0)].fg, buffer[(4, 0)].fg);
+    let compact = draw(&app, 80, 24);
+    let first_line = compact.lines().next().unwrap();
+    for number in 1..=9 {
+        assert!(first_line.contains(&format!("[{number}]")), "{first_line}");
+    }
+}
+
+#[test]
+fn chinese_interface_renders_every_screen_at_terminal_sizes() {
+    for screen in screens() {
+        let mut app = ready(screen);
+        app.settings.ui.language = cvt_core::settings::Language::Chinese;
+        for (width, height) in SIZES {
+            let text = draw(&app, width, height);
+            assert!(
+                !text.trim().is_empty() || height <= 1,
+                "{screen} {width}x{height}"
+            );
+        }
+    }
+    let mut app = empty(Screen::Home);
+    app.settings.ui.language = cvt_core::settings::Language::Chinese;
+    let text = draw(&app, 200, 40);
+    let glyphs = text.replace(' ', "");
+    assert!(glyphs.contains("[1]首页"), "{text}");
+    assert!(glyphs.contains("已停止"), "{text}");
+    let narrow = draw(&app, 80, 24);
+    let first_line = narrow.lines().next().unwrap();
+    for number in 1..=9 {
+        assert!(first_line.contains(&format!("[{number}]")), "{first_line}");
+    }
+}
+
+#[test]
 fn a_stopped_core_says_so_in_the_tab_bar() {
     let app = empty(Screen::Home);
     let text = flat(&draw(&app, 200, 60));

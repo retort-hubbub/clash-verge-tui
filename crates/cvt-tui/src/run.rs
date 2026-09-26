@@ -6,7 +6,7 @@
 //! * [`run`] takes the real terminal over — raw mode, the alternate screen, a
 //!   panic hook that gives both back — and does not return without restoring
 //!   it, whatever happened;
-//! * [`Session`] is the loop itself, drawing on a generic
+//! * `Session` is the loop itself, drawing on a generic
 //!   [`ratatui::backend::Backend`] and reading a stream of [`Event`]s, so the
 //!   tests below drive it with a `TestBackend`, a scripted input and a fake
 //!   effect executor: no terminal, no core, no clock.

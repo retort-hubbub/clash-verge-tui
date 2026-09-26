@@ -20,9 +20,9 @@
 //!    the worst outcome this program can produce, and the snapshot is already
 //!    on disk.
 //!
-//! Steps 2 to 4 are [`Service::apply_with`], and the whole sequence is
-//! exercisable in tests through a small injection point rather than a real
-//! core.
+//! [`Service::apply`] commits the generated document, then [`Service::reload`]
+//! performs steps 2 to 4. Tests cover the decision path with a fake controller
+//! and an optional real core.
 
 use std::path::{Path, PathBuf};
 

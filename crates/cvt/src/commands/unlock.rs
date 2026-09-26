@@ -146,7 +146,7 @@ impl Report for UnlockReport {
 /// Run `unlock`.
 ///
 /// # Errors
-/// [`Error::InvalidValue`] when there is no generated configuration to read a
+/// `Error::InvalidValue` when there is no generated configuration to read a
 /// proxy port from.
 pub async fn run(ctx: &Ctx, args: &UnlockArgs) -> Result<()> {
     let timeout = check_request_timeout(args.timeout.unwrap_or(15_000))?;

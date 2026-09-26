@@ -47,10 +47,22 @@
 //! |---|---|---|
 //! | `--no-color` does not reach the interface | fails | fixed in the working tree (`cvt/src/tui.rs`, `cvt/src/output.rs`, uncommitted) |
 //! | a node where a group belongs is reported as an empty group | fails | fixed in the working tree (`commands/proxies.rs`, `commands/test.rs`, uncommitted) |
-//! | the empty `--name` | recorded | could not reproduce; see below |
+//! | the confirmation overlay loses its buttons when the question wraps | fails | fixed in the working tree (`ui/mod.rs::confirm`, uncommitted) |
+//! | the prompt caret disappears when the value is wider than the popup | fails | fixed in the working tree (`ui/mod.rs::prompt`, uncommitted) |
+//! | the wrapped log pane hides the newest lines | fails | fixed in the working tree (`ui/logs.rs`, uncommitted) |
+//! | the empty `--name` | recorded once | **could not reproduce**; see below |
 //!
-//! The three that still fail — the confirmation overlay, the prompt caret and
-//! the wrapped log pane — are renderer defects and are unchanged.
+//! The five fixes landed while this file was being written, and the tests for
+//! the five findings now pass against them — they are the regression guards for
+//! a fix that is not yet committed. Three of the fixes were then attacked as
+//! code rather than trusted, and each has a defect of its own, all three
+//! generated sweeps that fail against the working tree:
+//!
+//! | finding against a fix | what it is |
+//! |---|---|
+//! | [`defect_the_log_window_measures_a_shorter_row_than_it_draws`] | measures `at level message`, draws `at level<pad7> message`: three columns short, one row short at nine message lengths |
+//! | [`defect_the_confirmation_popup_is_sized_in_characters_not_columns`] | `wrapped_rows` counts `chars()` where the terminal counts columns: 164 of 240 CJK names lose the buttons |
+//! | [`defect_the_prompt_window_is_measured_in_characters_not_columns`] | the window is `chars` and the popup is columns: 37 of 192 caret positions, every one with wide characters |
 //!
 //! Nothing here modifies a source file.
 
@@ -374,7 +386,7 @@ impl Sandbox {
 
     /// Run the binary against this sandbox's home.
     fn run(&self, args: &[&str]) -> Ran {
-        let owned: Vec<&str> = args.iter().copied().collect();
+        let owned: Vec<&str> = args.to_vec();
         run(&self.home, &owned)
     }
 }
@@ -647,12 +659,16 @@ fn confirmed_the_name_checks_are_not_blanket_refusals() {
 /// in exactly one of the three places a group name is accepted:
 ///
 /// * `proxies list <node>` — `if !target.is_group()` in
-///   `crates/cvt/src/commands/proxies.rs`, which says "`node-a` is a socks5
-///   node, not a group";
+///
+///  `crates/cvt/src/commands/proxies.rs`, which says "`node-a` is a socks5
+///
+///  node, not a group";
 /// * `proxies test <node>` — no `is_group` check, so the empty member list
-///   becomes "`node-a` has no members to test";
+///
+///  becomes "`node-a` has no members to test";
 /// * `test delay --group <node>` — no `is_group` check, so it becomes "nothing
-///   to test: the selection has no nodes".
+///
+///  to test: the selection has no nodes".
 ///
 /// Both of the last two are **wrong about what the user did**: the thing has no
 /// members because it is not a group, not because a group is empty, and the one
@@ -662,6 +678,8 @@ fn confirmed_the_name_checks_are_not_blanket_refusals() {
 /// The names come from the controller rather than from a literal: `proxies
 /// list node-a` exits 0 only because the controller has `node-a`, so the check
 /// is "a name the controller has and which is not a group".
+/// Observed failing at `f759335`; the working tree fixes it (`is_group` in `commands/proxies.rs`///
+/// and `commands/test.rs`) and this is the guard for that fix.
 #[test]
 fn defect_a_name_that_is_a_node_is_not_reported_as_not_a_group() {
     let Some(sandbox) = Sandbox::start() else {
@@ -753,6 +771,8 @@ fn observed_unpin_clears_a_url_test_and_is_refused_by_a_selector() {
 /// The input is the ordinary case, not an extreme one: `mihomo`'s own log lines
 /// are longer than 80 columns, and every line here is 60 characters of message
 /// plus a timestamp and a level.
+/// Observed failing at `f759335`; the working tree fixes it (`ui/logs.rs`), and this is the///
+/// guard for the simple half of it — the sweep below is the other half.
 #[test]
 fn defect_the_logs_screen_hides_the_newest_lines_when_a_line_wraps() {
     let mut wrong: Vec<String> = Vec::new();
@@ -794,6 +814,8 @@ fn defect_the_logs_screen_hides_the_newest_lines_when_a_line_wraps() {
 /// Generated rather than hand-picked: the question is built the way
 /// `App::confirm_question` builds it, for every profile-name length, and the
 /// buttons have to be on screen for all of them.
+/// Observed failing at `f759335`; the working tree fixes it (`ui/mod.rs::confirm`), and this is///
+/// the guard for the ASCII half of it.
 #[test]
 fn defect_the_confirm_overlay_loses_its_buttons_when_the_question_wraps() {
     let mut missing: Vec<String> = Vec::new();
@@ -831,6 +853,8 @@ fn defect_the_confirm_overlay_loses_its_buttons_when_the_question_wraps() {
 /// The caret is the only thing on that screen with a background colour
 /// (`Theme::selection`), so "a cell with that background is on screen" is the
 /// same statement as "the caret is drawn".
+/// Observed failing at `f759335`; the working tree fixes it (`ui/mod.rs::prompt`), and this is///
+/// the guard for the ASCII half of it.
 #[test]
 fn defect_the_prompt_caret_disappears_when_the_value_is_wider_than_the_popup() {
     let theme = Theme::default();
@@ -863,6 +887,148 @@ fn defect_the_prompt_caret_disappears_when_the_value_is_wider_than_the_popup() {
         missing.is_empty(),
         "the caret is not drawn at all for a value of these lengths: {missing:?} \
          (the popup's inner width is 70, and nothing scrolls)"
+    );
+}
+
+/// CLAIM (the in-flight fix in `crates/cvt-tui/src/ui/logs.rs`): "the window is
+/// taken generously and then trimmed from the front until it fits", where the
+/// rows a line needs are measured with `wrapped_rows(&format!("{at} {level}
+/// {message}"), width)`.
+///
+/// The renderer draws a different string: `format!("{at} ")`,
+/// `format!("{level:<7} ")` and the message, so a four-character level costs
+/// **seven** columns when drawn and four when measured. Three columns short is
+/// enough to be one row short at a wrap boundary, and one row short is one line
+/// too many in the pane — which clips the bottom, which is where the newest
+/// lines are.
+///
+/// Generated over every message length rather than at one chosen length: the
+/// defect is only visible at the lengths that sit just under a boundary, and
+/// hand-picking a length is how the first fix missed them.
+#[test]
+fn defect_the_log_window_measures_a_shorter_row_than_it_draws() {
+    let mut wrong: Vec<String> = Vec::new();
+    for (width, height) in [(40u16, 12u16), (80, 24), (120, 40)] {
+        for message in 1..=(usize::from(width) * 2) {
+            let mut app = empty(Screen::Logs);
+            for index in 0..40 {
+                let _ = app.on_event(Event::Data(Data::Log(LogRow::new(
+                    "info",
+                    format!("line-{index:02} {}", "x".repeat(message.saturating_sub(9))),
+                ))));
+            }
+            let text = flat(&draw(&app, width, height).join("\n"));
+            if !text.contains("line-39") {
+                wrong.push(format!("{width}x{height} message={message}"));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the newest line is off the pane for {} message lengths, starting at {:?} \
+         (measured as `at level message`, drawn as `at level<pad7> message`)",
+        wrong.len(),
+        wrong.first().map_or("-", String::as_str)
+    );
+}
+
+/// CLAIM (`crates/cvt-tui/src/ui/mod.rs`, the in-flight `confirm` fix): the
+/// popup is "tall enough for the question at *this* width", with
+/// `wrapped_rows(question, inner)`.
+///
+/// `wrapped_rows` counts `word.chars().count()`; a terminal counts columns, and
+/// a CJK character is two of them. A name of thirteen Chinese characters is
+/// twenty-six columns, is counted as thirteen, and gets a popup sized for half
+/// the question — so `[y] yes / [n] no` is off the bottom again, for exactly the
+/// subscriptions this program is most likely to be pointed at.
+///
+/// `unicode-width` is already a dependency of this crate, which is how the
+/// command-line side measures the same text.
+///
+/// Generated over name lengths and widths: every CJK name from thirteen
+/// characters up loses its buttons at every width tried, and no ASCII or
+/// space-separated name does, which is what makes this a measurement defect
+/// rather than a sizing one.
+#[test]
+fn defect_the_confirmation_popup_is_sized_in_characters_not_columns() {
+    let mut wrong: Vec<String> = Vec::new();
+    for width in [60u16, 80, 120, 200] {
+        for characters in 1..=60usize {
+            let name = "日".repeat(characters);
+            let mut app = empty(Screen::Profiles);
+            app.overlay = Some(Overlay::Confirm {
+                question: format!("delete `{name}` and its document?"),
+                action: Action::DeleteProfile,
+            });
+            let text = flat(&draw(&app, width, 40).join("\n"));
+            if !text.contains("[y] yes") || !text.contains("[n] no") {
+                wrong.push(format!("{width} wide, {characters} character(s)"));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a confirmation with no buttons, for {} of 240 names, from {:?}",
+        wrong.len(),
+        wrong.first().map_or("-", String::as_str)
+    );
+}
+
+/// CLAIM (`crates/cvt-tui/src/ui/mod.rs`, the in-flight `prompt` fix): "The
+/// window follows the caret", with `inner = width - 4` cells of the value kept
+/// around it.
+///
+/// The window is a count of `char`s and the popup is a count of columns, so a
+/// value of wide characters puts the caret past the popup's right edge again —
+/// `cursor` is a character index and `inner` is a column budget, and nothing
+/// reconciles them. The failure is the original one, for a CJK value: the caret
+/// cell is not drawn at all.
+///
+/// Generated over widths, value lengths and caret positions, and over ASCII as
+/// the control: every ASCII case passes and every failing case has wide
+/// characters in it.
+#[test]
+fn defect_the_prompt_window_is_measured_in_characters_not_columns() {
+    let theme = Theme::default();
+    let caret_style = theme.selection();
+    let mut wrong: Vec<String> = Vec::new();
+    for width in [40u16, 60, 80, 120] {
+        for length in [1usize, 10, 50, 69, 100, 200] {
+            for cursor in [0usize, length / 3, length / 2, length] {
+                for (tag, fill) in [("ascii", "u"), ("wide", "日")] {
+                    let value: String = std::iter::repeat_n(fill, length).collect();
+                    let mut app = app_with(theme);
+                    app.screen = Screen::Profiles;
+                    app.overlay = Some(Overlay::Prompt {
+                        label: "subscription URL".to_owned(),
+                        kind: PromptKind::Text,
+                        value,
+                        cursor: cursor.min(length),
+                    });
+                    let mut terminal = Terminal::new(TestBackend::new(width, 24)).expect("backend");
+                    terminal
+                        .draw(|frame| cvt_tui::ui::render(frame, &app))
+                        .expect("draw");
+                    let drawn = terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .any(|cell| cell.bg == caret_style.bg.unwrap_or(Color::Reset));
+                    if !drawn {
+                        wrong.push(format!("{width} {tag} len={length} cursor={cursor}"));
+                    }
+                }
+            }
+        }
+    }
+    let wide = wrong.iter().filter(|line| line.contains("wide")).count();
+    assert!(
+        wrong.is_empty(),
+        "the caret is not drawn for {} of 192 cases, {wide} of them with wide \
+         characters: {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(4)]
     );
 }
 
@@ -1163,6 +1329,8 @@ fn confirmed_the_terminal_is_taken_over_and_given_back() {
 /// cvt --no-color         -> 36 colour sequences
 /// NO_COLOR=1 cvt         ->  0 colour sequences
 /// ```
+/// Observed failing at `f759335`; the working tree fixes it (`cvt/src/tui.rs` passes the flag///
+/// to `Theme::from_settings`, `cvt/src/output.rs` exposes it) and this is the guard.
 #[test]
 fn defect_the_interface_colours_its_output_despite_no_color() {
     let dir = TempDir::new().expect("a temporary directory");
@@ -1227,8 +1395,10 @@ fn confirmed_a_pipe_is_refused_rather_than_written_into() {
 /// $ cvt profiles add http://127.0.0.1:9/x --name ''      # a closed port, no network
 /// $ cat $HOME/profiles.yaml
 /// - uid: RhbtkUrshVNf
-///   type: remote
-///   name: ''                    <-- the empty name, stored
+///
+///  type: remote
+///
+///  name: ''                    <-- the empty name, stored
 /// ```
 ///
 /// stored the empty string, which is neither the host the help promises nor a

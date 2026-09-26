@@ -71,17 +71,17 @@ pub struct Output {
 impl Output {
     /// Build an output channel.
     ///
-    /// `color` is the *choice*; whether colour is actually emitted also
-    /// depends on the stream being a terminal, which is decided per write.
-    #[must_use]
     /// Whether colour is on for this run.
     ///
     /// `--no-color` and `NO_COLOR` are decided once, in `main`, and the
     /// interface has to be told: it took its colour from a *setting*, so the
     /// flag reached every command's output and not the screen the user spends
     /// their time in.
+    ///
+    /// `color` is the *choice*; whether colour is actually emitted also
+    /// depends on the stream being a terminal, which is decided per write.
     #[must_use]
-    pub const fn color(&self) -> bool {
+    pub const fn color(self) -> bool {
         self.color
     }
 

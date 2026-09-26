@@ -1,262 +1,188 @@
 # Architecture
 
-This is a map of the code: what lives where, how a request travels through it,
-and which invariants hold at each boundary. The *reasons* behind the design are
-in [`adr/`](adr/README.md); this document assumes them and describes the result.
+This document maps current responsibilities and contracts. Design rationale
+lives in [the ADRs](adr/README.md); contribution and verification commands live
+in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-## The shape of the thing
+## Crate boundaries
 
-```
-cvt (binary)  ->  cvt-tui  ->  cvt-core
-```
-
-Strictly one-way. `cvt-core` has no dependency on either front end, and
-`cvt-tui` has none on the binary. A crate that needs something from above does
-not get a new dependency edge; the thing moves down.
-
-| Crate | Role | Depends on |
+| Crate | Responsibility | Workspace dependencies |
 |---|---|---|
-| `cvt-core` | All the logic: configuration, profiles, the core's API, the process supervisor | — |
-| `cvt-tui` | The interaction as data, and the rendering of it | `cvt-core` |
-| `cvt` | Argument parsing, output formatting, and the effect executor | `cvt-core`, `cvt-tui` |
+| `cvt-core` | Configuration, profiles, controller API, process supervision and application operations | None |
+| `cvt-tui` | Interaction state, rendering and the terminal loop | `cvt-core` |
+| `cvt` | CLI parsing, output formatting and executing TUI effects | `cvt-core`, `cvt-tui` |
 
-## `cvt-core`
+Dependencies point toward `cvt-core`. Shared application operations belong in
+`Service`; core code does not import terminal types or print command output.
 
-### The pure core, and the shell around it
+## Core modules
 
-The split that matters inside this crate is not model/view/controller. It is
-**code that can only look at values** versus **code that touches the world**.
-The first group is where the invariants live and where the property tests
-point; the second group is kept as thin as it can be.
-
-| Module | Touches the world? | What it does |
+| Module | I/O | Responsibility |
 |---|---|---|
-| `model` | no | The configuration document, proxies, groups, rules |
-| `enhance` | no | Path edits, merging, diffing, overlays, the generation pipeline |
-| `validate` | no | Whole-document checks, with a stable code per finding |
-| `profile::item` | no | The profile types and the patches that compose them |
-| `error` | no | One error enum, with `short()` for a status line |
-| `settings` | no | User preferences, with validation |
-| `paths` | yes | The home layout, atomic writes, detecting an existing clash-verge home |
-| `profile::store` | yes | The profile index and the chain on disk |
-| `profile::source` | yes | Subscription fetching, three tiers of fallback |
-| `mihomo` | yes | The API client, the event streams, the process supervisor |
-| `service` | yes | The facade that sequences all of the above |
+| `model` | No | Configuration document, proxies, groups and rules |
+| `enhance::{path,merge,overlay,diff}` | No | Document edits, merging and structural differences |
+| `validate` | No | Whole-document diagnostics with stable codes |
+| `profile::item` | No | Profile types and options |
+| `error` | No | Shared errors and concise status messages |
+| `paths` | Yes | Home discovery, directory layout and atomic writes |
+| `settings` | Yes | Preferences, validation and persistence |
+| `profile::store` | Yes | Profile index, chain and documents on disk |
+| `profile::source` | Yes | Subscription fetching, decoding and update scheduling |
+| `enhance::pipeline` | Yes | Read the profile chain, generate, commit and snapshot configuration |
+| `mihomo` | Yes | Controller client, event streams and process supervisor |
+| `service` | Yes | Coordinate application operations |
+| `service::backup` (private) | Yes | Backup copying, restore and retention behind the `Service` API |
 
-`model`, `enhance` and `validate` read no environment variables, open no
-files, and print nothing. That is what lets a property test generate a
-thousand documents and check an invariant over all of them in under a second.
+Pure transformations accept values. Adapters own filesystem, network,
+environment and process access. Tests pass explicit temporary `AppPaths` to
+avoid depending on the user's home.
 
-### The configuration document
+### Configuration and enhancement
 
-`model::Config` is a newtype over an ordered JSON map, not a set of typed
-fields. Its job is to be **lossless**: an unknown key, an unknown subtree, or a
-key order nobody expected comes out the other side unchanged. Typed accessors
-(`port()`, `rules()`, `proxy_groups()`) read the document; they do not define
-it. Each rule round-trips byte-exactly through `model::rule`, including
-nested logical forms.
+`model::Config` wraps an ordered JSON map. Unknown fields and key order survive
+parsing and serialization; typed accessors read this document without defining
+its entire schema. Rule text, including nested logical rules, is preserved by
+`model::rule`. Validation reports multiple findings with stable codes; see
+[the diagnostic reference](DIAGNOSTICS.md).
 
-The consequence is that mistakes a typed model would have rejected at parse
-time are caught later, by `validate`, which reports *every* problem it finds
-with a stable code (`E-DANGLING-POLICY`, `E-RELAY-CYCLE`, `W-TERMINAL-NOT-LAST`)
-rather than failing on the first. See [ADR 0002](adr/0002-lossless-config-document.md).
-
-### The generation pipeline
-
-```
-profiles on disk
-      │
-      ▼
- profile::store ── resolve the chain ──▶ an ordered list of documents
-      │
-      ▼
- enhance::merge ── deep merge, per-array strategy ──▶ one document
-      │
-      ▼
- enhance::overlay ── remove / set / prepend / append ──▶ one document
-      │
-      ▼
- validate::check ──▶ a report, not an exception
-      │
-      ▼
- enhance::pipeline::commit ── write runtime/config.yaml, snapshot the old one
-      │
-      ▼
- Service::reload ── hot reload, else restart, else roll back and restart
+```text
+profile::store: resolve the ordered chain and read its documents
+    -> enhance::pipeline: apply each profile's transformation in chain order
+    -> validate: collect errors and warnings
+    -> Outcome: rendered configuration, diff and per-profile results
+    -> Pipeline::commit: snapshot the previous runtime file, then write the new one
+    -> Service::reload: hot reload or restart, with rollback when configured
 ```
 
-Three properties are worth noting because they are enforced rather than
-intended.
+`Pipeline::generate` reads files but does not write or contact the core. This
+allows preview and validation before `commit`. Key contracts are:
 
-`enhance::path` is atomic: an edit whose path cannot be applied leaves the
-document exactly as it was. Getting that right took a read-only pass down the
-path before the first write, because a descent that has already materialised
-the keys it needs cannot report failure *and* leave nothing behind.
+- A failed `enhance::path` edit leaves the document unchanged.
+- Re-running generation on the same source documents produces the same
+  configuration. Reapplying a positional overlay to its own output is not
+  generally idempotent: list indices can refer to different elements after an
+  edit. See [the override format](OVERRIDE-FORMAT.md).
+- Overlay rule insertion keeps an existing terminal rule last by default; a
+  new terminal rule replaces it. The validator warns about unreachable rules
+  in imported configurations rather than rejecting them solely for that reason.
+- Application controller settings take precedence over the base profile;
+  enhancements cannot change control-plane keys. See
+  [ADR 0008](adr/0008-control-plane-ownership.md).
+- `Pipeline::SNAPSHOT_LIMIT` bounds generated snapshots used for rollback.
+  These snapshots are separate from backups of user-maintained state.
 
-Re-running the pipeline against the same source documents produces the same
-configuration. Applying an overlay repeatedly to an already modified document
-is usually idempotent, but operations addressing list positions are not: both
-`remove: ["proxies[1]"]` and a `set` at a list index combined with a list edit
-can act on a different element on the next pass. These positional operations
-remain available for one-shot edits; see `enhance::overlay` for the precise
-contract.
+### Controller and process adapters
 
-Appending a rule places it *before* the terminal `MATCH`, because a catch-all
-appended after a catch-all is dead code — and appending a rule that is itself
-terminal *replaces* the existing catch-all, because two of them is a document
-the validator rejects and the second can never fire.
+`mihomo::endpoint` represents TCP, TLS, Unix sockets and Windows named pipes.
+`mihomo::client` exposes typed API methods, with contract tests for request
+encoding and response decoding. Ordinary requests use `DEFAULT_TIMEOUT`;
+configuration reloads and latency tests use operation-specific timeouts.
+The UI refresh interval does not control request timeouts.
 
-`enhance::pipeline` keeps the last 20 generated documents. That is what makes
-`ReloadOutcome::RolledBack` possible, and it is the reason the reload decision
-tree can be as aggressive as it is.
-
-### Talking to the core
-
-`mihomo::endpoint` normalises the four ways to reach the API — TCP, TLS, a Unix
-socket and a Windows named pipe — into one type.
-`mihomo::client` is one typed method per endpoint, against a contract observed
-from a real binary rather than the published documentation
-([ADR 0004](adr/0004-hand-verified-api-contract.md)). `mihomo::stream` covers
-both event transports: WebSocket, and the HTTP newline-delimited fallback,
-behind one `recv_timeout` interface with reconnection and a bounded queue.
-
-`mihomo::supervisor` owns the process: locating the binary, checking a
-configuration with `mihomo -t` before trusting it, starting it, stopping it
-with `SIGTERM` and then `SIGKILL`, and a pid file that records the process's
-start time as well as its number — because a recycled pid must not be mistaken
-for a running core.
+`mihomo::stream` provides WebSocket and HTTP newline-delimited transports with
+reconnection and bounded queues. `mihomo::supervisor` locates and controls the
+core, validates configuration with `mihomo -t`, and records process identity so
+a recycled pid is not mistaken for the managed core. Platform-specific behavior
+is implemented in that adapter.
 
 ### Subscription updates
 
-`profile::source` fetches in three tiers: direct, then through the core's own
-proxy, then through the system proxy. The order is the whole point — the
-machine that most needs a subscription update is the one whose only route to
-the internet *is* the subscription. Bodies are size-limited, base64 and
-plain-text payloads are both accepted, and `subscription-userinfo` is parsed so
-the interface can show what is left. `update_all_due` implements the
-per-profile interval.
+`profile::source` attempts direct fetching, then the deployed core's proxy,
+then the system proxy. Bodies are size-limited; plain-text and base64 payloads
+are supported. Response metadata supplies subscription usage information, and
+`update_all_due` respects each profile's update interval.
 
-### `service`
+### Applying configuration
 
-The facade, and the only type the two front ends hold. It owns the paths, the
-settings, the store and the supervisor, and it exposes *operations* rather than
-effects: an `ApplyReport`, a `ReloadOutcome` (`HotReloaded`, `Restarted`,
-`RolledBack`), and diagnostics a person can read.
+`Service` exposes operations shared by the CLI and TUI. `apply` generates and
+commits a document, then reloads it according to `ReloadMode`. Automatic mode
+tries hot reload before restart. When restart fails and rollback is enabled,
+it restores a previous runtime snapshot and attempts to start that configuration.
+An `ApplyReport` distinguishes an applied configuration from a rollback.
 
-The sequencing of an apply is the most dangerous code in the project and lives
-in exactly one place:
+After a successful reload, the service waits for the expected groups and
+replays saved selections. A `/version` response only establishes that the
+process is reachable; groups may still be rebuilding. These waits have bounded
+budgets, with each controller request bounded by the remaining time. Selection
+replay is best effort: missing groups must not consume the whole budget before
+valid choices are attempted.
 
-1. generate and validate, and refuse to touch anything if the result is broken;
-2. try a hot reload, which applies most changes without dropping connections;
-3. only if that fails, restart the process;
-4. if the core then fails to come up, restore the previous snapshot and start
-   again;
-5. **wait until the document is live** — `/version` answering means the process
-   is up, not that it has *this* configuration, and a reload rebuilds the groups
-   in the background;
-6. replay the node choices a user made, which the reload has just discarded.
+### Backups and restore
 
-Steps 5 and 6 are the ones a reader is most likely to delete as redundant. Both
-were added because a command that ran immediately after a successful `apply`
-failed — the first with `no group named PROXY`, the second silently, with the
-core still holding the old node.
+The private `service::backup` module implements `Service::backup`, `backups`,
+`restore` and `prune_backups`. Public import paths for `Backup` and `BACKUP_LIMIT`
+remain under `service`.
 
-A reload that cannot be undone reports the failure that caused it — not what
-the rollback bookkeeping did — and a machine with no core binary is not treated
-as a document worth rolling back, because the previous document would fail in
-exactly the same way. See [ADR 0006](adr/0006-one-service-facade.md).
+The module owns the lists of state files and directories used for copying and
+recognising backups. It excludes generated runtime files, the core's working
+data and logs. Sources reached through symlinks are skipped; destination checks
+prevent copies through unrelated symlinks or into special files. Same-file
+copies are no-ops, and Unix hard-linked destinations are replaced before writing.
 
-## `cvt-tui`
+A restore is additive: saved files are copied back and unrelated files remain.
+It validates destinations and creates a safety backup before copying. Retention
+runs after the source has been read, so restoring the oldest backup cannot prune
+that source prematurely. The safety backup is retained even if its timestamp
+sorts behind other backups. This is not an atomic directory transaction; I/O
+failure during copying can leave partially restored state, with the safety
+backup available for recovery.
 
-### Interaction as data
+## TUI and effect execution
 
-`App` is a state machine and performs no I/O. Interaction is a fold:
+`App` is a state machine with no I/O:
 
+```text
+App::on_event(Event) -> Vec<Effect>
+App::on_tick()       -> Vec<Effect>
+ui::render(frame, &app)
 ```
-App::on_event(Event) -> Vec<Effect>      // what happened -> what should happen
-App::on_tick()       -> Vec<Effect>      // time passing  -> what should happen
-ui::render(frame, &app)                  // state -> a frame
-```
 
-`Effect` is the vocabulary of things that need the outside world (~36
-variants); `Event` is the vocabulary of things that came back. Everything
-I/O-shaped lives in the binary's executor, which turns an `Effect` into a
-`Service` call and feeds the outcome back as `Data`, `Done` or `Failed`.
-Errors arrive as events and land in the status line; they do not unwind the
-loop.
+The binary's executor translates effects into `Service` and adapter calls, then
+returns `Data`, `Done` or `Failed` events. Failures reach the status line instead
+of unwinding the terminal loop. `cvt-tui::run` owns terminal setup, input and
+restoration; renderers consume state.
 
-This is what makes 67 state-machine tests and 23 render tests possible without
-a terminal, and it is why an operation cannot be sequenced differently in the
-two front ends — the interface has no way to sequence anything
-([ADR 0005](adr/0005-pure-state-machine-with-effects.md)).
-
-### The rest of the crate
-
-| Module | What it holds |
+| Module | Responsibility |
 |---|---|
-| `action` | The 61 user-visible actions, with labels for the footer |
-| `keys` | The key map, resolved per screen, with a `Context` for overlays |
-| `theme` | Semantic colour roles, plus a monochrome theme for a pipe |
-| `state` | `Table<T>` with sorting and filtering, `LogBuffer`, `Metrics` |
-| `row` | Display rows: how a model value becomes a line on screen |
-| `app` | The state machine, the effect vocabulary, the overlay stack |
-| `ui` | One module per screen, each a pure function of `&App` into a `Frame` |
+| `action` | User actions and labels |
+| `keys` | Screen-specific keys and overlay precedence |
+| `theme` | Semantic color roles and monochrome rendering |
+| `state` | Tables, sorting, filtering, log buffers and metrics |
+| `row` | Convert model values into display rows |
+| `app` | State transitions, effects and overlays |
+| `ui` | Screen renderers |
+| `run` | Terminal lifecycle and event loop |
 
-Overlay key precedence is structural rather than per-screen: an open prompt
-consumes input, so typing `q` into a search box searches for `q`. Selection is
-preserved across a refresh by identity — uid, name, id — rather than by index,
-because a refresh reorders.
+An open prompt consumes input before the screen key map, so `q` can be entered
+as text. Refreshes preserve table selection by identity rather than row index.
+These contracts are covered by state-machine and rendering tests.
 
-## `cvt`
+## CLI
 
-Argument parsing, output formatting, the exit-code mapping, and the effect
-executor. The module structure mirrors the CLI's subcommand groups.
+The command modules mirror the CLI's subcommand groups. The binary owns argument
+validation, human-readable output, JSON schemas and exit codes. Detailed command
+contracts belong in [CLI.md](CLI.md).
 
-Almost everything is a `Service` call. Two commands are not: `geo` and `unlock`
-make their own HTTP requests through the core's proxy port, because the question
-they answer — what address the world sees, and whether a service will serve it —
-is about the *tunnel* rather than about the core, and the core has no endpoint
-that answers it. Both go through `proxied_client` in `commands/mod.rs`, which is
-where the proxy port is read and the timeout is checked, so the two cannot drift
-apart on either.
+Most commands use `Service` or its controller client. `geo` and `unlock` make
+HTTP requests through the core's proxy to test the tunnel itself. Their shared
+client setup and limits live in `commands/mod.rs`.
 
-Two conventions are load-bearing. `--json` emits a stable schema name on every
-read command, so a script can depend on the shape rather than parse the human
-output. And exit codes are meaningful rather than binary — 3 for a validation
-failure, 4 for an unreachable controller, 5 for a missing core — so a script
-can tell "your configuration is wrong" from "the core is not running". The
-full table is in `docs/CLI.md` and in `--help`.
+## Testing
 
-## Testing strategy
-
-Five layers, each catching what the one below cannot.
-
-| Layer | Where | What it is for |
+| Layer | Location | Purpose |
 |---|---|---|
-| Property tests | `cvt-core/src/**.rs`, `tests/invariants.rs` | Invariants over generated input: losslessness, idempotence, atomicity |
-| API contract tests | `tests/client_contract.rs` | The client against a fake controller that answers the observed bytes |
-| Render tests | `cvt-tui/src/ui/render_tests.rs` | Every screen, empty and populated, at four terminal sizes |
-| Live core tests | `tests/live_controller.rs` | The same expectations against a real binary |
-| Review counterexamples | `cvt-core/tests/regression_*.rs`, `cvt-tui/tests/regression_*.rs` | Reproductions from independent reviews, grouped by their main subject |
+| Unit and property tests | Module tests and `cvt-core/tests/invariants.rs` | Local behavior and generated-input invariants |
+| API contracts | `cvt-core/tests/client_contract.rs` | Controller request and response contracts |
+| State-machine tests | `cvt-tui/src/app.rs` | Interaction and effect sequencing without a terminal |
+| Rendering | `cvt-tui/src/ui/render_tests.rs` | Screens at different sizes and data states |
+| Live core checks | `cvt-core/tests/live_controller.rs` | Verify assumptions against a real, disposable core |
+| Regression tests | `regression_*.rs` in both libraries | Reproduce previously found failures |
 
-The property layer is the interesting one, because the risk in this program is
-not a wrong value but a wrong *property*: a merge that is not idempotent, a
-round trip that loses a field, an edit that reports failure and mutates anyway.
-Those are stated as properties and searched over generated input.
+Live checks are environment-gated and do not run unless `CVT_LIVE_CONTROLLER`
+is set. Their setup and side effects are documented in the test file. A green
+default test run does not establish live-core compatibility.
 
-The last layer exists because the fake controller is written by the same people
-who wrote the client, so it can only confirm what they already believe.
-`tests/live_controller.rs` is environment-gated and is a no-op without a core —
-which is why it went unnoticed for a while that it had never actually run. When
-it did, it failed on its fourth assertion.
-
-### Adversarial review, and where its counterexamples live
-
-Independent reviews left counterexamples as ordinary passing integration tests.
-The files originally followed review order; they now name their main subject.
-Each still records its review context at the top, including cases where the
-reviewer's original assertion was wrong. Some suites span more than one area
-because the original review checked cross-cutting behavior.
+### Regression suite map
 
 | Crate | Regression suite | Main subjects |
 |---|---|---|
@@ -271,30 +197,13 @@ because the original review checked cross-cutting behavior.
 | `cvt-tui` | `regression_settings_and_cli_contract.rs` | Settings editor, CLI flags, controller deadlines and backup races |
 | `cvt-tui` | `regression_terminal_and_rendering.rs` | CLI name checks, rendering, terminal lifecycle and global flags |
 
-The `regression_*.rs` files remain separate Cargo integration test targets so
-their test fixtures and process state do not share one executable.
+Each regression file is a separate Cargo integration test target, keeping its
+fixtures and process state in its own executable. Existing suites may cover
+multiple subjects because they originated in cross-cutting reviews. New cases
+belong with the behavior they protect; use descriptive test names and record
+only the evidence needed to understand the input and expected result.
 
-Three things a reader should know before trusting one of those files:
-
-- **A reviewer's assertion can be wrong.** Past reviews produced an assertion
-  that encoded the *buggy* state, a failure message that proved the
-  fix worked while the assertion failed, two tests in one round that
-  contradicted each other, and a premise that was timing-dependent and flaked.
-  Each finding is reproduced by the author before it is acted on, and a
-  disagreement is written down beside the assertion rather than silently
-  absorbed.
-- **A fix that is narrower than its defect is the recurring failure.** Several
-  times, a guard has covered the members of a class that somebody had named
-  rather than the class itself: `uid` then `file` then the arm beside it; the
-  control plane; `--url` in two commands and then a third; `--concurrency` in
-  one function and then a second copy of the flag; `--timeout` never checked at
-  all; a canonicalised suffix with an uncanonicalised stamp. The fix that works
-  is the one that makes the class impossible to join without the guard.
-- **Some defects only running finds.** A fake controller cannot tell an allowed
-  path from a refused one, so four rounds of API-client review missed that the
-  hot reload could never work. A fifo where a document goes hangs
-  `std::fs::copy`'s open forever. Both were found by running the program.
-
-The *reports* are working documents about the code rather than part of it, and
-they list defects that were open when they were written, so they are
-deliberately not in this repository. What belongs here is the tests.
+Correct mistaken test premises only with reproducible evidence. Keep essential
+counterexamples executable; temporary review reports and progress logs do not
+belong in the repository. [ADR 0009](adr/0009-adversarial-review.md) records the
+review rationale.

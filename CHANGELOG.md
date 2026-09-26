@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Backup copying and retention now live in a dedicated service module, with
+  shared state-file lists and unchanged public import paths.
+- Contributor and architecture documentation now describe the actual I/O
+  boundaries and local GitFlow workflow. CI verifies the committed lockfile
+  and checks all features for documentation and minimum-Rust builds.
 - The user-facing feature summary and limits now live in the README instead
   of a separate coverage ledger whose TUI/CLI claims had become stale.
 

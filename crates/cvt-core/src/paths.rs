@@ -32,8 +32,8 @@ pub const VERGE_DIR_NAMES: &[&str] = &[
 
 /// All paths the application reads from or writes to.
 ///
-/// Construct one with [`AppPaths::resolve`] and pass it down; nothing else in
-/// the crate reads environment variables.
+/// Construct one with [`AppPaths::resolve`] and pass it down. Tests can use
+/// [`AppPaths::new`] to select a temporary home without changing the environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
     home: PathBuf,

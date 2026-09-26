@@ -159,6 +159,69 @@ mod tests {
         );
     }
 
+    /// Every variant that is not one of the three above is *named* in the
+    /// documentation's "everything else" row.
+    ///
+    /// The row is a hand-written list, and `Serialize` was missing from it —
+    /// a reader asking what a serialisation failure exits with found nothing.
+    /// The catch-all covers it either way, which is exactly why the list could
+    /// drift: the code was right and the sentence was not.
+    #[test]
+    fn every_error_variant_is_named_in_the_exit_code_table() {
+        let error_rs = include_str!("../../cvt-core/src/error.rs");
+        let body = error_rs
+            .split("pub enum Error {")
+            .nth(1)
+            .unwrap_or_default()
+            .split("\n}")
+            .next()
+            .unwrap_or_default();
+        let variants: Vec<&str> = body
+            .lines()
+            .filter_map(|line| {
+                let name = line
+                    .trim()
+                    .split(['(', '{', ','])
+                    .next()
+                    .unwrap_or_default()
+                    .trim();
+                (line.starts_with("    ")
+                    && !line.starts_with("     ")
+                    && name.chars().next().is_some_and(char::is_uppercase))
+                .then_some(name)
+            })
+            .collect();
+        assert!(
+            variants.len() > 10,
+            "the scan found only {} variants, so it is looking in the wrong place",
+            variants.len()
+        );
+
+        let doc = include_str!("../../../docs/CLI.md");
+        let row = doc
+            .lines()
+            .find(|line| line.contains("everything else"))
+            .unwrap_or_default();
+        assert!(
+            !row.is_empty(),
+            "the exit-code table has an everything-else row"
+        );
+
+        // The three with rows of their own are not in the everything-else row,
+        // and must not be: they are the ones a reader looks up first.
+        const SPECIFIC: &[&str] = &["Validation", "ControllerUnreachable", "CoreUnavailable"];
+        let missing: Vec<&&str> = variants
+            .iter()
+            .filter(|name| !SPECIFIC.contains(*name))
+            .filter(|name| !row.contains(&format!("`{name}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these error variants are not named in the everything-else row, so a \
+             reader cannot look up what they exit with: {missing:?}"
+        );
+    }
+
     #[test]
     fn library_errors_map_onto_the_specific_codes() {
         assert_eq!(

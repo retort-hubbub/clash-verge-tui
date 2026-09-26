@@ -55,7 +55,7 @@ How the library's errors map onto these:
 | `Validation` | `3` |
 | `ControllerUnreachable` | `4` |
 | `CoreUnavailable` | `5` |
-| everything else — `Io`, `Parse`, `Http`, `Api`, `ProfileNotFound`, `InvalidChain`, `MissingField`, `ProcessFailed`, `InvalidValue`, `Cancelled`, `Unsupported` | `1` |
+| everything else — `Io`, `Parse`, `Serialize`, `Http`, `Api`, `ProfileNotFound`, `InvalidChain`, `MissingField`, `ProcessFailed`, `InvalidValue`, `Cancelled`, `Unsupported` | `1` |
 
 Two deliberate choices:
 

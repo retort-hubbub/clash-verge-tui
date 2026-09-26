@@ -3,14 +3,23 @@
 A terminal client for the [mihomo](https://github.com/MetaCubeX/mihomo) core
 (Clash.Meta). It manages subscription profiles, generates and overrides the
 runtime configuration, and talks to a running core to select nodes, watch
-connections and logs, toggle rules and measure latency — from the keyboard,
-without leaving the terminal.
+connections and logs, toggle rules and measure latency from the terminal.
 
 ```console
 $ clash-verge-tui              # the interactive interface
 $ clash-verge-tui status       # one line about the current state
 $ clash-verge-tui doctor       # what is installed, what is missing, what the core supports
 ```
+
+In the TUI, each tab shows its direct key in brackets: `[1]` through `[9]`.
+Press that number to open the tab, or use Tab / Shift+Tab to move between tabs.
+With a mouse, click a tab or a table row to select it; scroll the wheel to move
+through tables, logs and scrollable dialogs. Keyboard shortcuts remain available
+for actions such as activating a profile or confirming a change.
+Press `?` for the full key reference. The interface supports English and
+Simplified Chinese; change **language** on the Settings tab (key `8`) and press
+`s` to save it. The preference is stored as `ui.language: zh-CN` in `cvt.yaml`.
+Command-line output and configuration field names remain in English.
 
 ## What it does
 
@@ -26,10 +35,11 @@ that is inserted *before* the terminal `MATCH` rather than after it. Every
 generated document is validated before it is written, and the previous one is
 snapshotted, so a configuration that the core refuses can always be undone.
 
-**Subscriptions.** Three-tier fetching: direct, then through the core, then
-through the system proxy — so an update works on a machine whose only route to
-the internet is the proxy it is updating. `subscription-userinfo` is parsed so
-the interface can show what is left.
+**Subscriptions.** Three-tier fetching: direct, then through a running core's
+mixed or HTTP proxy port when configured, then through the system proxy — so an
+update works on a machine whose only route to the internet is the proxy it is
+updating. `subscription-userinfo` is parsed so the interface can show what is
+left.
 
 **The running core.** Select nodes, pin a selection, run latency and
 DNS tests, list and close connections, watch traffic and memory, follow the
@@ -39,6 +49,30 @@ restart, upgrade or garbage-collect the core itself.
 **Two front ends, one implementation.** The interactive interface and the
 command line are both thin shells over the same `Service` facade, so they
 cannot disagree about what a profile chain means or how an apply is sequenced.
+
+## Feature coverage and limits
+
+| Area | Terminal interface | Command line |
+|---|---|---|
+| Profiles and subscriptions | List, switch, edit, update one or all due, import | The same, plus editing a subscription URL |
+| Configuration | Preview, apply, edit profiles and overrides | Generate, validate, diff, apply, roll back |
+| Running core | Nodes, connections, logs, rules, latency and resource use | The same, plus DNS and named URL tests |
+| Diagnostics and maintenance | Core and Geo database updates | Doctor, media unlock (YouTube Premium, Netflix, ChatGPT, Disney+), exit IP/geolocation, local backup and restore |
+
+The TUI's **update all** action updates subscriptions that are due according to
+each profile's interval; `profiles update <uid>` explicitly updates one. The
+`core.auto_start` and `update.update_on_start` settings apply when the TUI
+launches. Neither setting installs a background system service.
+
+This project does not execute JavaScript enhancement scripts. It uses
+[declarative overrides](docs/OVERRIDE-FORMAT.md); a subscription that requires
+its own script cannot be reproduced automatically. It does not manage the
+system proxy, PAC, the system resolver, privileged TUN setup, or WebDAV backup.
+Those desktop and remote-sync operations need external tools. `dialer-proxy`
+chains can be inspected and validated, but are not rewritten automatically.
+TLS, Unix-socket and Windows-pipe controller addresses are recognised; the
+pipe transport depends on Windows. The command line's unlock checks cover four
+services, not every service offered by `clash-verge-rev`.
 
 ## Requirements
 
@@ -105,9 +139,6 @@ homes it found.
   together and why.
 - [`docs/adr/`](docs/adr/) — the decisions behind the design, with the
   alternatives that were rejected.
-- [`docs/FEATURE-COVERAGE.md`](docs/FEATURE-COVERAGE.md) — what this project
-  does about each feature of `clash-verge-rev`, including the ones it does not
-  implement and why.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — the GitFlow workflow, commit
   conventions, and the architecture rules that are not negotiable.
 
@@ -133,9 +164,10 @@ $ CVT_LIVE_CONTROLLER='127.0.0.1:9090|your-secret' \
   cargo test -p cvt-core --test live_controller -- --test-threads=1 --nocapture
 ```
 
-The counterexamples every adversarial review has found are kept as **passing
-tests** in `tests/recheck*.rs` rather than deleted, so each defect that was
-once real has a reproduction attached and regressing it is a visible act.
+The counterexamples from independent reviews remain as **passing regression
+tests** in `crates/cvt-core/tests/regression_*.rs` and
+`crates/cvt-tui/tests/regression_*.rs`. The [test suite map](docs/ARCHITECTURE.md#adversarial-review-and-where-its-counterexamples-live)
+shows which area each file covers.
 
 ## Relationship to other projects
 

@@ -11,7 +11,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 
-use super::render;
+use super::{render, tab_at};
 use crate::action::Screen;
 use crate::app::{App, Data, Event, Overlay, Preview, PromptKind, StatusKind};
 use crate::row::{NodeRow, ProfileRow, RuleRow};
@@ -41,6 +41,36 @@ fn text_of(buffer: &Buffer) -> String {
         out.push('\n');
     }
     out
+}
+
+#[test]
+fn clicking_each_rendered_tab_key_opens_its_screen() {
+    for language in [
+        cvt_core::settings::Language::English,
+        cvt_core::settings::Language::Chinese,
+    ] {
+        for width in [80, 120, 200] {
+            let mut app = app_with(Theme::default());
+            app.settings.ui.language = language;
+            app.viewport = (width, 24);
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let mut seen = Vec::new();
+            for column in 0..width.saturating_sub(2) {
+                if buffer[(column, 0)].symbol() == "[" && buffer[(column + 2, 0)].symbol() == "]" {
+                    let digit = buffer[(column + 1, 0)].symbol();
+                    if let Some(index @ 1..=9) = digit.chars().next().and_then(|ch| ch.to_digit(10))
+                    {
+                        let screen = Screen::all()[usize::try_from(index - 1).unwrap()];
+                        assert_eq!(tab_at(&app, column + 1, 0), Some(screen));
+                        seen.push(screen);
+                    }
+                }
+            }
+            assert_eq!(seen, Screen::all(), "{language:?} at {width} columns");
+        }
+    }
 }
 
 /// Collapse runs of spaces so a substring can be looked for across cells.
@@ -225,13 +255,23 @@ fn every_screen_renders_empty_at_every_size() {
     }
 }
 
+/// Populated, every screen draws something at every size.
+///
+/// The name said "renders" and the body asserted only that it did not panic —
+/// `let _ = draw(…)`, with the buffer dropped. A screen that drew nothing at
+/// all passed, which is the failure this file exists to catch, so it is
+/// asserted now the same way the empty case asserts it.
 #[test]
 fn every_screen_renders_populated_at_every_size() {
     for screen in screens() {
         let mut app = ready(screen);
         for (width, height) in SIZES {
             let _ = app.on_event(Event::Resize(width, height));
-            let _ = draw(&app, width, height);
+            let text = draw(&app, width, height);
+            assert!(
+                !text.trim().is_empty() || height <= 1,
+                "{screen} at {width}x{height} drew nothing with rows on it"
+            );
         }
     }
 }
@@ -265,6 +305,51 @@ fn the_tab_bar_reports_the_core_state_and_the_live_rate() {
     );
     assert!(text.contains('↓'), "the live rate belongs in the tab bar");
     assert!(text.contains("Home") && text.contains("Settings"));
+}
+
+#[test]
+fn numbered_tabs_are_visible_and_the_digit_has_its_own_colour() {
+    let app = ready(Screen::Home);
+    let mut terminal = Terminal::new(TestBackend::new(200, 40)).expect("backend");
+    terminal.draw(|frame| render(frame, &app)).expect("draw");
+    let buffer = terminal.backend().buffer();
+    let first_line = text_of(buffer).lines().next().unwrap().to_owned();
+    for number in 1..=9 {
+        assert!(first_line.contains(&format!("[{number}]")), "{first_line}");
+    }
+    assert_eq!(buffer[(2, 0)].symbol(), "1");
+    assert_ne!(buffer[(2, 0)].fg, buffer[(4, 0)].fg);
+    let compact = draw(&app, 80, 24);
+    let first_line = compact.lines().next().unwrap();
+    for number in 1..=9 {
+        assert!(first_line.contains(&format!("[{number}]")), "{first_line}");
+    }
+}
+
+#[test]
+fn chinese_interface_renders_every_screen_at_terminal_sizes() {
+    for screen in screens() {
+        let mut app = ready(screen);
+        app.settings.ui.language = cvt_core::settings::Language::Chinese;
+        for (width, height) in SIZES {
+            let text = draw(&app, width, height);
+            assert!(
+                !text.trim().is_empty() || height <= 1,
+                "{screen} {width}x{height}"
+            );
+        }
+    }
+    let mut app = empty(Screen::Home);
+    app.settings.ui.language = cvt_core::settings::Language::Chinese;
+    let text = draw(&app, 200, 40);
+    let glyphs = text.replace(' ', "");
+    assert!(glyphs.contains("[1]首页"), "{text}");
+    assert!(glyphs.contains("已停止"), "{text}");
+    let narrow = draw(&app, 80, 24);
+    let first_line = narrow.lines().next().unwrap();
+    for number in 1..=9 {
+        assert!(first_line.contains(&format!("[{number}]")), "{first_line}");
+    }
 }
 
 #[test]
@@ -363,11 +448,22 @@ fn the_colour_theme_actually_uses_colour() {
 
 #[test]
 fn an_empty_state_is_still_drawn_at_a_degenerate_size() {
+    // "Is still drawn" was the name and the body discarded every buffer, so it
+    // asserted only that a 1x1 or 200x1 terminal does not panic. That is worth
+    // knowing and it is not what the name says: where there is room for a
+    // character, there has to be one.
     for screen in screens() {
         let app = empty(screen);
-        let _ = draw(&app, 1, 1);
-        let _ = draw(&app, 1, 40);
-        let _ = draw(&app, 200, 1);
+        for (width, height) in [(1, 1), (1, 40), (200, 1)] {
+            let text = draw(&app, width, height);
+            let room = usize::from(width) * usize::from(height);
+            if room >= 2 {
+                assert!(
+                    !text.trim().is_empty(),
+                    "{screen} at {width}x{height} drew nothing at all"
+                );
+            }
+        }
     }
 }
 

@@ -5,7 +5,7 @@
 //! Rules this file follows:
 //!
 //! * the newest code is attacked first — the test-target list, then the
-//!   backups (which `recheck4.rs` does not test at all);
+//!   backups (which `regression_selection_and_paths.rs` does not test at all);
 //! * a claim that only a real core can settle is settled by one:
 //!   `/usr/bin/verge-mihomo v1.19.31`, started, probed and stopped inside a
 //!   single command, since each `bash` invocation gets its own process
@@ -16,8 +16,7 @@
 //!   (`target/debug/clash-verge-tui`) against the fake controller below. They
 //!   **skip** if the binary is absent, and say so — build it with
 //!   `cargo build -p cvt` first;
-//! * tests named `defect_*` assert what the code claims and are expected to
-//!   **fail**. A failing `defect_` test is a finding, not a broken test.
+//! * `defect_*` names preserve the original findings; all tests now must pass.
 //!
 //! Nothing here modifies a source file.
 
@@ -422,7 +421,7 @@ fn defect_4_a_restore_keeps_the_state_it_replaces() {
 /// not something this program writes, and following one would copy a file from
 /// wherever the link points — including out of the home entirely" — and
 /// `supervisor::rotate_log` was fixed for exactly this on the writing side
-/// (`recheck4`'s `rotation_never_writes_through_a_symlink`). A restore is the
+/// (`regression_selection_and_paths`'s `rotation_never_writes_through_a_symlink`). A restore is the
 /// third place a file is written into a user directory, and a home that a
 /// dotfiles manager anchors with symlinks is an ordinary home.
 ///
@@ -547,7 +546,7 @@ fn a_symlinked_directory_in_backups_is_not_a_backup() {
 
 /// The guard a restore owes the *source*: a directory with a `profiles.yaml`
 /// that is not a backup of this home. `restore(<home>)` is refused (that was
-/// `recheck4`'s defect 12); this states the shape of the refusal so a fix
+/// `regression_selection_and_paths`'s defect 12); this states the shape of the refusal so a fix
 /// cannot trade one for the other.
 #[test]
 fn a_restore_from_a_non_backup_directory_is_refused() {

@@ -7,10 +7,9 @@
 /tmp/
 *.log
 
-# proptest writes seeds for failing cases here. The counterexamples this
-# project has found are already frozen as `#[ignore]`d tests in
-# crates/cvt-core/tests/invariants.rs with their reasoning, so the seed file
-# only churns whenever somebody runs that suite with `--ignored`.
+# proptest writes seeds for failing cases here. Confirmed counterexamples are
+# kept as passing regression tests instead of committing generated
+# seed files.
 *.proptest-regressions
 
 # Left behind by a cargo invocation that ran without CARGO_HOME set, which

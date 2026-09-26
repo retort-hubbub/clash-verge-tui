@@ -29,11 +29,11 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features --locked
       - name: Docs
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps --all-features --locked
 
   msrv:
     name: minimum supported rust version
@@ -49,7 +49,7 @@ jobs:
         run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
       - uses: Swatinem/rust-cache@v2
       - name: Build against MSRV
-        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-targets
+        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-targets --all-features --locked
 
   deny:
     name: dependency audit

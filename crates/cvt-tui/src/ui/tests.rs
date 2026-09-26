@@ -21,11 +21,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|check| row(check, app))
         .collect();
     let queued = app.queued_tests();
-    let title = if queued == 0 {
-        " tests ".to_owned()
-    } else {
-        format!(" tests ({queued} queued or running) ")
-    };
+    let title = crate::i18n::message(app.language(), crate::i18n::Message::TestsTitle(queued));
     w::list(
         frame,
         list_area,
@@ -50,13 +46,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn row(check: &TestRow, app: &App) -> Row<'static> {
     let theme = app.theme;
     let (value, style) = match &check.result {
-        TestResult::Pending => ("pending".to_owned(), theme.dim()),
-        TestResult::Running => ("running…".to_owned(), theme.warn()),
-        TestResult::Passed(value) => (format!("ok — {value}"), theme.ok()),
-        TestResult::Failed(reason) => (format!("failed — {reason}"), theme.error()),
+        TestResult::Pending => (app.tr("pending").to_owned(), theme.dim()),
+        TestResult::Running => (app.tr("running…").to_owned(), theme.warn()),
+        TestResult::Passed(value) => (format!("{} — {value}", app.tr("ok")), theme.ok()),
+        TestResult::Failed(reason) => (format!("{} — {reason}", app.tr("failed")), theme.error()),
     };
     Row::new(vec![
-        Cell::from(check.kind.label()).style(theme.key_label()),
+        Cell::from(app.tr(check.kind.label()).to_owned()).style(theme.key_label()),
         Cell::from(check.target.clone()).style(theme.dim()),
         Cell::from(value).style(style),
     ])
@@ -67,30 +63,34 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
     match app.tests.selected_item() {
         Some(test) => {
-            rows.push(("check", test.kind.label().to_owned()));
+            rows.push(("check", app.tr(test.kind.label()).to_owned()));
             rows.push(("target", test.target.clone()));
-            rows.push(("what it does", test.kind.description().to_owned()));
+            rows.push(("what it does", app.tr(test.kind.description()).to_owned()));
             rows.push(("result", test.result.label()));
         }
-        None => rows.push(("hint", "Enter runs the highlighted check".to_owned())),
+        None => rows.push((
+            "hint",
+            app.tr("Enter runs the highlighted check").to_owned(),
+        )),
     }
     rows.push((
         "batch",
         if app.queued_tests() == 0 {
-            "nothing running".to_owned()
+            app.tr("nothing running").to_owned()
         } else {
-            format!(
-                "{} check(s) queued or running — s stops the batch",
-                app.queued_tests()
+            crate::i18n::message(
+                app.language(),
+                crate::i18n::Message::QueuedTestsHint(app.queued_tests()),
             )
         },
     ));
     if app.core.is_running() {
-        rows.push(("core", app.core.label()));
+        rows.push(("core", crate::i18n::core_status(app.language(), &app.core)));
     } else {
         rows.push((
             "core",
-            "not running; latency checks need it, so start it from Home".to_owned(),
+            app.tr("not running; latency checks need it, so start it from Home")
+                .to_owned(),
         ));
     }
     if let Some(status) = app.current_status()
@@ -98,5 +98,5 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     {
         rows.push(("note", status.text.clone()));
     }
-    w::details(frame, area, app.theme, " selected check ", &rows);
+    w::details(frame, area, app, " selected check ", &rows);
 }

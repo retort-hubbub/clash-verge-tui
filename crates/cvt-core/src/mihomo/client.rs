@@ -37,6 +37,10 @@ use crate::mihomo::types::{
 /// Default request timeout for ordinary calls.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A full configuration reload can rebuild providers and Geo databases before
+/// the controller answers. It must not inherit the UI's short polling timeout.
+const RELOAD_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Extra time allowed on top of a latency test's own timeout.
 const DELAY_SLACK: Duration = Duration::from_secs(5);
 
@@ -147,7 +151,21 @@ impl Client {
         path: &str,
         body: Option<Value>,
     ) -> Result<()> {
+        self.send_no_content_with_timeout(method, path, body, None)
+            .await
+    }
+
+    async fn send_no_content_with_timeout(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        timeout: Option<Duration>,
+    ) -> Result<()> {
         let mut req = self.request(method.clone(), path);
+        if let Some(timeout) = timeout {
+            req = req.timeout(timeout);
+        }
         if let Some(b) = body {
             req = req.json(&b);
         }
@@ -598,8 +616,13 @@ impl Client {
         } else {
             "/configs"
         };
-        self.send_no_content(reqwest::Method::PUT, path_str, Some(Value::Object(body)))
-            .await
+        self.send_no_content_with_timeout(
+            reqwest::Method::PUT,
+            path_str,
+            Some(Value::Object(body)),
+            Some(RELOAD_TIMEOUT),
+        )
+        .await
     }
 
     /// `POST /configs/geo` — refresh the GeoIP/GeoSite databases.
@@ -889,7 +912,8 @@ fn build_http(endpoint: &Endpoint, timeout: Duration) -> Result<reqwest::Client>
         .no_proxy();
 
     match &endpoint.transport {
-        crate::mihomo::endpoint::Transport::Tcp(_) => {}
+        crate::mihomo::endpoint::Transport::Tcp(_) | crate::mihomo::endpoint::Transport::Tls(_) => {
+        }
         crate::mihomo::endpoint::Transport::Unix(path) => {
             #[cfg(unix)]
             {

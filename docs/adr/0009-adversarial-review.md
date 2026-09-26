@@ -11,20 +11,10 @@ the second kind is exactly the kind its author cannot see: a test written by the
 person who wrote the code checks the behaviour they intended, which is the
 behaviour they already believe in.
 
-That is not a hypothetical. Over five rounds of review this codebase produced:
-
-| Round | What it checked | What it found |
-|---|---|---|
-| 1 | the code | 18 defects, in four major |
-| 2 | the 18 fixes | **10 problems with the fixes**, including a path traversal round 1 had missed |
-| 3 | those fixes | **10 more**, including the other half of that traversal: the field next to the one round 2 had named |
-| 4 | those fixes | **11 more**, and the *fourth* instance of the same pattern — a guard covering the field somebody named rather than the class it belongs to |
-| 5 | the newest feature | (in progress) |
-
-Two of those rounds found a fix that was **narrower than the defect it was aimed
-at**, and one found a fix that traded a silent data loss for a different one.
-None of them would have been found by re-running the author's tests, because the
-author's tests passed at every point.
+This has happened repeatedly: a guard covered the field a reviewer named
+instead of the whole class of fields, and a fix traded one form of data loss
+for another. The existing tests passed before those counterexamples were
+written. The passing `regression_*.rs` suites now preserve them.
 
 ## Decision
 
@@ -36,7 +26,7 @@ so far is that the author's tests pass while the claim is still false.
 Two consequences are part of the decision rather than incidental:
 
 **The counterexamples are kept.** Each finding becomes a test in the build —
-`recheck.rs`, `recheck2.rs`, `recheck3.rs` — with its minimal input and the
+the relevant `regression_*.rs` suite — with its minimal input and the
 observation in the body. A report is a document *about* the code, lists defects
 that were open when it was written, and is deliberately not in the repository;
 the test is the part that belongs in it. Fixing a finding shows up in the
@@ -59,14 +49,11 @@ found it on the first try.
 
 ## Consequences
 
-- Five rounds have found 49 defects and 45 of them were invisible to the tests
-  that existed at the time.
 - The suite is larger than the project strictly needs, and a reader has to know
   which file is whose: `invariants.rs` attacks the library's own claims,
-  `recheck*.rs` attack the claims of *fixes*. Each file says so at the top.
-- Review rounds cost a full round each. The alternative has been measured: two
-  of the five rounds found a fix that was narrower than its defect, and both
-  would have shipped.
+  `regression_*.rs` attack the claims of *fixes*. Each file says so at the top.
+- Review rounds cost time, and have repeatedly found fixes narrower than their
+  intended defect.
 - The reviews have their own failure mode, recorded here because it happened:
   one asserted `ends_with("/sub?token=abc")` against a whole request line, whose
   failure message proved the fix worked; another encoded the *buggy* state in an
@@ -76,8 +63,8 @@ found it on the first try.
 
 ## Alternatives considered
 
-**Trust the author's tests.** They were green at every one of the five rounds,
-including the rounds where the code did not work. Rejected on that evidence.
+**Trust the author's tests.** They were green during reviews that still found
+cases where the code did not work. Rejected on that evidence.
 
 **Have the reviewer fix what it finds.** Tried in one round and rejected: the
 reviewer becomes the author of the thing under review, and the next round has

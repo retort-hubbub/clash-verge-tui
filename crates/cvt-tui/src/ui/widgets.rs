@@ -100,7 +100,7 @@ pub struct ListSpec {
 /// Draw a list, or a useful message when it has no rows.
 pub fn list(frame: &mut Frame<'_>, area: Rect, app: &App, spec: ListSpec) {
     if spec.rows.is_empty() {
-        message(frame, area, app.theme, &spec.empty);
+        message(frame, area, app.theme, app.tr(&spec.empty));
         return;
     }
     // The filter is reported here rather than by each screen: a list that is
@@ -109,10 +109,13 @@ pub fn list(frame: &mut Frame<'_>, area: Rect, app: &App, spec: ListSpec) {
     let title = if filter.is_empty() {
         spec.title
     } else {
-        format!("{}· filter: {filter} ", spec.title)
+        format!("{}· {}: {filter} ", spec.title, app.tr("filter"))
     };
     let table = TableWidget::new(spec.rows, spec.widths)
-        .header(Row::new(spec.header).style(app.theme.emphasis()))
+        .header(
+            Row::new(spec.header.into_iter().map(|heading| app.tr(heading)))
+                .style(app.theme.emphasis()),
+        )
         .block(panel(Line::from(title), app.theme))
         .column_spacing(1)
         .row_highlight_style(app.theme.selection())
@@ -132,25 +135,20 @@ pub fn message(frame: &mut Frame<'_>, area: Rect, theme: Theme, text: &str) {
 }
 
 /// A pane of `label: value` rows, wrapped, with a title.
-pub fn details(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    theme: Theme,
-    title: impl Into<Line<'static>>,
-    rows: &[(&str, String)],
-) {
+pub fn details(frame: &mut Frame<'_>, area: Rect, app: &App, title: &str, rows: &[(&str, String)]) {
+    let theme = app.theme;
     let lines: Vec<Line<'static>> = rows
         .iter()
         .map(|(label, value)| {
             Line::from(vec![
-                Span::styled(format!("{label}: "), theme.dim()),
+                Span::styled(format!("{}: ", app.tr(label)), theme.dim()),
                 Span::styled(value.clone(), theme.key_label()),
             ])
         })
         .collect();
     let paragraph = Paragraph::new(Text::from(lines))
         .wrap(Wrap { trim: false })
-        .block(panel(title, theme));
+        .block(panel(format!(" {} ", app.tr(title.trim())), theme));
     frame.render_widget(paragraph, area);
 }
 
@@ -161,7 +159,7 @@ pub fn details(
 /// all of them.
 #[must_use]
 pub fn core_summary(app: &App) -> String {
-    let mut parts = vec![app.core.label()];
+    let mut parts = vec![crate::i18n::core_status(app.language(), &app.core)];
     if let Some(live) = &app.metrics.latest {
         parts.push(format!(
             "↓{}/s ↑{}/s",
@@ -170,7 +168,10 @@ pub fn core_summary(app: &App) -> String {
         ));
     }
     if app.queued_tests() > 0 {
-        parts.push(format!("{} test(s) running", app.queued_tests()));
+        parts.push(crate::i18n::message(
+            app.language(),
+            crate::i18n::Message::RunningTests(app.queued_tests()),
+        ));
     }
     parts.join("  ")
 }
@@ -183,9 +184,12 @@ pub fn core_summary(app: &App) -> String {
 pub fn hints(app: &App, width: u16) -> Line<'static> {
     let limit = usize::from((width / 16).clamp(1, 8));
     let mut spans: Vec<Span<'static>> = Vec::new();
-    for (key, label) in app.keymap.hints(app.screen, limit) {
+    for (key, action) in app.keymap.hint_bindings(app.screen, limit) {
         spans.push(Span::styled(format!(" {key} "), app.theme.key_hint()));
-        spans.push(Span::styled(format!("{label} "), app.theme.key_label()));
+        spans.push(Span::styled(
+            format!("{} ", crate::i18n::action_label(app.language(), action)),
+            app.theme.key_label(),
+        ));
     }
     Line::from(spans)
 }
@@ -204,7 +208,7 @@ pub fn status_line(app: &App) -> Line<'static> {
     };
     Line::from(vec![
         Span::styled(format!(" {marker} "), style),
-        Span::styled(status.text.clone(), style),
+        Span::styled(app.tr(&status.text).to_owned(), style),
     ])
 }
 

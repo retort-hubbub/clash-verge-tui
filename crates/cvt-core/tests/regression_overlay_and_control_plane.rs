@@ -17,9 +17,8 @@
 //! * the diagnostic-code scan, attacked as the rewrite it now is rather than as
 //!   the mechanism round 8 described.
 //!
-//! Tests named `defect_*` assert what the code *claims* and are expected to
-//! **fail**. A failing `defect_` test is a finding, not a broken test. Tests
-//! named `confirmed_*` assert a claim that was checked and holds.
+//! `defect_*` names preserve the original findings; all tests now must pass.
+//! Tests named `confirmed_*` assert a claim that was checked and holds.
 //!
 //! Take at `9c66eb6`, with the working tree carrying the author's in-flight
 //! `protect_dns` work in `crates/cvt-core/src/enhance/pipeline.rs`,
@@ -353,7 +352,7 @@ fn defect_1_with_protected_writes_a_key_the_document_never_had() {
     );
 }
 
-/// CLAIM (`docs/FEATURE-COVERAGE.md`, in the working tree): "`protect_dns: true`
+/// CLAIM (the former feature coverage table): "`protect_dns: true`
 /// in the base profile's option keeps its own `dns` section **whatever an
 /// enhancement says**", and `docs/OVERRIDE-FORMAT.md`: "Its own `dns` section is
 /// then restored after every enhancement".
@@ -508,7 +507,7 @@ fn write_two_base_index(paths: &AppPaths, first_protects: bool) {
 /// CLAIM (`Pipeline::with_protected`'s doc, `pipeline.rs` in the working tree):
 /// "Keys the base declared and an enhancement must not change … A key the base
 /// does *not* declare is not protected: there is nothing to restore", and
-/// `docs/FEATURE-COVERAGE.md`: "A base with no `dns` of its own protects
+/// The former feature coverage table: "A base with no `dns` of its own protects
 /// nothing, because there is nothing to restore."
 ///
 /// `control_plane` is **reassigned** every time a base document is read, so a

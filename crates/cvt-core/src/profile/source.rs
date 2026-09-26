@@ -205,6 +205,38 @@ pub struct UpdateOutcome {
     pub attempts: Vec<Attempt>,
 }
 
+/// A downloaded update awaiting a short, synchronized commit to the index.
+///
+/// Keeping the network request separate prevents a slow fetch from holding a
+/// user interface lock or overwriting profile edits made while it was in flight.
+#[derive(Debug)]
+pub struct PreparedUpdate {
+    uid: String,
+    url: String,
+    fetched: Fetched,
+    attempts: Vec<Attempt>,
+}
+
+impl PreparedUpdate {
+    /// Write the document and refresh metadata against the latest index.
+    ///
+    /// # Errors
+    /// Refuses a profile removed or given a different URL during the fetch;
+    /// otherwise propagates document and index write errors.
+    pub fn commit(self, store: &mut ProfileStore) -> Result<UpdateOutcome> {
+        let current = store.get(&self.uid).ok_or_else(|| Error::ProfileNotFound {
+            uid: self.uid.clone(),
+        })?;
+        if current.url.as_deref().map(str::trim) != Some(self.url.as_str()) {
+            return Err(Error::invalid(
+                "subscription URL",
+                "changed while the update was downloading; retry the update",
+            ));
+        }
+        store_fetched(store, &self.uid, self.fetched, self.attempts)
+    }
+}
+
 impl UpdateOutcome {
     /// Tiers that failed before one succeeded.
     #[must_use]
@@ -425,6 +457,14 @@ impl SubscriptionFetcher {
     /// tier failed — naming the URL and each tier's reason — and whatever the
     /// document write or index save returned.
     pub async fn update(&self, store: &mut ProfileStore, uid: &str) -> Result<UpdateOutcome> {
+        self.prepare(store, uid).await?.commit(store)
+    }
+
+    /// Download an update without touching the profile index or document.
+    ///
+    /// # Errors
+    /// Returns the same fetch and profile lookup errors as [`Self::update`].
+    pub async fn prepare(&self, store: &ProfileStore, uid: &str) -> Result<PreparedUpdate> {
         let item = store
             .get(uid)
             .cloned()
@@ -460,7 +500,12 @@ impl SubscriptionFetcher {
             // caller, the only thing left to do is show it to the user.
             return Err(all_tiers_failed(&url, &attempts));
         };
-        store_fetched(store, uid, fetched, attempts)
+        Ok(PreparedUpdate {
+            uid: uid.to_owned(),
+            url,
+            fetched,
+            attempts,
+        })
     }
 
     /// Refresh every remote profile that is due.
@@ -631,13 +676,9 @@ fn normalise_proxy_addr(addr: &str) -> Option<String> {
     Some(format!("http://{trimmed}"))
 }
 
-/// Parse a URL, rejecting anything that is not an HTTP subscription.
-///
-/// # Errors
-/// [`Error::InvalidValue`] with field `url`.
 /// Whether a URL is one the fetcher can use.
 ///
-/// The same check [`validated_url`] makes, for the commands that *record* a URL
+/// The same check `validated_url` makes, for the commands that *record* a URL
 /// before fetching it: a profile whose address its own fetcher refuses is a
 /// profile that cannot be updated, and the user finds out one step after the
 /// step that could have told them.
@@ -648,6 +689,7 @@ pub fn check_fetchable(url: &str) -> Result<()> {
     validated_url(url).map(|_| ())
 }
 
+/// Parse a URL, rejecting anything that is not an HTTP subscription.
 fn validated_url(url: &str) -> Result<reqwest::Url> {
     let trimmed = url.trim();
     let parsed = reqwest::Url::parse(trimmed)
@@ -1695,6 +1737,42 @@ mod tests {
         let reloaded = ProfileStore::load(store.paths()).unwrap();
         assert_eq!(reloaded.get("R1").unwrap().updated, Some(updated));
         assert_eq!(reloaded.get("R1").unwrap().extra.expire, 4);
+    }
+
+    #[test]
+    fn a_prepared_update_preserves_concurrent_profile_edits() {
+        let (_dir, mut store) = store_with_remote("R1", "https://example.com/sub");
+        let prepared = PreparedUpdate {
+            uid: "R1".to_owned(),
+            url: "https://example.com/sub".to_owned(),
+            fetched: fetched("mode: rule\n"),
+            attempts: Vec::new(),
+        };
+        store.rename("R1", "renamed during download").unwrap();
+        prepared.commit(&mut store).unwrap();
+        let disk = ProfileStore::load(store.paths()).unwrap();
+        assert_eq!(disk.get("R1").unwrap().name, "renamed during download");
+        assert!(disk.get("R1").unwrap().updated.is_some());
+    }
+
+    #[test]
+    fn a_prepared_update_refuses_a_changed_subscription_url() {
+        let (_dir, mut store) = store_with_remote("R1", "https://example.com/sub");
+        let prepared = PreparedUpdate {
+            uid: "R1".to_owned(),
+            url: "https://example.com/sub".to_owned(),
+            fetched: fetched("mode: rule\n"),
+            attempts: Vec::new(),
+        };
+        store.set_url("R1", "https://example.com/new-sub").unwrap();
+        store.save().unwrap();
+        assert!(prepared.commit(&mut store).is_err());
+        let disk = ProfileStore::load(store.paths()).unwrap();
+        assert_eq!(
+            disk.get("R1").unwrap().url.as_deref(),
+            Some("https://example.com/new-sub")
+        );
+        assert!(disk.get("R1").unwrap().updated.is_none());
     }
 
     #[test]

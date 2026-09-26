@@ -24,14 +24,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|rule| row(rule, app))
         .collect();
     let hidden = app.hidden_rules();
-    let title = if hidden > 0 {
-        format!(
-            " rules ({} shown, {hidden} disabled hidden) ",
-            app.rules.len()
-        )
-    } else {
-        format!(" rules ({} shown) ", app.rules.len())
-    };
+    let title = crate::i18n::message(
+        app.language(),
+        crate::i18n::Message::RulesTitle {
+            shown: app.rules.len(),
+            hidden,
+        },
+    );
     w::list(
         frame,
         list_area,
@@ -84,39 +83,48 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             rows.push(("rule", rule.raw.clone()));
             rows.push((
                 "state",
-                if rule.disabled { "disabled" } else { "enabled" }.to_owned(),
+                app.tr(if rule.disabled { "disabled" } else { "enabled" })
+                    .to_owned(),
             ));
             rows.push((
                 "counters",
                 if rule.has_stats() {
-                    format!("{} hit(s), {} miss(es)", rule.hits, rule.misses)
+                    crate::i18n::message(
+                        app.language(),
+                        crate::i18n::Message::RuleCounters {
+                            hits: rule.hits,
+                            misses: rule.misses,
+                        },
+                    )
                 } else {
-                    "the core reports no counters for this rule".to_owned()
+                    app.tr("the core reports no counters for this rule")
+                        .to_owned()
                 },
             ));
             if rule.looks_dead(DEAD_AFTER) {
                 rows.push((
                     "note",
-                    format!(
-                        "evaluated {} times and never matched — an earlier rule probably wins",
-                        rule.misses
+                    crate::i18n::message(
+                        app.language(),
+                        crate::i18n::Message::RuleNeverMatched(rule.misses),
                     ),
                 ));
             }
         }
         None => rows.push((
             "hint",
-            "Enter toggles the highlighted rule; h includes disabled rules".to_owned(),
+            app.tr("Enter toggles the highlighted rule; h includes disabled rules")
+                .to_owned(),
         )),
     }
     let providers = app.rule_providers();
     rows.push((
         "rule sets",
         if providers.is_empty() {
-            "none reported by the core".to_owned()
+            app.tr("none reported by the core").to_owned()
         } else {
             format!("{}: {}", providers.len(), providers.join(", "))
         },
     ));
-    w::details(frame, area, app.theme, " selected rule ", &rows);
+    w::details(frame, area, app, " selected rule ", &rows);
 }

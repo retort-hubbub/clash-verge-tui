@@ -23,7 +23,33 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     let height = usize::from(inner.height);
-    let (lines, _) = app.log_window(height);
+    let width = usize::from(inner.width).max(1);
+    // The window is in *rows*, not lines. A line that wraps takes more than one
+    // row, so asking for `height` lines and letting the `Paragraph` wrap them
+    // made the pane taller than its area — and the `Paragraph` clips the
+    // bottom, so the newest lines were the ones lost. Following a log is the
+    // one thing this pane is for, so the window is taken generously and then
+    // trimmed from the front until it fits.
+    let (candidates, _) = app.log_window(height.saturating_mul(4).max(height));
+    let mut used = 0;
+    let mut first = candidates.len();
+    for line in candidates.iter().rev() {
+        // What is measured is what is *drawn*: `render_line` pads the level to
+        // seven columns, so measuring the unpadded form under-counted every row
+        // and the pane kept the wrong end of the window.
+        let full = format!("{} {:<7} {}", line.at, line.level, line.message);
+        let rows = super::wrapped_rows(&full, width);
+        // At least the newest line, always. A single line taller than the pane
+        // is clipped by the `Paragraph`, which shows its beginning — better
+        // than the empty state, which is where the over-estimate below sent it
+        // when one line exceeded the height on its own.
+        if used + rows > height && first < candidates.len() {
+            break;
+        }
+        used += rows;
+        first -= 1;
+    }
+    let lines = &candidates[first..];
     if lines.is_empty() {
         let text = if app.logs.is_empty() {
             "no log lines yet — start the core, and check that stream.logs is on"
@@ -31,7 +57,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "no buffered line matches the filter"
         };
         frame.render_widget(
-            Paragraph::new(text)
+            Paragraph::new(app.tr(text))
                 .style(app.theme.key_label())
                 .wrap(Wrap { trim: true }),
             inner,
@@ -61,16 +87,25 @@ fn title(app: &App) -> String {
     };
     let hidden = app.log_window(0).1;
     let mut parts = vec![
-        "logs".to_owned(),
+        app.tr("logs").to_owned(),
         app.log_level.as_str().to_owned(),
-        follow.to_owned(),
-        format!("{} line(s)", app.logs.len()),
+        app.tr(follow).to_owned(),
+        crate::i18n::message(
+            app.language(),
+            crate::i18n::Message::LogLines(app.logs.len()),
+        ),
     ];
     if hidden > 0 {
-        parts.push(format!("{hidden} new"));
+        parts.push(crate::i18n::message(
+            app.language(),
+            crate::i18n::Message::LogNew(hidden),
+        ));
     }
     if app.logs.dropped() > 0 {
-        parts.push(format!("{} dropped", app.logs.dropped()));
+        parts.push(crate::i18n::message(
+            app.language(),
+            crate::i18n::Message::LogDropped(app.logs.dropped()),
+        ));
     }
     // The filter is reported by the list widget, so it is not repeated here.
     format!(" {} ", parts.join(" · "))

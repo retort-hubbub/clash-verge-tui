@@ -17,6 +17,7 @@
 
 pub mod action;
 pub mod app;
+pub mod i18n;
 pub mod keys;
 pub mod row;
 pub mod run;

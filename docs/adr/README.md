@@ -2,9 +2,9 @@
 
 Each record documents one decision that a maintainer would otherwise have to
 reverse-engineer from the code, together with the alternatives that were
-rejected and what they would have cost. They are numbered, immutable, and
-superseded rather than edited: a record that turns out to be wrong is a useful
-artefact, and rewriting it destroys the reason the decision was made.
+rejected and what they would have cost. Records are numbered. Correct stale
+facts in place; supersede a changed decision with a new record so the original
+reason remains visible.
 
 | # | Decision |
 |---|----------|
@@ -15,7 +15,7 @@ artefact, and rewriting it destroys the reason the decision was made.
 | [0005](0005-pure-state-machine-with-effects.md) | The interface is a pure state machine driven by an effect vocabulary |
 | [0006](0006-one-service-facade.md) | One `Service` facade behind both front ends |
 | [0007](0007-gitflow-and-conventional-commits.md) | GitFlow with Conventional Commits |
-| [0008](0008-control-plane-ownership.md) | The control plane belongs to the application, not to a profile |
+| [0008](0008-control-plane-ownership.md) | Control-plane precedence across settings and profiles |
 | [0009](0009-adversarial-review.md) | Adversarial review, and keeping its counterexamples |
 
 ## Adding a record

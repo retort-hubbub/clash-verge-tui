@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.5.0] - 2026-09-26
+
+### Added
+
+- The TUI accepts mouse clicks on tabs and table rows, and wheel scrolling in
+  tables, logs, and scrollable dialogs. Mouse capture is restored on exit and
+  while an external editor owns the terminal.
+- The TUI supports Simplified Chinese through the saved `ui.language` setting.
+  Tabs visibly show their existing `[1]`–`[9]` direct keys in an accent colour;
+  the tab bar uses compact names when the terminal is narrow.
+
+### Fixed
+
+- Fixed a race condition in core hot reload regression tests by waiting for
+  external-controller socket readiness before probing.
+- Starting the TUI with no controller configured no longer leaves a misleading
+  missing `external-controller` error in the footer.
+- Visiting Proxies, Connections or Rules without a configured controller now
+  shows an empty view instead of the same missing-field error.
+- Restoring an old backup reads its contents before retention pruning can
+  remove it. The safety backup of the replaced state is retained.
+- TUI subscription fallback uses the deployed proxy listener, not the
+  controller endpoint. The TUI's bulk update and launch update select only
+  subscriptions whose interval has elapsed.
+- `core.auto_start` and `update.update_on_start` now run when the TUI launches.
+- TLS controller endpoints use HTTPS and secure WebSockets.
+
+### Changed
+
+- TUI setting labels use persisted setting keys, action labels use action
+  identities, and formatted text uses semantic message identifiers. This keeps
+  different meanings of the same English word separate across languages.
+- Backup copying and retention now live in a dedicated service module, with
+  shared state-file lists and unchanged public import paths.
+- Contributor and architecture documentation now describe the actual I/O
+  boundaries and local GitFlow workflow. CI verifies the committed lockfile
+  and checks all features for documentation and minimum-Rust builds.
+- The user-facing feature summary and limits now live in the README instead
+  of a separate coverage ledger whose TUI/CLI claims had become stale.
+
 ## [0.4.1] - 2026-09-26
 
 ### Fixed
@@ -689,6 +731,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.5.0...develop
+[0.5.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.5.0
 [0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
 [0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
 [0.3.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.1

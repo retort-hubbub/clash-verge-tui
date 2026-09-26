@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/cvt-core", "crates/cvt-tui", "crates/cvt"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 # Not a guess: ratatui 0.30 declares 1.88, and it is the highest floor in the
 # dependency graph. The CI `msrv` job builds the workspace against exactly this
@@ -37,7 +37,7 @@ serde_norway = "0.9.42"
 reqwest = { version = "0.13.5", default-features = false, features = [
     "json", "stream", "rustls", "http2", "gzip", "brotli", "charset",
 ] }
-tokio-tungstenite = "0.30.0"
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 # --- misc ---
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }

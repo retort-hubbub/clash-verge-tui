@@ -29,7 +29,10 @@ pub async fn run(paths: &AppPaths, out: Output) -> Result<()> {
     // the service lives behind a lock inside the executor rather than being
     // cloned.
     let service = Service::open(paths.clone()).context("could not open the application home")?;
-    let theme = Theme::from_settings(service.settings().ui.color);
+    // The setting *and* the flag: `--no-color` and `NO_COLOR` are decided in
+    // `main` and reach every command's output, and the interface is the one
+    // place a user cannot pipe somewhere else.
+    let theme = Theme::from_settings(service.settings().ui.color && out.color());
     let home = paths.home().to_path_buf();
     let executor = Executor::new(service).into_executor();
 

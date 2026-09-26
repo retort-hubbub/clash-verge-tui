@@ -22,10 +22,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|node| row(node, app))
         .collect();
     let groups = app.nodes.items().iter().filter(|row| row.is_group).count();
-    let title = format!(
-        " proxies ({groups} group(s) · {} of {} rows shown) ",
-        app.nodes.len(),
-        app.nodes.total()
+    let title = crate::i18n::message(
+        app.language(),
+        crate::i18n::Message::ProxiesTitle {
+            groups,
+            shown: app.nodes.len(),
+            total: app.nodes.total(),
+        },
     );
     w::list(
         frame,
@@ -73,14 +76,14 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
     };
     let group = node.group.clone().unwrap_or_else(|| "-".to_owned());
     let kind = if node.is_group {
-        node.group_kind_label().to_owned()
+        app.tr(node.group_kind_label()).to_owned()
     } else {
         node.kind.clone()
     };
     let state = if node.active {
-        Cell::from("active").style(theme.ok())
+        Cell::from(app.tr("active")).style(theme.ok())
     } else if !node.alive {
-        Cell::from("down").style(theme.error())
+        Cell::from(app.tr_key(crate::i18n::TextKey::ProxyUnavailable)).style(theme.error())
     } else {
         Cell::from("").style(theme.dim())
     };
@@ -99,23 +102,25 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     match app.nodes.selected_item() {
         Some(node) if node.is_group => {
             rows.push(("group", node.name.clone()));
-            rows.push(("behaviour", node.group_kind_label().to_owned()));
+            rows.push(("behaviour", app.tr(node.group_kind_label()).to_owned()));
             rows.push(("members", node.members.to_string()));
             rows.push((
                 "expanded",
-                if app.is_expanded(&node.name) {
+                app.tr(if app.is_expanded(&node.name) {
                     "yes — Enter collapses it"
                 } else {
                     "no — Enter opens it"
-                }
+                })
                 .to_owned(),
             ));
             rows.push((
                 "pinning",
                 if node.selectable {
-                    "Enter on a member pins it; x clears the choice".to_owned()
+                    app.tr("Enter on a member pins it; x clears the choice")
+                        .to_owned()
                 } else {
-                    "the core picks the member itself; it cannot be pinned".to_owned()
+                    app.tr("the core picks the member itself; it cannot be pinned")
+                        .to_owned()
                 },
             ));
         }
@@ -129,21 +134,25 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             rows.push(("delay", node.delay_label()));
             rows.push((
                 "health",
-                if node.alive { "alive" } else { "not answering" }.to_owned(),
+                app.tr(if node.alive { "alive" } else { "not answering" })
+                    .to_owned(),
             ));
             rows.push((
                 "hint",
-                "Enter pins this node in its group, x lets the group choose again".to_owned(),
+                app.tr("Enter pins this node in its group, x lets the group choose again")
+                    .to_owned(),
             ));
         }
         None => rows.push((
             "hint",
-            "apply a profile or start the core; t tests, T tests the group, a tests everything"
-                .to_owned(),
+            app.tr(
+                "apply a profile or start the core; t tests, T tests the group, a tests everything",
+            )
+            .to_owned(),
         )),
     }
     if app.node_sort != crate::state::SortOrder::Natural {
-        rows.push(("order", app.node_sort.label().to_owned()));
+        rows.push(("order", app.tr(app.node_sort.label()).to_owned()));
     }
-    w::details(frame, area, app.theme, " selection ", &rows);
+    w::details(frame, area, app, " selection ", &rows);
 }

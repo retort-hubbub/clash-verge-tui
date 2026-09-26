@@ -33,9 +33,8 @@
 //!   can: what `mihomo -t` accepts, and what it answers for an out-of-range
 //!   `timeout` — which is the stated reason the settings refuse one.
 //!
-//! Tests named `defect_*` assert what the code claims and are expected to
-//! **fail**. A failing `defect_` test is a finding, not a broken test. Tests
-//! named `pre_fix_*` assert the shape the code *used to* have, on a
+//! `defect_*` names preserve the original findings; all tests now must pass.
+//! Tests named `pre_fix_*` assert the shape the code *used to* have, on a
 //! reconstruction of it, and are there to show a test would have caught it.
 //!
 //! # Where each finding stands
@@ -1204,7 +1203,7 @@ fn defect_4_two_backups_in_one_second_can_share_a_sequence() {
     );
 }
 
-/// CLAIM (`docs/FEATURE-COVERAGE.md`): "Local backup / restore … over the
+/// CLAIM (the former feature coverage table): "Local backup / restore … over the
 /// profiles, the index, the settings and the overrides", reported by
 /// `cvt backup create`.
 ///

@@ -20,10 +20,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .into_iter()
         .map(|profile| row(profile, app))
         .collect();
-    let title = format!(
-        " profiles ({} shown of {}) ",
-        app.profiles.len(),
-        app.profiles.total()
+    let title = crate::i18n::message(
+        app.language(),
+        crate::i18n::Message::ProfilesTitle {
+            shown: app.profiles.len(),
+            total: app.profiles.total(),
+        },
     );
     w::list(
         frame,
@@ -59,7 +61,7 @@ fn row(profile: &ProfileRow, app: &App) -> Row<'static> {
     };
     let mut cells = vec![
         Cell::from(profile.name.clone()).style(name_style),
-        Cell::from(profile.role_label()).style(style),
+        Cell::from(role_label(profile, app)).style(style),
         Cell::from(profile.updated_label(now())).style(app.theme.dim()),
     ];
     cells.push(match profile.quota_label() {
@@ -69,10 +71,14 @@ fn row(profile: &ProfileRow, app: &App) -> Row<'static> {
     Row::new(cells).style(style)
 }
 
+fn role_label(profile: &ProfileRow, app: &App) -> String {
+    crate::i18n::profile_role(app.language(), profile)
+}
+
 /// What will be generated, and everything odd about the selected profile.
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let chain = if app.chain().is_empty() {
-        "base only (no patches are chained)".to_owned()
+        app.tr("base only (no patches are chained)").to_owned()
     } else {
         app.chain().join(" → ")
     };
@@ -85,7 +91,7 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             profile
                 .url
                 .clone()
-                .unwrap_or_else(|| "local document".to_owned()),
+                .unwrap_or_else(|| app.tr("local document").to_owned()),
         ));
         rows.push(("updated", profile.updated_label(now())));
         if let Some(reason) = &profile.unsupported {
@@ -97,10 +103,11 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         rows.push((
             "hint",
-            "Enter switches profile, c chains a patch, p previews".to_owned(),
+            app.tr("Enter switches profile, c chains a patch, p previews")
+                .to_owned(),
         ));
     }
-    w::details(frame, area, app.theme, " chain and selection ", &rows);
+    w::details(frame, area, app, " chain and selection ", &rows);
 }
 
 /// Seconds since the epoch, for the update ages.

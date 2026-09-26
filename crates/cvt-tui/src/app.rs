@@ -1,7 +1,8 @@
 //! The application state machine.
 //!
 //! Three types carry the whole protocol between the interface and the world:
-//! a key press becomes an [`Action`], the machine answers with a list of
+//! a key press becomes an [`Action`] (or a mouse event changes the current
+//! selection), the machine answers with a list of
 //! [`Effect`]s, and the binary crate performs them and reports back with an
 //! [`Event`]. Nothing here opens a file, resolves a name or spawns a process —
 //! that rule is what makes the behaviour a user notices (does `q` really quit
@@ -10,14 +11,15 @@
 //!
 //! ```text
 //! KeyEvent ──▶ Keymap ──▶ Action ──▶ App ──▶ Vec<Effect> ──▶ binary
+//! MouseEvent ────────────────────────┘
 //!                                       ◀── Event::{Data,Done,Failed}
 //! ```
 //!
 //! # Where the decisions live
 //!
-//! [`App::on_event`] is the only entry point. It routes a key through the
-//! overlay first (so a prompt can be typed into), then the key map, then the
-//! dispatcher. The dispatcher is deliberately explicit about every
+//! [`App::on_event`] is the only entry point. It routes input through the
+//! overlay first (so a prompt can be typed into), then keys through the key
+//! map and dispatcher. The dispatcher is deliberately explicit about every
 //! [`Action`]: an arm that cannot do what was asked reports *why* through
 //! [`StatusKind::Warning`] instead of failing silently, because "the key did
 //! nothing" is the worst answer a keyboard-driven program can give.
@@ -26,11 +28,11 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use cvt_core::ReloadMode;
 use cvt_core::mihomo::supervisor::CoreStatus;
 use cvt_core::mihomo::types::{LogLevel, Traffic};
-use cvt_core::settings::Settings;
+use cvt_core::settings::{Language, Settings};
 
 use crate::action::{Action, Screen};
 use crate::keys::Keymap;
@@ -45,13 +47,6 @@ use crate::theme::Theme;
 /// Long enough to read a sentence, short enough that it does not keep covering
 /// the footer. Errors ignore this and stay until something replaces them.
 pub const STATUS_TTL: Duration = Duration::from_secs(4);
-
-/// Rows of chrome between the terminal edge and a list.
-///
-/// Only used to keep the scroll offset sensible; the renderers lay themselves
-/// out properly. A conservative value is better than an exact one, because
-/// guessing too low would scroll the cursor off screen.
-pub const CHROME_ROWS: u16 = 7;
 
 /// How many ticks pass between background polls of the running core.
 pub const POLL_EVERY: u64 = 20;
@@ -74,6 +69,8 @@ pub const POLL_EVERY: u64 = 20;
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    /// Run the enabled launch actions once, after the terminal is ready.
+    Startup,
     /// Restore the terminal and exit. The core keeps running.
     Quit,
     /// Re-read everything a screen shows.
@@ -233,6 +230,7 @@ impl Effect {
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Startup => "startup",
             Self::Quit => "quit",
             Self::Refresh(_) => "refresh",
             Self::LoadProfiles => "load profiles",
@@ -531,6 +529,8 @@ pub enum Done {
 pub enum Event {
     /// A key was pressed.
     Key(KeyEvent),
+    /// A mouse button or wheel moved over the interface.
+    Mouse(MouseEvent),
     /// The frame timer fired.
     Tick,
     /// The terminal changed size.
@@ -764,12 +764,13 @@ const LOG_KEEP_PRESETS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
 /// How long a rotated copy may sit before it is deleted.
 const LOG_DAYS_PRESETS: &[i64] = &[0, 1, 3, 7, 14, 30, 90];
 const LOG_LEVELS: &[&str] = &["silent", "error", "warning", "info", "debug"];
+const LANGUAGES: &[&str] = &["en", "zh-CN"];
 
 /// Every setting the screen offers, with its current value.
 #[must_use]
 pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
     let yes_no = |value: bool| if value { "yes" } else { "no" }.to_owned();
-    vec![
+    let mut rows = vec![
         SettingRow {
             key: "core.binary",
             label: "core binary",
@@ -799,8 +800,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
                 .external_controller
                 .clone()
                 .unwrap_or_default(),
-            help: "where the core's API listens; this wins over every profile, and a \
-                   profile is not allowed to set it",
+            help: "where the core API listens; overrides the base profile's address",
             kind: SettingKind::Text,
         },
         SettingRow {
@@ -831,6 +831,14 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             editable: yes_no(settings.core.rollback_on_failure),
             help: "restore the last snapshot when the core refuses the new one",
             kind: SettingKind::Bool,
+        },
+        SettingRow {
+            key: "ui.language",
+            label: "language",
+            value: settings.ui.language.native_name().to_owned(),
+            editable: settings.ui.language.code().to_owned(),
+            help: "interface language; changes immediately and is saved with settings",
+            kind: SettingKind::Choice { options: LANGUAGES },
         },
         SettingRow {
             key: "ui.refresh_ms",
@@ -991,7 +999,24 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             help: "hand the configuration to the API instead of restarting",
             kind: SettingKind::Bool,
         },
-    ]
+    ];
+    if settings.ui.language == Language::Chinese {
+        for row in &mut rows {
+            if let Some((label, help)) = crate::i18n::setting_text(settings.ui.language, row.key) {
+                row.label = label;
+                row.help = help;
+            }
+            if row.kind == SettingKind::Bool
+                || row.key == "core.secret"
+                || (row.key == "core.binary" && settings.core.binary.is_none())
+                || (row.key == "core.external_controller"
+                    && settings.core.external_controller.is_none())
+            {
+                row.value = crate::i18n::text(settings.ui.language, &row.value).to_owned();
+            }
+        }
+    }
+    rows
 }
 
 /// Move a numeric setting to the next preset, or to the nearest one when the
@@ -1031,6 +1056,10 @@ fn step_choice(current: &str, options: &[&str]) -> Option<String> {
 /// caller opens a prompt for those instead.
 fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
     match key {
+        "ui.language" => {
+            settings.ui.language = settings.ui.language.next();
+            true
+        }
         "core.auto_start" => {
             settings.core.auto_start = !settings.core.auto_start;
             true
@@ -1448,6 +1477,24 @@ pub struct App {
 }
 
 impl App {
+    /// Language currently selected for the interface.
+    #[must_use]
+    pub fn language(&self) -> Language {
+        self.settings.ui.language
+    }
+
+    /// Translate an interface-owned message, preserving unknown text.
+    #[must_use]
+    pub fn tr<'a>(&self, english: &'a str) -> &'a str {
+        crate::i18n::text(self.language(), english)
+    }
+
+    /// Translate a context-specific interface label by its stable identity.
+    #[must_use]
+    pub(crate) fn tr_key(&self, key: crate::i18n::TextKey) -> &'static str {
+        crate::i18n::label(self.language(), key)
+    }
+
     /// A fresh application showing the dashboard, with no data.
     ///
     /// Reads nothing: the settings shown are the defaults until the binary
@@ -1544,7 +1591,7 @@ impl App {
     /// How many rows the current screen can show at once.
     #[must_use]
     pub fn visible_rows(&self) -> usize {
-        usize::from(self.viewport.1.saturating_sub(CHROME_ROWS)).max(1)
+        crate::ui::table_rows_area(self).map_or(1, |area| usize::from(area.height).max(1))
     }
 
     /// How many rules are hidden because they are disabled.
@@ -1597,6 +1644,7 @@ impl App {
     pub fn on_event(&mut self, event: Event) -> Vec<Effect> {
         match event {
             Event::Key(key) => self.on_key(key),
+            Event::Mouse(mouse) => self.on_mouse(mouse),
             Event::Tick => self.on_tick(),
             Event::Resize(width, height) => {
                 self.viewport = (width, height);
@@ -1641,6 +1689,92 @@ impl App {
             Some(action) => self.dispatch(action, false),
             None => Vec::new(),
         }
+    }
+
+    fn on_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        if self.overlay.is_some() {
+            return self.on_overlay_mouse(mouse);
+        }
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(screen) = crate::ui::tab_at(self, mouse.column, mouse.row) {
+                    return self.goto(screen);
+                }
+                let Some(area) = crate::ui::table_rows_area(self) else {
+                    return Vec::new();
+                };
+                if !area.contains(ratatui::layout::Position::new(mouse.column, mouse.row)) {
+                    return Vec::new();
+                }
+                let index =
+                    self.active_table_offset() + usize::from(mouse.row.saturating_sub(area.y));
+                if self.active_rows().is_some_and(|rows| index < rows.len()) {
+                    self.select_table_row(index);
+                }
+                Vec::new()
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if mouse.row > 0 && mouse.row < self.viewport.1.saturating_sub(1) =>
+            {
+                let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                    -3
+                } else {
+                    3
+                };
+                if self.screen == Screen::Logs {
+                    self.scroll_logs(delta);
+                    Vec::new()
+                } else {
+                    self.move_cursor(delta)
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn on_overlay_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        let Some(overlay) = self.overlay.as_mut() else {
+            return Vec::new();
+        };
+        match (overlay, mouse.kind) {
+            (
+                Overlay::Picker {
+                    items, selected, ..
+                },
+                MouseEventKind::Down(MouseButton::Left),
+            ) => {
+                if let Some(index) = crate::ui::picker_item_at(
+                    self.viewport,
+                    items.len(),
+                    *selected,
+                    mouse.column,
+                    mouse.row,
+                ) {
+                    *selected = index;
+                }
+            }
+            (Overlay::Picker { selected, .. }, MouseEventKind::ScrollUp) => {
+                *selected = selected.saturating_sub(3);
+            }
+            (
+                Overlay::Picker {
+                    items, selected, ..
+                },
+                MouseEventKind::ScrollDown,
+            ) => {
+                *selected = selected
+                    .saturating_add(3)
+                    .min(items.len().saturating_sub(1));
+            }
+            (Overlay::Preview { scroll, .. }, MouseEventKind::ScrollUp) => {
+                *scroll = scroll.saturating_sub(3);
+            }
+            (Overlay::Preview { lines, scroll, .. }, MouseEventKind::ScrollDown) => {
+                *scroll = scroll.saturating_add(3).min(lines.len().saturating_sub(1));
+            }
+            _ => {}
+        }
+        Vec::new()
     }
 
     fn on_overlay_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -2012,7 +2146,9 @@ impl App {
             }
             Action::ActivateProfile => self.activate_profile(),
             Action::UpdateProfile => self.update_profile(),
-            Action::UpdateAllProfiles => self.update_all_profiles(),
+            // The executor owns the full index and due calculation; an empty
+            // list requests all due profiles, including rows not yet loaded.
+            Action::UpdateAllProfiles => vec![Effect::UpdateProfiles { uids: Vec::new() }],
             Action::NewProfile => {
                 self.overlay = Some(Overlay::Picker {
                     title: "new profile".to_owned(),
@@ -2207,6 +2343,39 @@ impl App {
         }
     }
 
+    fn active_table_offset(&self) -> usize {
+        match self.screen {
+            Screen::Profiles => self.profiles.offset(),
+            Screen::Proxies => self.nodes.offset(),
+            Screen::Connections => self.connections.offset(),
+            Screen::Rules => self.rules.offset(),
+            Screen::Tests => self.tests.offset(),
+            Screen::Settings => self.settings_rows.offset(),
+            Screen::Home | Screen::Logs | Screen::Help => 0,
+        }
+    }
+
+    fn select_table_row(&mut self, index: usize) {
+        match self.screen {
+            Screen::Profiles => self.profiles.select(index),
+            Screen::Proxies => self.nodes.select(index),
+            Screen::Connections => self.connections.select(index),
+            Screen::Rules => self.rules.select(index),
+            Screen::Tests => self.tests.select(index),
+            Screen::Settings => self.settings_rows.select(index),
+            Screen::Home | Screen::Logs | Screen::Help => return,
+        }
+        self.sync_scroll();
+    }
+
+    fn scroll_logs(&mut self, delta: isize) {
+        let len = self.logs.filtered().len();
+        let end = self.frozen.unwrap_or(len).min(len);
+        let next = end.saturating_add_signed(delta).min(len);
+        self.logs.follow = next == len;
+        self.frozen = if self.logs.follow { None } else { Some(next) };
+    }
+
     fn sync_scroll(&mut self) {
         let height = self.visible_rows();
         if let Some(rows) = self.active_rows_mut() {
@@ -2343,21 +2512,6 @@ impl App {
         vec![Effect::UpdateProfiles {
             uids: vec![row.uid.clone()],
         }]
-    }
-
-    fn update_all_profiles(&mut self) -> Vec<Effect> {
-        let uids: Vec<String> = self
-            .profiles
-            .items()
-            .iter()
-            .filter(|row| row.url.is_some() && row.is_usable())
-            .map(|row| row.uid.clone())
-            .collect();
-        if uids.is_empty() {
-            self.refuse("no remote profile to update");
-            return Vec::new();
-        }
-        vec![Effect::UpdateProfiles { uids }]
     }
 
     fn delete_profile(&mut self) -> Vec<Effect> {
@@ -3094,6 +3248,7 @@ impl App {
                     kind,
                     format!("{updated} profile(s) updated, {failed} failed"),
                 );
+                return vec![Effect::LoadProfiles];
             }
             Done::ChainSaved => self.set_status(StatusKind::Success, "chain saved"),
             Done::ConfigApplied { reload, changed } => match reload {
@@ -3150,6 +3305,7 @@ impl App {
             }
             Done::CoreStarted { pid } => {
                 self.set_status(StatusKind::Success, format!("core started (pid {pid})"));
+                return vec![Effect::Refresh(Screen::Home)];
             }
             Done::CoreStopped => self.set_status(StatusKind::Success, "core stopped"),
             Done::CoreRestarted { pid } => {
@@ -3760,11 +3916,15 @@ mod tests {
     }
 
     #[test]
-    fn update_everything_asks_only_for_the_remote_profiles() {
+    fn update_all_delegates_due_selection_to_the_executor() {
         let mut a = loaded();
         goto(&mut a, Screen::Profiles);
         let effects = press(&mut a, KeyCode::Char('U'));
-        assert_eq!(effects, Vec::new(), "nothing remote is loaded yet");
+        assert_eq!(
+            effects,
+            vec![Effect::UpdateProfiles { uids: Vec::new() }],
+            "the executor checks the full index for due profiles"
+        );
 
         let _ = a.on_event(Event::Data(Data::Profiles(vec![
             ProfileRow::from_item(&PrfItem::local("base", "base"), true, false),
@@ -3773,9 +3933,7 @@ mod tests {
         ])));
         assert_eq!(
             press(&mut a, KeyCode::Char('U')),
-            vec![Effect::UpdateProfiles {
-                uids: vec!["r1".to_owned(), "r2".to_owned()]
-            }]
+            vec![Effect::UpdateProfiles { uids: Vec::new() }]
         );
     }
 
@@ -4299,7 +4457,7 @@ mod tests {
     fn every_setting_row_can_be_cycled_from_the_keyboard() {
         let mut a = loaded();
         goto(&mut a, Screen::Settings);
-        assert_eq!(a.settings_rows.len(), 23);
+        assert_eq!(a.settings_rows.len(), 24);
         a.settings_rows
             .select_by_key("ui.color".to_owned(), |row| row.key.to_owned());
         assert_eq!(press(&mut a, KeyCode::Enter), Vec::new());
@@ -4319,6 +4477,24 @@ mod tests {
         assert_eq!(a.settings.test.concurrency, 64);
         let _ = press(&mut a, KeyCode::Char(' '));
         assert_eq!(a.settings.test.concurrency, 1, "the cycle wraps");
+    }
+
+    #[test]
+    fn changing_language_rebuilds_settings_rows_immediately() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Settings);
+        app.settings_rows
+            .select_by_key("ui.language".to_owned(), |row| row.key.to_owned());
+        let _ = press(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.ui.language, Language::Chinese);
+        assert!(app.settings_dirty);
+        let row = app.settings_rows.selected_item().expect("language row");
+        assert_eq!(row.key, "ui.language");
+        assert_eq!(row.label, "界面语言");
+        assert_eq!(row.value, "简体中文");
+        let _ = press(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.ui.language, Language::English);
+        assert_eq!(app.settings_rows.selected_item().unwrap().label, "language");
     }
 
     #[test]
@@ -4475,11 +4651,133 @@ mod tests {
         goto(&mut a, Screen::Proxies);
         let _ = a.on_event(Event::Resize(120, 40));
         assert_eq!(a.viewport, (120, 40));
-        assert_eq!(a.visible_rows(), usize::from(40 - CHROME_ROWS));
+        assert_eq!(a.visible_rows(), 27);
         // A one-row terminal must still be usable rather than a panic.
         let _ = a.on_event(Event::Resize(1, 1));
         assert_eq!(a.visible_rows(), 1);
         assert_eq!(press(&mut a, KeyCode::PageDown), Vec::new());
+    }
+
+    #[test]
+    fn mouse_selects_tabs_and_visible_rows_without_triggering_actions() {
+        fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
+            Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        }
+        let mut a = loaded();
+        let _ = a.on_event(Event::Resize(120, 40));
+        assert_eq!(
+            a.on_event(mouse(MouseEventKind::Down(MouseButton::Left), 9, 0)),
+            vec![Effect::LoadProfiles]
+        );
+        assert_eq!(a.screen, Screen::Profiles);
+        let area = crate::ui::table_rows_area(&a).unwrap();
+        assert!(
+            a.on_event(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                area.x,
+                area.y + 1
+            ))
+            .is_empty()
+        );
+        assert_eq!(a.profiles.selected_index(), 1);
+        let _ = a.on_event(mouse(MouseEventKind::ScrollUp, area.x, area.y));
+        assert_eq!(a.profiles.selected_index(), 0);
+        let _ = a.on_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            area.x,
+            area.y + 10,
+        ));
+        assert_eq!(
+            a.profiles.selected_index(),
+            0,
+            "blank cells do not select a row"
+        );
+
+        a.overlay = Some(Overlay::Confirm {
+            question: "delete?".to_owned(),
+            action: Action::Quit,
+        });
+        let _ = a.on_event(mouse(MouseEventKind::Down(MouseButton::Left), 2, 0));
+        assert_eq!(a.screen, Screen::Profiles, "a modal blocks tab clicks");
+        assert!(a.overlay.is_some());
+    }
+
+    #[test]
+    fn mouse_wheel_freezes_and_resumes_the_log_window() {
+        let mut a = app();
+        a.screen = Screen::Logs;
+        for index in 0..8 {
+            a.logs.push(LogRow {
+                at: "now".to_owned(),
+                level: "info".to_owned(),
+                message: index.to_string(),
+            });
+        }
+        let wheel = |kind| {
+            Event::Mouse(MouseEvent {
+                kind,
+                column: 2,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let _ = a.on_event(wheel(MouseEventKind::ScrollUp));
+        assert!(!a.logs.follow);
+        assert_eq!(a.log_window(2).1, 3);
+        let _ = a.on_event(wheel(MouseEventKind::ScrollDown));
+        assert!(a.logs.follow);
+        assert_eq!(a.log_window(2).1, 0);
+    }
+
+    #[test]
+    fn mouse_click_uses_the_scrolled_rows_and_the_modal_picker() {
+        let mut a = app();
+        let profiles = (0..40)
+            .map(|index| {
+                ProfileRow::from_item(
+                    &PrfItem::local(format!("p{index}"), format!("profile {index}")),
+                    false,
+                    false,
+                )
+            })
+            .collect();
+        let _ = a.on_event(Event::Data(Data::Profiles(profiles)));
+        a.screen = Screen::Profiles;
+        let _ = a.on_event(Event::Resize(80, 20));
+        a.profiles.select(20);
+        a.sync_scroll();
+        let offset = a.profiles.offset();
+        assert!(offset > 0);
+        let area = crate::ui::table_rows_area(&a).unwrap();
+        let click = |column, row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let _ = a.on_event(click(area.x, area.y));
+        assert_eq!(a.profiles.selected_index(), offset);
+
+        a.overlay = Some(Overlay::Picker {
+            title: "choose".to_owned(),
+            items: vec!["first".to_owned(), "second".to_owned()],
+            selected: 0,
+        });
+        let picker_row = crate::ui::picker_item_at(a.viewport, 2, 0, 0, 0);
+        assert!(picker_row.is_none(), "outside the popup has no choice");
+        let popup = crate::ui::widgets::centered(ratatui::layout::Rect::new(0, 0, 80, 20), 72, 4);
+        let _ = a.on_event(click(popup.x + 1, popup.y + 2));
+        assert!(matches!(
+            a.overlay,
+            Some(Overlay::Picker { selected: 1, .. })
+        ));
     }
 
     // -- navigation ---------------------------------------------------------

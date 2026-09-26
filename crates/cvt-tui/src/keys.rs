@@ -296,7 +296,16 @@ impl Keymap {
     /// twice would spend footer space saying nothing new.
     #[must_use]
     pub fn hints(&self, screen: Screen, limit: usize) -> Vec<(&'static str, &'static str)> {
-        let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+        self.hint_bindings(screen, limit)
+            .into_iter()
+            .map(|(key, action)| (key, action.label()))
+            .collect()
+    }
+
+    /// The footer hints with action identity preserved for localization.
+    #[must_use]
+    pub fn hint_bindings(&self, screen: Screen, limit: usize) -> Vec<(&'static str, &Action)> {
+        let mut out: Vec<(&'static str, &Action)> = Vec::new();
         let mut seen_actions: Vec<&Action> = Vec::new();
         for binding in self.for_screen(screen) {
             // The digit shortcuts collapse into a single "1-9" hint.
@@ -304,10 +313,13 @@ impl Keymap {
                 continue;
             }
             seen_actions.push(&binding.action);
-            let hint = (binding.display, binding.action.label());
+            let hint = (binding.display, &binding.action);
             // Also dedupe by rendered text: two distinct actions that read the
             // same would waste a footer slot saying nothing new.
-            if out.contains(&hint) {
+            if out
+                .iter()
+                .any(|(key, action)| *key == hint.0 && action.label() == hint.1.label())
+            {
                 continue;
             }
             out.push(hint);
@@ -327,6 +339,18 @@ impl Keymap {
             .filter(|b| &b.action == action && !b.display.is_empty())
             .map(|b| b.display)
             .collect();
+        if let Action::Goto(screen) = action {
+            // The footer groups all nine jumps into `1-9`, while the help
+            // screen names the exact key for each destination.
+            keys.retain(|key| *key != "1-9");
+            const DIGITS: &[&str] = &["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+            if let Some(index) = Screen::all()
+                .iter()
+                .position(|candidate| candidate == screen)
+            {
+                keys.push(DIGITS[index]);
+            }
+        }
         keys.dedup();
         keys
     }

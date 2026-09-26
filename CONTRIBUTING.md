@@ -1,95 +1,123 @@
 # Contributing
 
-## Branching model (GitFlow)
+## Development checks
 
-This repository follows [GitFlow](https://nvie.com/posts/a-successful-git-branching-model/).
+Run from the workspace root before merging:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
+RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --all-features --locked
+```
+
+CI runs these checks on Linux and macOS. It also checks all targets with the
+minimum Rust version declared in `Cargo.toml` and audits dependencies with
+`cargo deny check advisories bans licenses sources`. Keep `Cargo.lock` committed;
+use `--locked` for verification so an out-of-date lockfile fails visibly.
+
+The default suite does not start a real mihomo instance. For controller changes,
+run `crates/cvt-core/tests/live_controller.rs` against a disposable core using
+that file's setup instructions. It replaces the core's configuration, so use an
+isolated instance. Record whether live checks ran when reporting validation.
+
+## Branching model (GitFlow)
 
 | Branch | Purpose | Branches from | Merges into |
 |---|---|---|---|
-| `main` | Released, tagged code only | — | — |
-| `develop` | Integration branch; always buildable | `main` | `release/*` |
-| `feature/*` | One feature or fix | `develop` | `develop` |
-| `release/*` | Stabilisation of the next version | `develop` | `main` **and** `develop` |
-| `hotfix/*` | Urgent fix to a shipped version | `main` | `main` **and** `develop` |
-| `support/*` | Long-lived maintenance of an old major | `main` | — |
+| `main` | Released, tagged code | — | — |
+| `develop` | Integration branch | `main` | `release/*` |
+| `feature/*` | One feature, fix or refactor | `develop` | `develop` |
+| `release/*` | Stabilise a version | `develop` | `main` and `develop` |
+| `hotfix/*` | Fix a released version | `main` | `main` and `develop` |
 
-Rules that are enforced by CI or review:
-
-* `main` is **protected**: no direct pushes, no force pushes, linear history.
-* Every change reaches `develop` through a pull request with a green pipeline.
-* Version bumps happen **only** on `release/*` and `hotfix/*` branches, never on
-  `develop`, so that `develop` never needs a merge-back conflict resolution over
-  `Cargo.toml`.
-* Merge commits are preserved on `main` (`--no-ff`) so that a release is a
-  single, revertible unit of history.
-
-### Day-to-day
+Preserve merge commits with `--no-ff` so a feature or release remains identifiable.
+Do not commit feature work directly to `main` or rewrite released history.
+When a hosted remote is available, use pull requests and configure branch
+protection to require CI. In a local-only repository, run the same checks before
+merging; branch protection and pull requests are hosting settings, not guarantees
+made by files in this repository.
 
 ```bash
-git switch develop && git pull
+git switch develop
 git switch -c feature/rule-editor
-# ... work ...
-cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
+# Implement the change and run the development checks above.
+git add <changed-files>
 git commit -m "feat(rules): add a rule editor screen"
-git switch develop && git merge --no-ff feature/rule-editor
+git switch develop
+git merge --no-ff feature/rule-editor
 git branch -d feature/rule-editor
 ```
 
-### Cutting a release
+### Releases
+
+Create `release/X.Y.Z` from `develop`. Update the workspace version, internal
+crate dependency requirements, `Cargo.lock`, and the changelog version section
+and comparison links together. Version bumps belong on release or hotfix
+branches. After validation, merge the branch into both `main` and `develop`,
+and tag the release commit on `main` with `vX.Y.Z`.
+
+Before tagging, build and exercise the release artifact:
 
 ```bash
-git switch -c release/0.2.0 develop
-# bump versions, update CHANGELOG.md, only fixes from here on
-git switch main && git merge --no-ff release/0.2.0
-git tag -a v0.2.0 -m "v0.2.0"
-git switch develop && git merge --no-ff release/0.2.0
+cargo build --release -p cvt --locked
+./target/release/clash-verge-tui --version
+./target/release/clash-verge-tui --home /path/to/disposable-home status
+./target/release/clash-verge-tui --home /path/to/disposable-home
 ```
+
+The status command should report the state of that home; an empty home may have
+no running core. Run the last command in a real terminal and press `q`. Verify
+that the alternate screen closes and the cursor returns. The release profile
+uses LTO, symbol stripping and `panic = "abort"`, which the ordinary test build
+does not exercise. The panic hook must restore the terminal before aborting;
+`Drop` and `catch_unwind` cannot recover from an abort.
 
 ## Commit messages
 
-[Conventional Commits](https://www.conventionalcommits.org/):
+Use [Conventional Commits](https://www.conventionalcommits.org/):
 
-```
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
+```text
+<type>(<optional scope>): <summary>
 ```
 
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`,
-`ci`, `chore`, `revert`. Scopes are crate or area names: `core`, `tui`, `cli`,
-`profiles`, `proxies`, `connections`, `logs`, `rules`, `tests`, `config`.
-
-The subject is imperative, lower-case, and under 72 characters. A commit that
-closes an issue says `Closes #123` in the footer.
+Types include `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`,
+`ci`, `chore` and `revert`. Use a crate or area as the scope, such as `core`,
+`tui`, `cli`, `profiles` or `config`. Keep the subject imperative, lower-case
+and under 72 characters. For a fix, explain the triggering case and why the
+change resolves it. Use `Closes #123` in the footer when there is an issue.
 
 ## Definition of done
 
-A change is complete when **all** of the following hold:
+- The development checks pass; report environment-gated checks separately.
+- Behavior changes have relevant tests. A refactor preserves existing assertions
+  and public behavior; add tests for newly discovered failure cases.
+- Public items have doc comments, and user-visible changes update the relevant
+  documentation and `CHANGELOG.md` under `Unreleased`.
+- Tests use temporary homes and local fixtures. Do not commit subscriptions,
+  credentials, generated logs or review scratch files.
 
-1. `cargo fmt --check` is clean.
-2. `cargo clippy --all-targets --all-features -- -D warnings` is clean.
-3. `cargo test --workspace` passes.
-4. New behaviour has tests; new public items have doc comments (the crate is
-   `#![warn(missing_docs)]`).
-5. User-visible changes update the relevant file in `docs/`.
-6. `CHANGELOG.md` has an entry under `## [Unreleased]`.
+## Architecture and documentation
 
-## Architecture rules
+Dependencies point toward `cvt-core`: the binary uses both libraries, and
+`cvt-tui` uses `cvt-core`. Core code has no terminal dependency and returns values
+or errors instead of printing command output.
 
-The dependency direction is one-way and enforced by review:
+Keep models, validation and document transformations free of I/O. Filesystem,
+network, environment and process access belong in adapters such as `paths`,
+`settings`, `profile::source`, `enhance::pipeline` and `mihomo`, coordinated by
+`Service`. Pass explicit paths to tests. The TUI's `App` and renderers operate on
+state; the terminal loop handles terminal I/O and the binary executes effects.
 
-```
-cvt (binary)  ->  cvt-tui  ->  cvt-core
-```
+Document each fact in the place that owns it:
 
-* `cvt-core` must not depend on `ratatui` or `crossterm`, and must not read
-  environment variables or print to stdout. It takes an [`AppPaths`] and
-  returns values.
-* `cvt-tui` must not spawn processes or open sockets directly; it calls
-  `cvt-core`.
-* The binary crate wires the two together and owns CLI parsing.
+- `README.md`: getting started, user-facing features and limitations.
+- `docs/CLI.md`, `docs/OVERRIDE-FORMAT.md`, `docs/DIAGNOSTICS.md`: detailed reference.
+- `docs/ARCHITECTURE.md`: current module responsibilities and important invariants.
+- `docs/adr/`: reasons for design decisions and their tradeoffs.
+- Tests: executable regressions with the input and expected behavior.
 
-Keeping this boundary is what makes `cvt-core` testable without a terminal and
-reusable from a future GUI.
+Avoid copied feature ledgers, test counts, review-round narratives and temporary
+line-number references. They drift when the implementation changes. Preserve
+historical evidence where it explains a regression, but describe current
+contracts in production comments and user documentation.

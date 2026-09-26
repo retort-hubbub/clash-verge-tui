@@ -6,7 +6,7 @@
 //! * [`run`] takes the real terminal over — raw mode, the alternate screen, a
 //!   panic hook that gives both back — and does not return without restoring
 //!   it, whatever happened;
-//! * [`Session`] is the loop itself, drawing on a generic
+//! * `Session` is the loop itself, drawing on a generic
 //!   [`ratatui::backend::Backend`] and reading a stream of [`Event`]s, so the
 //!   tests below drive it with a `TestBackend`, a scripted input and a fake
 //!   effect executor: no terminal, no core, no clock.
@@ -26,7 +26,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossterm::cursor::Show;
-use crossterm::event::{EventStream, KeyEvent};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, EventStream, KeyEvent, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -159,7 +161,7 @@ impl TerminalScope {
             active: true,
             previous_hook: None,
         };
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen) {
+        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
             scope.suspend();
             return Err(RunError::Terminal(error));
         }
@@ -183,7 +185,7 @@ impl TerminalModes for TerminalScope {
         if enable_raw_mode().is_err() {
             return;
         }
-        if execute!(io::stdout(), EnterAlternateScreen).is_err() {
+        if execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture).is_err() {
             // Half-taken: raw mode without the alternate screen is worse than
             // no interface at all, so it is undone rather than kept.
             let _ = disable_raw_mode();
@@ -210,16 +212,29 @@ impl Drop for TerminalScope {
 /// useful answer to "the restore failed" at this point.
 fn give_the_terminal_back() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
+    let _ = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        Show
+    );
 }
 
 /// Install a hook that restores the terminal before the panic is printed.
 ///
-/// The hook is re-entrancy-guarded twice over. A panic raised *inside* a panic
-/// hook aborts the process, so the restore runs at most once, and it is wrapped
-/// in `catch_unwind` so that even a panic in the terminal calls themselves —
-/// which would otherwise abort — cannot skip it. The previous hook is called
-/// afterwards, so the panic still prints exactly once, where it always did.
+/// The restore is re-entrancy-guarded by a flag, so it runs at most once.
+///
+/// The `catch_unwind` around it is worth stating precisely, because what it
+/// buys depends on the build: **in a build compiled with `panic = "abort"` —
+/// which the release profile is — it catches nothing.** A panic inside the
+/// terminal calls aborts the process there, and the terminal keeps whatever
+/// state it had reached; the guard only helps a build that unwinds. That is a
+/// deliberate trade rather than an oversight: `abort` buys a smaller binary and
+/// a shorter path through every panic, and the failure it leaves uncovered is a
+/// panic *inside* the restore, which needs the terminal to have failed already.
+///
+/// The previous hook is called afterwards, so the panic still prints exactly
+/// once, where it always did.
 fn install_panic_hook() -> PanicHook {
     let previous = std::panic::take_hook();
     // Two owners of the previous hook are needed: the closure that chains to
@@ -332,6 +347,7 @@ where
             .size()
             .map_err(|e| RunError::Terminal(io::Error::other(e)))?;
         self.deliver(Event::Resize(size.width, size.height)).await?;
+        self.perform(vec![Effect::Startup]).await?;
         if let Some(key) = refresh_key(&self.app) {
             self.deliver(Event::Key(key)).await?;
         }
@@ -422,11 +438,20 @@ fn terminal_input() -> impl Stream<Item = Event> {
     EventStream::new().filter_map(|event| async move {
         match event {
             Ok(crossterm::event::Event::Key(key)) => Some(Event::Key(key)),
+            Ok(crossterm::event::Event::Mouse(mouse))
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::Down(MouseButton::Left)
+                        | MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                ) =>
+            {
+                Some(Event::Mouse(mouse))
+            }
             Ok(crossterm::event::Event::Resize(width, height)) => {
                 Some(Event::Resize(width, height))
             }
-            // Mouse, focus and paste events have no meaning for this
-            // interface; dropping them here keeps `Event` at six variants.
+            // Focus and paste events have no meaning for this interface.
             _ => None,
         }
     })
@@ -612,6 +637,7 @@ mod tests {
             .await
             .unwrap();
         assert!(app.is_quit(), "`q` has to end the loop");
+        assert!(fake.asked().contains(&Effect::Startup));
         assert!(
             fake.asked()
                 .contains(&Effect::Refresh(crate::action::Screen::Home)),
@@ -698,7 +724,7 @@ mod tests {
         let first_row: String = (0..buffer.area().width)
             .map(|x| buffer[(x, 0)].symbol())
             .collect();
-        assert!(first_row.contains("Home"), "{first_row:?}");
+        assert!(first_row.contains("[1]Hm"), "{first_row:?}");
     }
 
     #[tokio::test]

@@ -47,8 +47,9 @@ pub struct CoreSettings {
     /// The control plane has to be settable from somewhere that a subscription
     /// update cannot overwrite, and a profile is exactly the wrong place for
     /// it: the base document is replaced wholesale whenever the subscription is
-    /// refreshed. When this is set it wins over every profile, and profiles are
-    /// not allowed to declare a control plane at all — see
+    /// refreshed. When this is set it wins over every profile. A base profile
+    /// may supply an address when this setting is absent, while enhancement
+    /// profiles cannot change it — see
     /// [`crate::enhance::pipeline::CONTROL_PLANE`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_controller: Option<String>,
@@ -73,10 +74,53 @@ impl Default for CoreSettings {
     }
 }
 
+/// Supported terminal interface languages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Language {
+    /// English interface text.
+    #[default]
+    #[serde(rename = "en")]
+    English,
+    /// Simplified Chinese interface text.
+    #[serde(rename = "zh-CN", alias = "zh")]
+    Chinese,
+}
+
+impl Language {
+    /// Stable value stored in `cvt.yaml`.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Chinese => "zh-CN",
+        }
+    }
+
+    /// Name displayed in the language's own writing system.
+    #[must_use]
+    pub const fn native_name(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::Chinese => "简体中文",
+        }
+    }
+
+    /// The other available language.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::English => Self::Chinese,
+            Self::Chinese => Self::English,
+        }
+    }
+}
+
 /// Terminal presentation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiSettings {
+    /// Language of the terminal interface. CLI output remains machine stable.
+    pub language: Language,
     /// Frame interval for redraws, in milliseconds.
     pub refresh_ms: u64,
     /// Minimum log level shown in the logs pane, and requested from the core.
@@ -90,6 +134,7 @@ pub struct UiSettings {
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
+            language: Language::default(),
             refresh_ms: 1000,
             log_level: LogLevel::Info,
             show_footer: true,
@@ -616,6 +661,25 @@ mod tests {
         let (_d, p) = paths();
         std::fs::write(p.settings_file(), "ui:\n  referesh_ms: 500\n").unwrap();
         assert!(Settings::load(&p).is_err());
+    }
+
+    #[test]
+    fn language_defaults_for_old_files_and_survives_a_save() {
+        let (_d, paths) = paths();
+        std::fs::write(paths.settings_file(), "ui:\n  color: false\n").unwrap();
+        let mut settings = Settings::load(&paths).unwrap();
+        assert_eq!(settings.ui.language, Language::English);
+        settings.ui.language = Language::Chinese;
+        settings.save(&paths).unwrap();
+        assert_eq!(
+            Settings::load(&paths).unwrap().ui.language,
+            Language::Chinese
+        );
+        assert!(
+            std::fs::read_to_string(paths.settings_file())
+                .unwrap()
+                .contains("zh-CN")
+        );
     }
 
     #[test]

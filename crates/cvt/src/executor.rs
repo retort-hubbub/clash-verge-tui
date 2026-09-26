@@ -640,9 +640,6 @@ impl Executor {
     /// this starts on the first refresh and is then left alone: starting it
     /// again on every tick would open a new WebSocket every refresh interval.
     fn start_streaming(&self, sink: &EventSink) {
-        if self.streaming.swap(true, Ordering::SeqCst) {
-            return;
-        }
         let level = self.with_service(|service| service.settings().ui.log_level);
         let endpoint = self.with_service(|service| service.endpoint().ok().flatten());
         let Some(endpoint) = endpoint else {
@@ -651,8 +648,12 @@ impl Executor {
             tracing::debug!("no core endpoint yet, so no live stream");
             return;
         };
+        if self.streaming.swap(true, Ordering::SeqCst) {
+            return;
+        }
 
         let sink = sink.clone();
+        let streaming = Arc::clone(&self.streaming);
         tokio::spawn(async move {
             let options = Options::new(Selection {
                 traffic: true,
@@ -666,6 +667,7 @@ impl Executor {
                 Ok(stream) => stream,
                 Err(error) => {
                     let _ = sink.send(Event::Failed(error.short()));
+                    streaming.store(false, Ordering::SeqCst);
                     return;
                 }
             };
@@ -694,6 +696,7 @@ impl Executor {
                     break;
                 }
             }
+            streaming.store(false, Ordering::SeqCst);
         });
     }
 
@@ -790,7 +793,7 @@ impl Executor {
 /// The fetcher is built with the core's own address, which is what lets an
 /// update succeed on a machine whose only route out is the core itself.
 async fn update_profiles(service: Arc<Mutex<Service>>, uids: Vec<String>, sink: &EventSink) {
-    let (proxy, mut store, targets) = {
+    let (proxy, store, targets) = {
         let guard = service
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -820,17 +823,24 @@ async fn update_profiles(service: Arc<Mutex<Service>>, uids: Vec<String>, sink: 
 
     let (mut updated, mut failed) = (0usize, 0usize);
     for uid in targets {
-        match fetcher.update(&mut store, &uid).await {
+        let result = match fetcher.prepare(&store, &uid).await {
+            Ok(prepared) => {
+                let guard = service
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard
+                    .store()
+                    .and_then(|mut current| prepared.commit(&mut current))
+            }
+            Err(error) => Err(error),
+        };
+        match result {
             Ok(_) => updated += 1,
             Err(error) => {
                 tracing::debug!(profile = %uid, error = %error, "update failed");
                 failed += 1;
             }
         }
-    }
-    if let Err(error) = store.save() {
-        let _ = sink.send(Event::Failed(error.short()));
-        return;
     }
     let _ = sink.send(Event::Done(Done::ProfilesUpdated { updated, failed }));
 }

@@ -74,6 +74,8 @@ pub const POLL_EVERY: u64 = 20;
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    /// Run the enabled launch actions once, after the terminal is ready.
+    Startup,
     /// Restore the terminal and exit. The core keeps running.
     Quit,
     /// Re-read everything a screen shows.
@@ -233,6 +235,7 @@ impl Effect {
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Startup => "startup",
             Self::Quit => "quit",
             Self::Refresh(_) => "refresh",
             Self::LoadProfiles => "load profiles",
@@ -2012,7 +2015,9 @@ impl App {
             }
             Action::ActivateProfile => self.activate_profile(),
             Action::UpdateProfile => self.update_profile(),
-            Action::UpdateAllProfiles => self.update_all_profiles(),
+            // The executor owns the full index and due calculation; an empty
+            // list requests all due profiles, including rows not yet loaded.
+            Action::UpdateAllProfiles => vec![Effect::UpdateProfiles { uids: Vec::new() }],
             Action::NewProfile => {
                 self.overlay = Some(Overlay::Picker {
                     title: "new profile".to_owned(),
@@ -2343,21 +2348,6 @@ impl App {
         vec![Effect::UpdateProfiles {
             uids: vec![row.uid.clone()],
         }]
-    }
-
-    fn update_all_profiles(&mut self) -> Vec<Effect> {
-        let uids: Vec<String> = self
-            .profiles
-            .items()
-            .iter()
-            .filter(|row| row.url.is_some() && row.is_usable())
-            .map(|row| row.uid.clone())
-            .collect();
-        if uids.is_empty() {
-            self.refuse("no remote profile to update");
-            return Vec::new();
-        }
-        vec![Effect::UpdateProfiles { uids }]
     }
 
     fn delete_profile(&mut self) -> Vec<Effect> {
@@ -3094,6 +3084,7 @@ impl App {
                     kind,
                     format!("{updated} profile(s) updated, {failed} failed"),
                 );
+                return vec![Effect::LoadProfiles];
             }
             Done::ChainSaved => self.set_status(StatusKind::Success, "chain saved"),
             Done::ConfigApplied { reload, changed } => match reload {
@@ -3150,6 +3141,7 @@ impl App {
             }
             Done::CoreStarted { pid } => {
                 self.set_status(StatusKind::Success, format!("core started (pid {pid})"));
+                return vec![Effect::Refresh(Screen::Home)];
             }
             Done::CoreStopped => self.set_status(StatusKind::Success, "core stopped"),
             Done::CoreRestarted { pid } => {
@@ -3760,11 +3752,15 @@ mod tests {
     }
 
     #[test]
-    fn update_everything_asks_only_for_the_remote_profiles() {
+    fn update_all_delegates_due_selection_to_the_executor() {
         let mut a = loaded();
         goto(&mut a, Screen::Profiles);
         let effects = press(&mut a, KeyCode::Char('U'));
-        assert_eq!(effects, Vec::new(), "nothing remote is loaded yet");
+        assert_eq!(
+            effects,
+            vec![Effect::UpdateProfiles { uids: Vec::new() }],
+            "the executor checks the full index for due profiles"
+        );
 
         let _ = a.on_event(Event::Data(Data::Profiles(vec![
             ProfileRow::from_item(&PrfItem::local("base", "base"), true, false),
@@ -3773,9 +3769,7 @@ mod tests {
         ])));
         assert_eq!(
             press(&mut a, KeyCode::Char('U')),
-            vec![Effect::UpdateProfiles {
-                uids: vec!["r1".to_owned(), "r2".to_owned()]
-            }]
+            vec![Effect::UpdateProfiles { uids: Vec::new() }]
         );
     }
 

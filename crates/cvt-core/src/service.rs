@@ -704,6 +704,19 @@ impl Service {
         )
     }
 
+    /// The deployed core's local HTTP-capable proxy listener, for subscription
+    /// fallback. The controller port is a different service; a SOCKS-only port
+    /// cannot be passed to the HTTP proxy client.
+    #[must_use]
+    pub fn proxy_addr(&self) -> Option<String> {
+        let text = self.paths.read(&self.paths.runtime_config()).ok()?;
+        let config = Config::from_yaml(&text).ok()?;
+        config
+            .mixed_port()
+            .or_else(|| config.port())
+            .map(|port| format!("127.0.0.1:{port}"))
+    }
+
     /// Generate a runtime configuration without writing anything.
     ///
     /// # Errors
@@ -1550,6 +1563,27 @@ rules:
         let endpoint = f.service.endpoint().unwrap().unwrap();
         assert_eq!(endpoint, Endpoint::tcp("127.0.0.1:9090", None));
         assert!(endpoint.is_loopback());
+    }
+
+    #[test]
+    fn subscription_fallback_uses_the_proxy_listener_not_the_controller() {
+        let f = fixture();
+        f.seed();
+        assert_eq!(f.service.proxy_addr(), None, "only deployed ports count");
+        let outcome = f.service.generate().unwrap();
+        f.service.pipeline().commit(&outcome, false).unwrap();
+        assert_eq!(f.service.proxy_addr().as_deref(), Some("127.0.0.1:7890"));
+        assert_eq!(
+            f.service.endpoint().unwrap().unwrap(),
+            Endpoint::tcp("127.0.0.1:9090", None)
+        );
+
+        std::fs::write(
+            f.service.paths().runtime_config(),
+            "socks-port: 7891\nexternal-controller: 127.0.0.1:9090\n",
+        )
+        .unwrap();
+        assert_eq!(f.service.proxy_addr(), None, "SOCKS is not an HTTP proxy");
     }
 
     #[test]

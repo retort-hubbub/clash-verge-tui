@@ -340,6 +340,7 @@ where
             .size()
             .map_err(|e| RunError::Terminal(io::Error::other(e)))?;
         self.deliver(Event::Resize(size.width, size.height)).await?;
+        self.perform(vec![Effect::Startup]).await?;
         if let Some(key) = refresh_key(&self.app) {
             self.deliver(Event::Key(key)).await?;
         }
@@ -620,6 +621,7 @@ mod tests {
             .await
             .unwrap();
         assert!(app.is_quit(), "`q` has to end the loop");
+        assert!(fake.asked().contains(&Effect::Startup));
         assert!(
             fake.asked()
                 .contains(&Effect::Refresh(crate::action::Screen::Home)),

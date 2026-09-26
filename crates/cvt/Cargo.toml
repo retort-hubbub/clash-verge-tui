@@ -14,6 +14,7 @@ cvt-core = { path = "../cvt-core", version = "0.4.1" }
 cvt-tui = { path = "../cvt-tui", version = "0.4.1" }
 anyhow.workspace = true
 clap.workspace = true
+chrono.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -31,7 +31,7 @@ use cvt_core::mihomo::client::Client;
 use cvt_core::mihomo::stream::{Event as StreamEvent, Options, Selection, Stream};
 use cvt_core::mihomo::types::{ConfigPatch, ProxyView};
 use cvt_core::profile::item::{PrfItem, ProfileType};
-use cvt_core::profile::source::SubscriptionFetcher;
+use cvt_core::profile::source::{SubscriptionFetcher, is_due};
 use cvt_core::settings::TestSettings;
 use cvt_core::validate::Severity;
 use cvt_core::{AppPaths, Error, Service};
@@ -150,6 +150,46 @@ impl Executor {
         match effect {
             // The loop stops on `App::is_quit`; there is nothing to perform.
             Effect::Quit => {}
+
+            Effect::Startup => {
+                let (auto_start, update_on_start) = self.with_service(|service| {
+                    (
+                        service.settings().core.auto_start,
+                        service.settings().update.update_on_start,
+                    )
+                });
+                if auto_start || update_on_start {
+                    let service = Arc::clone(&self.service);
+                    let sink = sink.clone();
+                    tokio::spawn(async move {
+                        if auto_start {
+                            let start_service = Arc::clone(&service);
+                            let started = tokio::task::spawn_blocking(move || {
+                                let guard = start_service
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                if guard.core_status().is_running() {
+                                    Ok(None)
+                                } else {
+                                    guard.start_core().map(Some)
+                                }
+                            })
+                            .await;
+                            match started {
+                                Ok(Ok(Some(pid))) => {
+                                    Self::emit(&sink, Event::Done(Done::CoreStarted { pid }));
+                                }
+                                Ok(Ok(None)) => {}
+                                Ok(Err(error)) => Self::emit(&sink, Event::Failed(error.short())),
+                                Err(error) => Self::emit(&sink, Event::Failed(error.to_string())),
+                            }
+                        }
+                        if update_on_start {
+                            update_profiles(service, Vec::new(), &sink).await;
+                        }
+                    });
+                }
+            }
 
             // ---- refresh, which fans out per screen
             Effect::Refresh(screen) => self.refresh(screen, sink),
@@ -744,8 +784,8 @@ impl Executor {
     }
 }
 
-/// Fresh copies of the given profiles, or of every remote one when the list is
-/// empty.
+/// Fresh copies of the given profiles, or of every due remote one when the
+/// list is empty.
 ///
 /// The fetcher is built with the core's own address, which is what lets an
 /// update succeed on a machine whose only route out is the core itself.
@@ -754,22 +794,13 @@ async fn update_profiles(service: Arc<Mutex<Service>>, uids: Vec<String>, sink: 
         let guard = service
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let proxy = guard
-            .endpoint()
-            .ok()
-            .flatten()
-            .map(|endpoint| endpoint.describe());
+        let proxy = guard.proxy_addr();
         let Ok(store) = guard.store() else {
             let _ = sink.send(Event::Failed("could not read the profile index".to_owned()));
             return;
         };
         let targets: Vec<String> = if uids.is_empty() {
-            store
-                .items()
-                .iter()
-                .filter(|item| item.kind == ProfileType::Remote)
-                .map(|item| item.uid.clone())
-                .collect()
+            due_remote_uids(store.items(), chrono::Utc::now().timestamp())
         } else {
             uids
         };
@@ -802,6 +833,14 @@ async fn update_profiles(service: Arc<Mutex<Service>>, uids: Vec<String>, sink: 
         return;
     }
     let _ = sink.send(Event::Done(Done::ProfilesUpdated { updated, failed }));
+}
+
+fn due_remote_uids(items: &[PrfItem], now: i64) -> Vec<String> {
+    items
+        .iter()
+        .filter(|item| item.kind == ProfileType::Remote && is_due(item, now))
+        .map(|item| item.uid.clone())
+        .collect()
 }
 
 /// Measure one target.
@@ -927,6 +966,35 @@ fn open_editor(path: &std::path::Path) -> Result<(), Error> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn all_due_selects_only_remote_profiles_whose_interval_elapsed() {
+        let now = 1_000_000;
+        let mut due = PrfItem::remote("due", "due", "https://example.com/a");
+        due.option.allow_auto_update = Some(true);
+        due.option.update_interval = Some(60);
+        due.updated = Some(now - 3_600);
+
+        let mut fresh = PrfItem::remote("fresh", "fresh", "https://example.com/b");
+        fresh.option.allow_auto_update = Some(true);
+        fresh.option.update_interval = Some(60);
+        fresh.updated = Some(now - 1);
+
+        let mut disabled = PrfItem::remote("disabled", "disabled", "https://example.com/c");
+        disabled.option.allow_auto_update = Some(false);
+        disabled.option.update_interval = Some(60);
+
+        let mut local = PrfItem::local("local", "local");
+        local.option.allow_auto_update = Some(true);
+        local.option.update_interval = Some(60);
+
+        assert_eq!(
+            due_remote_uids(&[fresh, disabled, local, due], now),
+            vec!["due"]
+        );
+    }
+
     /// Every effect the interface can ask for is executed, and every arm names
     /// an effect that exists.
     ///

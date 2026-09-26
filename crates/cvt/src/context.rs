@@ -12,7 +12,6 @@
 
 use anyhow::{Context as _, Result};
 use cvt_core::mihomo::client::Client;
-use cvt_core::model::config::Config;
 use cvt_core::profile::source::SubscriptionFetcher;
 use cvt_core::profile::store::ProfileStore;
 use cvt_core::{AppPaths, Error, Service, Settings};
@@ -143,10 +142,6 @@ impl Ctx {
     /// with.
     #[must_use]
     pub fn mixed_proxy_addr(&self) -> Option<String> {
-        let text = self.paths().read(&self.paths().runtime_config()).ok()?;
-        let config = Config::from_yaml(&text).ok()?;
-        config
-            .effective_proxy_port()
-            .map(|port| format!("127.0.0.1:{port}"))
+        self.service.proxy_addr()
     }
 }

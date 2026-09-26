@@ -215,11 +215,19 @@ fn give_the_terminal_back() {
 
 /// Install a hook that restores the terminal before the panic is printed.
 ///
-/// The hook is re-entrancy-guarded twice over. A panic raised *inside* a panic
-/// hook aborts the process, so the restore runs at most once, and it is wrapped
-/// in `catch_unwind` so that even a panic in the terminal calls themselves —
-/// which would otherwise abort — cannot skip it. The previous hook is called
-/// afterwards, so the panic still prints exactly once, where it always did.
+/// The restore is re-entrancy-guarded by a flag, so it runs at most once.
+///
+/// The `catch_unwind` around it is worth stating precisely, because what it
+/// buys depends on the build: **in a build compiled with `panic = "abort"` —
+/// which the release profile is — it catches nothing.** A panic inside the
+/// terminal calls aborts the process there, and the terminal keeps whatever
+/// state it had reached; the guard only helps a build that unwinds. That is a
+/// deliberate trade rather than an oversight: `abort` buys a smaller binary and
+/// a shorter path through every panic, and the failure it leaves uncovered is a
+/// panic *inside* the restore, which needs the terminal to have failed already.
+///
+/// The previous hook is called afterwards, so the panic still prints exactly
+/// once, where it always did.
 fn install_panic_hook() -> PanicHook {
     let previous = std::panic::take_hook();
     // Two owners of the previous hook are needed: the closure that chains to

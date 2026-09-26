@@ -1,5 +1,34 @@
 # Contributing
 
+## What a release is checked against
+
+`cargo test --workspace` and the two gates above run against the *debug*
+profile. The release profile changes three things that matter — `lto`, `strip`
+and `panic = "abort"` — and none of them is exercised by a debug run.
+
+Before tagging, build the artifact and drive it:
+
+```console
+$ cargo build --release -p cvt
+$ ./target/release/clash-verge-tui --version
+$ ./target/release/clash-verge-tui status
+```
+
+and then give it a real terminal, which is the part no test does:
+
+```console
+$ ./target/release/clash-verge-tui      # start it, press q
+```
+
+The terminal must come back — the alternate screen left, the cursor restored.
+That path is `TerminalScope`'s `Drop` plus the panic hook, and `panic = "abort"`
+is the profile setting that decides whether the hook's `catch_unwind` can do
+anything at all (it cannot, under `abort`; see the note on
+`install_panic_hook`).
+
+Recorded because it is the check most likely to be skipped: everything green
+under `cargo test` says nothing about a binary compiled differently.
+
 ## Branching model (GitFlow)
 
 This repository follows [GitFlow](https://nvie.com/posts/a-successful-git-branching-model/).

@@ -881,40 +881,26 @@ impl Service {
     ///
     /// # Errors
     /// [`Error::Io`] when a file cannot be read or written, and
-    /// [`Error::InvalidValue`] when two backups would land in the same second.
+    /// [`Error::InvalidValue`] when the backup directory is unsafe or all names
+    /// for the current second are taken.
     pub fn backup(&self) -> Result<PathBuf> {
-        // Named by the second it was taken, and given a suffix when that
-        // second is taken. Refusing the second one instead — which is what
-        // this did first — made `restore` impossible to use directly after a
-        // backup, because restore takes a safety backup first and the two
-        // land in the same second whenever a person is doing it by hand.
-        // *Reserved*, not merely chosen. `exists()` and then a write is a race
-        // two backups in the same second both win: both saw the same free name,
-        // both wrote into one directory, and each pruned around a directory the
-        // other was still filling. `create_dir` fails when the name is taken,
-        // and that failure is the lock.
-        let destination = self.reserve_backup_path(Utc::now().timestamp())?;
-        if let Err(error) = copy_state(self.paths.home(), &destination) {
-            // The reservation *created* the directory, so a copy that fails
-            // leaves one behind that `backups()` lists, `looks_like_a_backup`
-            // admits and the keep-limit counts — the newest backup of a home it
-            // never finished copying, offered for restore by `restore`.
-            let _ = std::fs::remove_dir_all(&destination);
-            return Err(error);
-        }
-        // Pruned around the new one, never through it. Ordering by timestamp is
-        // right — the newest backups are the ones worth keeping — but it is the
-        // *filesystem's* timestamps, and a directory holding five entries named
-        // later than now (a clock that ran fast, a restored archive, a backup
-        // copied from another machine) puts the backup just taken at the end of
-        // the list. Pruning then deletes it and returns a path to a directory
-        // that no longer exists, which is what `restore` builds its safety copy
-        // with.
+        let destination = self.create_backup()?;
         self.prune_backups_keeping(BACKUP_LIMIT, &destination)?;
         Ok(destination)
     }
 
-    /// A backup name that is not already taken.
+    /// Create a complete backup without pruning any existing restore source.
+    /// Callers prune after they have finished using the previous backups.
+    fn create_backup(&self) -> Result<PathBuf> {
+        let destination = self.reserve_backup_path(Utc::now().timestamp())?;
+        if let Err(error) = copy_state(self.paths.home(), &destination) {
+            // Do not offer an incomplete backup for a future restore.
+            let _ = std::fs::remove_dir_all(&destination);
+            return Err(error);
+        }
+        Ok(destination)
+    }
+
     /// A backup name that is not already taken, *created* so that it stays
     /// that way.
     ///
@@ -1092,8 +1078,11 @@ impl Service {
         // that has already written half of the backup leaves the home as two
         // configurations at once, with nothing saying so.
         check_copy(from, self.paths.home())?;
-        let safety = self.backup()?;
+        let safety = self.create_backup()?;
         copy_state(from, self.paths.home())?;
+        // Creating the safety copy can exceed the retention limit. Prune only
+        // after reading the source: it may be the oldest backup in this home.
+        self.prune_backups_keeping(BACKUP_LIMIT, &safety)?;
         Ok(safety)
     }
 
@@ -1779,6 +1768,29 @@ rules:
             "the restore said the state it replaced was kept at {}, and it is not there",
             safety.display()
         );
+    }
+
+    #[test]
+    fn restoring_the_oldest_backup_reads_it_before_pruning() {
+        let f = fixture();
+        f.service.save_settings().unwrap();
+        let before = std::fs::read(f.service.paths().settings_file()).unwrap();
+        let saved = "ui:\n  refresh_ms: 250\n";
+        for stamp in 1..=BACKUP_LIMIT {
+            let path = f.service.paths().backups_dir().join(stamp.to_string());
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("cvt.yaml"), saved).unwrap();
+        }
+
+        let source = f.service.paths().backups_dir().join("1");
+        let safety = f.service.restore(&source).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(f.service.paths().settings_file()).unwrap(),
+            saved,
+            "creating the safety backup must not prune the restore source before it is read"
+        );
+        assert_eq!(std::fs::read(safety.join("cvt.yaml")).unwrap(), before);
+        assert_eq!(f.service.backups().unwrap().len(), BACKUP_LIMIT);
     }
 
     /// A core that answers nothing must not hold an apply for twice its budget.

@@ -450,6 +450,10 @@ pub enum Done {
     ProfileCreated {
         /// Its name.
         name: String,
+        /// Its UID, if known.
+        uid: Option<String>,
+        /// Whether it was created from a URL.
+        is_remote: bool,
     },
     /// Profiles were imported from another installation.
     ProfilesImported {
@@ -505,7 +509,10 @@ pub enum Done {
         pid: u32,
     },
     /// A newer core was installed.
-    CoreUpgraded,
+    CoreUpgraded {
+        /// The new version string.
+        version: String,
+    },
     /// The geo databases were refreshed.
     GeoUpdated,
     /// The fake-IP and DNS caches were cleared.
@@ -672,6 +679,15 @@ pub enum Overlay {
         /// First line on screen.
         scroll: usize,
     },
+    /// A modal displaying a full status or error message.
+    Message {
+        /// Popup title.
+        title: String,
+        /// Full message text.
+        text: String,
+        /// Message severity.
+        kind: StatusKind,
+    },
 }
 
 impl Overlay {
@@ -681,7 +697,9 @@ impl Overlay {
         match self {
             Self::Prompt { label, .. } => label.clone(),
             Self::Confirm { question, .. } => question.clone(),
-            Self::Picker { title, .. } | Self::Preview { title, .. } => title.clone(),
+            Self::Picker { title, .. }
+            | Self::Preview { title, .. }
+            | Self::Message { title, .. } => title.clone(),
         }
     }
 }
@@ -830,6 +848,14 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             value: yes_no(settings.core.rollback_on_failure),
             editable: yes_no(settings.core.rollback_on_failure),
             help: "restore the last snapshot when the core refuses the new one",
+            kind: SettingKind::Bool,
+        },
+        SettingRow {
+            key: "core.use_managed",
+            label: "use managed core",
+            value: yes_no(settings.core.use_managed),
+            editable: yes_no(settings.core.use_managed),
+            help: "use TUI-managed core in ~/.config/clash-verge-tui/core/mihomo instead of local/system core",
             kind: SettingKind::Bool,
         },
         SettingRow {
@@ -1066,6 +1092,10 @@ fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
         }
         "core.rollback_on_failure" => {
             settings.core.rollback_on_failure = !settings.core.rollback_on_failure;
+            true
+        }
+        "core.use_managed" => {
+            settings.core.use_managed = !settings.core.use_managed;
             true
         }
         "ui.refresh_ms" => {
@@ -1463,6 +1493,7 @@ pub struct App {
     /// Whether disabled rules are listed.
     pub show_disabled_rules: bool,
     status: Option<Status>,
+    last_status: Option<Status>,
     ticks: u64,
     quit: bool,
     chain: Vec<String>,
@@ -1489,6 +1520,12 @@ impl App {
         crate::i18n::text(self.language(), english)
     }
 
+    /// Format a status message, translating dynamic patterns in the chosen language.
+    #[must_use]
+    pub fn format_status_text(&self, text: &str) -> String {
+        crate::i18n::format_status(self.language(), text)
+    }
+
     /// Translate a context-specific interface label by its stable identity.
     #[must_use]
     pub(crate) fn tr_key(&self, key: crate::i18n::TextKey) -> &'static str {
@@ -1497,11 +1534,12 @@ impl App {
 
     /// A fresh application showing the dashboard, with no data.
     ///
-    /// Reads nothing: the settings shown are the defaults until the binary
-    /// answers the first refresh with [`Data::Settings`].
+    /// The settings shown are loaded from the home directory, or the defaults
+    /// if not present, and updated whenever [`Data::Settings`] arrives.
     #[must_use]
     pub fn new(home: PathBuf, theme: Theme) -> Self {
-        let settings = Settings::default();
+        let settings =
+            cvt_core::Settings::load(&cvt_core::AppPaths::new(&home)).unwrap_or_default();
         let log_level = settings.ui.log_level;
         let settings_rows = Table::from_items(setting_rows(&settings));
         let mut app = Self {
@@ -1529,6 +1567,7 @@ impl App {
             node_sort: SortOrder::Natural,
             show_disabled_rules: false,
             status: None,
+            last_status: None,
             ticks: 0,
             quit: false,
             chain: Vec::new(),
@@ -1559,6 +1598,12 @@ impl App {
         self.status
             .as_ref()
             .filter(|s| !s.is_expired_at(Instant::now()))
+    }
+
+    /// The most recent status message shown, even if expired.
+    #[must_use]
+    pub fn last_status(&self) -> Option<&Status> {
+        self.last_status.as_ref()
     }
 
     /// The explicit patch chain, in application order.
@@ -1697,6 +1742,9 @@ impl App {
         }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                if mouse.row == self.viewport.1.saturating_sub(1) {
+                    return self.show_last_message();
+                }
                 if let Some(screen) = crate::ui::tab_at(self, mouse.column, mouse.row) {
                     return self.goto(screen);
                 }
@@ -1737,6 +1785,9 @@ impl App {
             return Vec::new();
         };
         match (overlay, mouse.kind) {
+            (Overlay::Message { .. }, MouseEventKind::Down(MouseButton::Left)) => {
+                self.overlay = None;
+            }
             (
                 Overlay::Picker {
                     items, selected, ..
@@ -1882,6 +1933,7 @@ impl App {
                 }
                 Vec::new()
             }
+            Overlay::Message { .. } => Vec::new(),
         }
     }
 
@@ -2126,6 +2178,7 @@ impl App {
                 self.cancel_scope();
                 Vec::new()
             }
+            Action::ShowLastMessage => self.show_last_message(),
             Action::Up => self.move_cursor(-1),
             Action::Down => self.move_cursor(1),
             Action::PageUp => self.page_cursor(-1),
@@ -3224,7 +3277,7 @@ impl App {
             return;
         }
         self.log_level = settings.ui.log_level;
-        self.theme = Theme::from_settings(settings.ui.color);
+        self.theme = Theme::from_settings(settings.ui.color && self.theme.color);
         self.settings = settings;
         self.settings_dirty = false;
         self.rebuild_settings_rows();
@@ -3269,16 +3322,32 @@ impl App {
                 format!("restored {}", snapshot.display()),
             ),
             Done::ProfileDeleted { name } => {
+                self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("deleted `{name}`"));
+                return vec![Effect::LoadProfiles];
             }
             Done::ProfileRenamed { name } => {
+                self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("renamed to `{name}`"));
+                return vec![Effect::LoadProfiles];
             }
-            Done::ProfileCreated { name } => {
+            Done::ProfileCreated {
+                name,
+                uid,
+                is_remote,
+            } => {
+                self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("created `{name}`"));
+                let mut effects = vec![Effect::LoadProfiles];
+                if is_remote && let Some(uid) = uid {
+                    effects.push(Effect::UpdateProfiles { uids: vec![uid] });
+                }
+                return effects;
             }
             Done::ProfilesImported { count } => {
+                self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("imported {count} profile(s)"));
+                return vec![Effect::LoadProfiles];
             }
             Done::NodeSelected { group, member } => self.set_status(
                 StatusKind::Success,
@@ -3311,7 +3380,13 @@ impl App {
             Done::CoreRestarted { pid } => {
                 self.set_status(StatusKind::Success, format!("core restarted (pid {pid})"));
             }
-            Done::CoreUpgraded => self.set_status(StatusKind::Success, "core upgraded"),
+            Done::CoreUpgraded { version } => {
+                self.set_status(
+                    StatusKind::Success,
+                    format!("installed mihomo {version} (managed)"),
+                );
+                return vec![Effect::Refresh(Screen::Home)];
+            }
             Done::GeoUpdated => self.set_status(StatusKind::Success, "geo databases updated"),
             Done::CachesFlushed => self.set_status(StatusKind::Success, "caches flushed"),
             Done::SettingsSaved => {
@@ -3348,7 +3423,29 @@ impl App {
     }
 
     fn set_status(&mut self, kind: StatusKind, text: impl Into<String>) {
-        self.status = Some(Status::new(kind, text));
+        let text = text.into();
+        let status = Status::new(kind, text);
+        self.last_status = Some(status.clone());
+        self.status = Some(status);
+    }
+
+    /// Open a modal overlay showing the full text of the latest status message.
+    pub fn show_last_message(&mut self) -> Vec<Effect> {
+        if let Some(status) = self.last_status() {
+            let formatted = self.format_status_text(&status.text);
+            self.overlay = Some(Overlay::Message {
+                title: self.tr("message").to_owned(),
+                text: formatted,
+                kind: status.kind,
+            });
+        } else {
+            self.overlay = Some(Overlay::Message {
+                title: self.tr("message").to_owned(),
+                text: self.tr("no message to show").to_owned(),
+                kind: StatusKind::Info,
+            });
+        }
+        Vec::new()
     }
 
     fn expire_status(&mut self) {
@@ -4457,7 +4554,7 @@ mod tests {
     fn every_setting_row_can_be_cycled_from_the_keyboard() {
         let mut a = loaded();
         goto(&mut a, Screen::Settings);
-        assert_eq!(a.settings_rows.len(), 24);
+        assert_eq!(a.settings_rows.len(), 25);
         a.settings_rows
             .select_by_key("ui.color".to_owned(), |row| row.key.to_owned());
         assert_eq!(press(&mut a, KeyCode::Enter), Vec::new());
@@ -4468,6 +4565,11 @@ mod tests {
             a.current_status().unwrap().text.contains("colour"),
             "the status names the row that changed"
         );
+
+        a.settings_rows
+            .select_by_key("core.use_managed".to_owned(), |row| row.key.to_owned());
+        let _ = press(&mut a, KeyCode::Enter);
+        assert!(!a.settings.core.use_managed);
 
         a.settings_rows
             .select_by_key("test.concurrency".to_owned(), |row| row.key.to_owned());
@@ -4878,6 +4980,7 @@ mod tests {
             Action::PreviousScreen,
             Action::Refresh,
             Action::Cancel,
+            Action::ShowLastMessage,
             Action::Up,
             Action::Down,
             Action::PageUp,

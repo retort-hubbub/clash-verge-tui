@@ -109,6 +109,8 @@ pub enum Action {
     Refresh,
     /// Cancel the current overlay, search or selection.
     Cancel,
+    /// View the latest status message in full.
+    ShowLastMessage,
 
     // -- list navigation --------------------------------------------------
     /// Move the cursor up one row.
@@ -241,6 +243,7 @@ impl Action {
             Self::PreviousScreen => "prev tab",
             Self::Refresh => "refresh",
             Self::Cancel => "cancel",
+            Self::ShowLastMessage => "message",
             Self::Up => "up",
             Self::Down => "down",
             Self::PageUp => "page up",
@@ -312,6 +315,7 @@ impl Action {
             Self::PreviousScreen => "move to the previous tab",
             Self::Refresh => "re-read everything from the core",
             Self::Cancel => "close a prompt, or clear the search",
+            Self::ShowLastMessage => "view the full text of the latest status message",
             Self::Up => "move the cursor up",
             Self::Down => "move the cursor down",
             Self::PageUp => "move up by a screenful",
@@ -385,7 +389,8 @@ impl Action {
             | Self::NextScreen
             | Self::PreviousScreen
             | Self::Refresh
-            | Self::Cancel => "General",
+            | Self::Cancel
+            | Self::ShowLastMessage => "General",
             Self::Up
             | Self::Down
             | Self::PageUp
@@ -514,6 +519,7 @@ mod tests {
             Action::PreviousScreen,
             Action::Refresh,
             Action::Cancel,
+            Action::ShowLastMessage,
             Action::Up,
             Action::Down,
             Action::PageUp,

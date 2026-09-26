@@ -151,6 +151,7 @@ impl Keymap {
             Binding::new(K::BackTab, none, A::PreviousScreen, C::Global, "S-Tab"),
             Binding::new(K::Esc, none, A::Cancel, C::Global, "Esc"),
             Binding::new(K::Char('r'), none, A::Refresh, C::Global, "r"),
+            Binding::new(K::Char('m'), none, A::ShowLastMessage, C::Global, "m"),
             // -- list movement --------------------------------------------
             Binding::new(K::Up, none, A::Up, C::List, "k/↑"),
             Binding::new(K::Char('k'), none, A::Up, C::List, "k/↑"),
@@ -473,6 +474,7 @@ mod tests {
             Action::Bottom,
             Action::NextScreen,
             Action::PreviousScreen,
+            Action::ShowLastMessage,
             Action::StartCore,
             Action::StopCore,
             Action::RestartCore,

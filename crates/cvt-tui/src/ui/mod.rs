@@ -213,7 +213,7 @@ fn footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     }
     let line = if app.current_status().is_some() {
-        w::status_line(app)
+        w::status_line(app, area.width)
     } else if app.settings.ui.show_footer {
         w::hints(app, area.width)
     } else {
@@ -242,6 +242,9 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, app: &App, overlay: &Overlay)
             lines,
             scroll,
         } => preview(frame, area, app, title, lines, *scroll),
+        Overlay::Message { title, text, kind } => {
+            message_popup(frame, area, app, title, text, *kind);
+        }
     }
 }
 
@@ -381,7 +384,10 @@ fn picker(
         .min(area.height);
     let popup = w::centered(area, width, height);
     frame.render_widget(Clear, popup);
-    let rows: Vec<Line<'static>> = items.iter().map(|item| Line::from(item.clone())).collect();
+    let rows: Vec<Line<'static>> = items
+        .iter()
+        .map(|item| Line::from(app.tr(item).to_owned()))
+        .collect();
     let list = List::new(rows)
         .block(w::panel(
             Line::from(format!(" {} ", app.tr(title))),
@@ -392,6 +398,63 @@ fn picker(
     let mut state =
         ListState::default().with_selected(Some(selected.min(items.len().saturating_sub(1))));
     frame.render_stateful_widget(list, popup, &mut state);
+}
+
+/// A modal popup displaying a full status or error message.
+fn message_popup(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    title: &str,
+    text: &str,
+    kind: crate::app::StatusKind,
+) {
+    let width = area.width.saturating_sub(4).clamp(16, 76);
+    let border_style = match kind {
+        crate::app::StatusKind::Error => app.theme.error(),
+        crate::app::StatusKind::Warning => app.theme.warn(),
+        crate::app::StatusKind::Success => app.theme.ok(),
+        crate::app::StatusKind::Info => app.theme.info(),
+    };
+    let marker = match kind {
+        crate::app::StatusKind::Error => "✗ ",
+        crate::app::StatusKind::Warning => "! ",
+        crate::app::StatusKind::Success => "✓ ",
+        crate::app::StatusKind::Info => "i ",
+    };
+
+    let body_lines: Vec<Line<'static>> = vec![
+        Line::from(vec![
+            Span::styled(marker, border_style),
+            Span::styled(text.to_owned(), app.theme.key_label()),
+        ]),
+        Line::default(),
+        Line::from(Span::styled(
+            format!("[{}]", app.tr("Esc/Enter close")),
+            app.theme.dim(),
+        )),
+    ];
+
+    let height = u16::try_from(body_lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(4)
+        .min(area.height)
+        .max(6);
+
+    let popup = w::centered(area, width, height);
+    frame.render_widget(Clear, popup);
+
+    let block = w::empty_panel(app.theme)
+        .border_style(border_style)
+        .title(Line::from(format!(" {} ", app.tr(title))))
+        .title_style(border_style);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(body_lines))
+            .wrap(Wrap { trim: true })
+            .block(block),
+        popup,
+    );
 }
 
 /// The choice under a picker click. `ListState` starts at offset zero and

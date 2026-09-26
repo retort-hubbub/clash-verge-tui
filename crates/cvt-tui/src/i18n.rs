@@ -257,6 +257,8 @@ pub(crate) enum TextKey {
     DownloadRate,
     /// Upload throughput gauge.
     UploadRate,
+    /// Truncated status line overflow indicator.
+    StatusOverflowMore,
 }
 
 /// Look up a message by its semantic identity.
@@ -272,6 +274,8 @@ pub(crate) const fn label(language: Language, key: TextKey) -> &'static str {
         (Language::Chinese, TextKey::DownloadRate) => "下载",
         (Language::English, TextKey::UploadRate) => "up",
         (Language::Chinese, TextKey::UploadRate) => "上传",
+        (Language::English, TextKey::StatusOverflowMore) => " … [m: more]",
+        (Language::Chinese, TextKey::StatusOverflowMore) => " … [m: 详情]",
     }
 }
 
@@ -290,6 +294,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::PreviousScreen => "上一页",
         Action::Refresh => "刷新",
         Action::Cancel => "取消",
+        Action::ShowLastMessage => "消息详情",
         Action::Up => "上移",
         Action::Down => label(language, TextKey::CursorDown),
         Action::PageUp => "上翻页",
@@ -354,6 +359,10 @@ pub(crate) fn setting_text(language: Language, key: &str) -> Option<(&'static st
         "core.secret" => ("控制器密钥", "内核 API 密钥；与其他设置一样以明文保存"),
         "core.auto_start" => ("启动时运行内核", "启动界面时立即启动内核"),
         "core.rollback_on_failure" => ("配置失败时回滚", "内核拒绝新配置时恢复上一个快照"),
+        "core.use_managed" => (
+            "使用托管内核",
+            "优先使用数据目录下由程序下载托管的内核，而非本地内核",
+        ),
         "ui.language" => ("界面语言", "界面语言；立即生效，保存设置后写入磁盘"),
         "ui.refresh_ms" => ("刷新间隔", "界面重绘频率"),
         "ui.log_level" => ("日志级别", "显示并向内核请求的最低日志级别"),
@@ -526,7 +535,7 @@ pub fn text(language: Language, english: &str) -> &str {
         "uid" | "id" => "标识",
         "edits" => "编辑数",
         "cannot run" => "无法运行",
-        "hint" => "提示",
+        "hint" | "info" => "提示",
         "behaviour" => "行为",
         "members" => "成员",
         "expanded" => "展开",
@@ -588,7 +597,7 @@ pub fn text(language: Language, english: &str) -> &str {
         "disabled" => "已禁用",
         "enabled" => "已启用",
         "pending" => "待运行",
-        "ok" => "成功",
+        "ok" | "success" => "成功",
         "failed" => "失败",
         "running…" => "运行中…",
         "group latency" => "代理组延迟",
@@ -679,8 +688,161 @@ pub fn text(language: Language, english: &str) -> &str {
         "fastest" => "最快",
         "slowest" => "最慢",
         "busiest" => "流量最高",
+        "from a URL" => "从 URL 导入",
+        "a blank local profile" => "新建空白本地配置",
+        "update rule set" => "更新规则集",
+        "delete this profile?" => "是否删除此配置？",
+        "stop the core? nothing will be proxied" => "是否停止内核？停止后将无法代理流量",
+        "restore the previous generated configuration and restart the core?" => {
+            "是否恢复上一次生成的配置并重启内核？"
+        }
+        "the core is not running" => "内核未运行",
+        "there is no profile to delete" => "没有可删除的配置",
+        "there is no connection to close" => "没有可关闭的连接",
+        "a subscription URL must start with http:// or https://" => {
+            "订阅地址必须以 http:// 或 https:// 开头"
+        }
+        "a profile needs a name" => "配置名称不能为空",
+        "no profile selected" => "未选中任何配置",
+        "no setting selected" => "未选中任何设置",
+        "no clash-verge-rev installation was found to import from" => {
+            "未找到可导入的 clash-verge-rev 目录"
+        }
+        "view the full text of the latest status message" => "查看最近一条状态信息的完整内容",
+        "message" => "消息详情",
+        "no message to show" => "暂无历史消息",
+        "Esc/Enter close" => "Esc/Enter 关闭",
+        "warning" => "警告",
+        "error" => "错误",
+        "download and replace the core binary?" => "是否下载并替换内核？",
+        "download and install the latest managed core?" => "是否下载并安装最新的托管内核？",
+        "downloading latest mihomo core..." => "正在下载最新的 mihomo 内核...",
+        "managed" => "托管",
+        "local" => "本地",
+        "core management" => "内核管理",
+        "download latest managed core" => "下载最新托管内核",
+        "use local core (PATH or core.binary)" => "使用本地内核 (PATH 或自定义路径)",
+        "use managed core" => "使用托管内核",
+        "— press U for core management, or configure in Settings" => {
+            "— 按 U 进行内核管理，或在设置中配置"
+        }
+        "— press U to download latest core, or set local path in Settings" => {
+            "— 按 U 下载最新内核，或在设置中配置本地内核路径"
+        }
+        "switched to local core; configure core.binary in Settings or install mihomo in PATH" => {
+            "已切换为本地内核；请在设置中配置 core.binary 或将 mihomo 放入 PATH"
+        }
+        "switched to managed core" => "已切换为托管内核",
         _ => english,
     }
+}
+
+/// Translate and format dynamic status messages.
+#[must_use]
+pub fn format_status(language: Language, text: &str) -> String {
+    if language == Language::English {
+        return text.to_owned();
+    }
+    let direct = self::text(language, text);
+    if direct != text {
+        return direct.to_owned();
+    }
+
+    if let Some(rest) = text.strip_prefix("no mihomo binary found; put one at ") {
+        if let Some((path, env_part)) = rest.split_once(" or set ") {
+            return format!("未找到 mihomo 内核；请放置于 {path} 或设置环境变量 {env_part}");
+        }
+        return format!("未找到 mihomo 内核；请放置于 {rest}");
+    }
+    if let Some(rest) = text
+        .strip_prefix("created `")
+        .and_then(|s| s.strip_suffix('`'))
+    {
+        return format!("已创建“{rest}”");
+    }
+    if let Some(rest) = text
+        .strip_prefix("deleted `")
+        .and_then(|s| s.strip_suffix('`'))
+    {
+        return format!("已删除“{rest}”");
+    }
+    if let Some(rest) = text
+        .strip_prefix("renamed to `")
+        .and_then(|s| s.strip_suffix('`'))
+    {
+        return format!("已重命名为“{rest}”");
+    }
+    if let Some(rest) = text
+        .strip_prefix("imported ")
+        .and_then(|s| s.strip_suffix(" profile(s)"))
+    {
+        return format!("已导入 {rest} 个配置");
+    }
+    if let Some(rest) = text
+        .strip_prefix("the core is already running as pid ")
+        .and_then(|s| s.strip_suffix("; stop it first"))
+    {
+        return format!("内核已在运行（PID: {rest}）；请先停止");
+    }
+    if text.contains(" profile(s) updated, ")
+        && text.ends_with(" failed")
+        && let Some((up, fail_part)) = text.split_once(" profile(s) updated, ")
+    {
+        let fail = fail_part.trim_end_matches(" failed");
+        return format!("{up} 个配置已更新，{fail} 个失败");
+    }
+    if let Some(rest) = text.strip_prefix("restored ") {
+        return format!("已恢复快照 {rest}");
+    }
+    if text.starts_with('`') && text.contains("` now uses `") && text.ends_with('`') {
+        let inner = &text[1..text.len() - 1];
+        if let Some((grp, mem)) = inner.split_once("` now uses `") {
+            return format!("“{grp}”已固定使用“{mem}”");
+        }
+    }
+    if text.starts_with('`') && text.ends_with("` chooses automatically again") {
+        let grp = &text[1..text.len() - "` chooses automatically again".len()];
+        return format!("“{grp}”已恢复自动选择");
+    }
+    if let Some(rest) = text
+        .strip_prefix("measured ")
+        .and_then(|s| s.strip_suffix(" node(s)"))
+    {
+        return format!("已完成 {rest} 个节点的延迟测试");
+    }
+    if let Some(rest) = text
+        .strip_prefix("closed ")
+        .and_then(|s| s.strip_suffix(" connection(s)"))
+    {
+        return format!("已关闭 {rest} 个连接");
+    }
+    if let Some(rest) = text.strip_prefix("connections sorted by ") {
+        return format!("连接已按 {} 排序", self::text(language, rest));
+    }
+    if let Some(rest) = text.strip_prefix("filtering `")
+        && let Some((pat, count_part)) = rest.split_once("` — ")
+        && let Some((matched, total_part)) = count_part.split_once(" of ")
+    {
+        let total = total_part.trim_end_matches(" rows");
+        return format!("正在筛选“{pat}”——共 {total} 行中的 {matched} 行");
+    }
+    if text == "the settings on disk changed; your edits are kept — `s` writes them" {
+        return "磁盘上的设置已更改；您的修改已保留——按 s 保存".to_owned();
+    }
+    if let Some(rest) = text.strip_prefix("configuration written (")
+        && let Some((changed, _)) = rest.split_once(" change(s)); the core is not running")
+    {
+        return format!("配置已写入（{changed} 项更改）；内核未运行");
+    }
+
+    if let Some(rest) = text.strip_prefix("installed mihomo ") {
+        if let Some(ver) = rest.strip_suffix(" (managed)") {
+            return format!("已安装 mihomo {ver}（托管）");
+        }
+        return format!("已安装 mihomo {rest}");
+    }
+
+    text.to_owned()
 }
 
 #[cfg(test)]

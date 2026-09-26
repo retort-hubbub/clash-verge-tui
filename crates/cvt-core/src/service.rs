@@ -389,8 +389,10 @@ impl Service {
     /// Locate the core binary, honouring the configured override.
     #[must_use]
     pub fn core_binary(&self) -> Option<PathBuf> {
-        self.supervisor()
-            .locate(self.settings.core.binary.as_deref())
+        self.supervisor().locate_with(
+            self.settings.core.binary.as_deref(),
+            self.settings.core.use_managed,
+        )
     }
 
     /// Start the core using the generated configuration.

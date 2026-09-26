@@ -31,8 +31,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 /// Where the core is, which binary it is, and where the data lives.
 fn status(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let core_type = if app.settings.core.use_managed {
+        app.tr("managed")
+    } else {
+        app.tr("local")
+    };
     let rows = [
         ("state", crate::i18n::core_status(app.language(), &app.core)),
+        ("type", core_type.to_owned()),
         (
             "version",
             app.version.clone().unwrap_or_else(|| "unknown".to_owned()),
@@ -181,7 +187,7 @@ fn attention(frame: &mut Frame<'_>, area: Rect, app: &App) {
         cvt_core::mihomo::supervisor::CoreStatus::NotInstalled => lines.push(Line::from(vec![
             Span::styled(app.tr("no mihomo binary "), app.theme.error()),
             Span::styled(
-                app.tr("— set core.binary in Settings, or put one in the core directory"),
+                app.tr("— press U to download latest core, or set local path in Settings"),
                 app.theme.key_label(),
             ),
         ])),

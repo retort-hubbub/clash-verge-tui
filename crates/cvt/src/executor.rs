@@ -329,11 +329,47 @@ impl Executor {
                     )))
                 },
             ),
-            Effect::UpgradeCore => self.spawn_net(
-                sink,
-                |client| async move { client.upgrade_core(None, false).await },
-                |()| Event::Done(Done::CoreUpgraded),
-            ),
+            Effect::UpgradeCore => {
+                let service = Arc::clone(&self.service);
+                let sink = sink.clone();
+                tokio::spawn(async move {
+                    let (paths, was_running) = {
+                        let guard = service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        (guard.paths().clone(), guard.core_status().is_running())
+                    };
+                    let _ = sink.send(Event::Data(Data::Notice(
+                        "downloading latest mihomo core...".to_owned(),
+                    )));
+                    let outcome = cvt_core::mihomo::download::install_latest_core(&paths).await;
+                    match outcome {
+                        Ok(version) => {
+                            if was_running {
+                                let restart_service = Arc::clone(&service);
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    let guard = restart_service
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    let _ = guard.restart_core();
+                                })
+                                .await;
+                            }
+                            let status = {
+                                let guard = service
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                guard.core_status()
+                            };
+                            let _ = sink.send(Event::Data(Data::Core(status)));
+                            let _ = sink.send(Event::Done(Done::CoreUpgraded { version }));
+                        }
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error.short()));
+                        }
+                    }
+                });
+            }
             Effect::UpdateGeo => self.spawn_net(
                 sink,
                 |client| async move { client.upgrade_geo().await },
@@ -515,7 +551,11 @@ impl Executor {
                     store.write_document(&item, "mode: rule\nrules:\n  - MATCH,DIRECT\n")?;
                 }
                 store.save()?;
-                Ok(Event::Done(Done::ProfileCreated { name }))
+                Ok(Event::Done(Done::ProfileCreated {
+                    name,
+                    uid: Some(uid),
+                    is_remote: remote,
+                }))
             }),
             Effect::DetectImportSources => Ok(Event::Data(Data::ImportSources(
                 AppPaths::detect_verge_homes(),

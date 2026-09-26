@@ -80,7 +80,9 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
     } else {
         node.kind.clone()
     };
-    let state = if node.active {
+    let state = if !app.core.is_running() {
+        Cell::from(app.tr("offline")).style(theme.dim())
+    } else if node.active {
         Cell::from(app.tr("active")).style(theme.ok())
     } else if !node.alive {
         Cell::from(app.tr_key(crate::i18n::TextKey::ProxyUnavailable)).style(theme.error())
@@ -115,7 +117,9 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ));
             rows.push((
                 "pinning",
-                if node.selectable {
+                if !app.core.is_running() {
+                    app.tr("start the core to choose a member").to_owned()
+                } else if node.selectable {
                     app.tr("Enter on a member pins it; x clears the choice")
                         .to_owned()
                 } else {
@@ -134,8 +138,14 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             rows.push(("delay", node.delay_label()));
             rows.push((
                 "health",
-                app.tr(if node.alive { "alive" } else { "not answering" })
-                    .to_owned(),
+                app.tr(if !app.core.is_running() {
+                    "offline"
+                } else if node.alive {
+                    "alive"
+                } else {
+                    "not answering"
+                })
+                .to_owned(),
             ));
             rows.push((
                 "hint",

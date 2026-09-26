@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stopped cores no longer trigger recurring controller requests and error
+  notices. The Proxies tab shows declared groups and members offline.
+- Live proxy inventories now place members under each group, so expanding a
+  group reveals its nodes. Switching or deleting a profile clears stale proxy
+  data; switching prepares or applies the new configuration, and deleting the
+  active profile stops its core.
+- Home and Proxies can cycle the live routing mode between rule, global and
+  direct with `M`, and the active mode is shown in the interface.
 - Starting Mihomo with a selected profile now generates the first runtime
   configuration automatically. Reload still requires an existing configuration.
 - The status detail dialog receives the full error text, wraps long messages,

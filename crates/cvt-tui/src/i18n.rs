@@ -337,6 +337,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::StartCore => "启动内核",
         Action::StopCore => "停止内核",
         Action::RestartCore => "重启内核",
+        Action::CycleCoreMode => "切换模式",
         Action::UpgradeCore => "下载/更新托管内核",
         Action::UpdateGeo => "更新地理数据",
         Action::FlushCaches => "清空缓存",
@@ -423,7 +424,7 @@ pub fn text(language: Language, english: &str) -> &str {
         "General" => "通用",
         "Navigation" => "导航",
         "Core" | "core" => "内核",
-        "anywhere" => "全局",
+        "anywhere" | "global" => "全局",
         "lists" | "table" => "列表",
         // Action descriptions.
         "leave clash-verge-tui (the core keeps running)" => "退出界面（内核继续运行）",
@@ -523,6 +524,8 @@ pub fn text(language: Language, english: &str) -> &str {
         "applies" => "适用范围",
         "action" => "操作",
         "state" => "状态",
+        "mode" => "模式",
+        "direct" => "直连",
         "version" => "版本",
         "data directory" => "数据目录",
         "memory" => "内存",
@@ -697,6 +700,8 @@ pub fn text(language: Language, english: &str) -> &str {
             "是否恢复上一次生成的配置并重启内核？"
         }
         "the core is not running" => "内核未运行",
+        "offline" => "离线",
+        "start the core to choose a member" => "启动内核后可选择成员",
         "there is no profile to delete" => "没有可删除的配置",
         "there is no connection to close" => "没有可关闭的连接",
         "a subscription URL must start with http:// or https://" => {
@@ -719,6 +724,7 @@ pub fn text(language: Language, english: &str) -> &str {
         "download and replace the core binary?" => "是否下载并替换内核？",
         "download and install the latest managed core?" => "是否下载并安装最新的托管内核？",
         "download or update the managed mihomo core" => "下载或更新托管的 mihomo 内核",
+        "switch rule, global and direct routing modes" => "切换规则、全局和直连模式",
         "downloading latest mihomo core..." => "正在下载最新的 mihomo 内核...",
         "managed" => "托管",
         "local" => "本地",
@@ -749,6 +755,10 @@ pub fn format_status(language: Language, text: &str) -> String {
     let direct = self::text(language, text);
     if direct != text {
         return direct.to_owned();
+    }
+
+    if let Some(mode) = text.strip_prefix("routing mode: ") {
+        return format!("路由模式：{}", self::text(language, mode));
     }
 
     if let Some(rest) = text.strip_prefix("no mihomo binary found; put one at ") {

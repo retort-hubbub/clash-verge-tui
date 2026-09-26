@@ -160,6 +160,9 @@ pub fn details(frame: &mut Frame<'_>, area: Rect, app: &App, title: &str, rows: 
 #[must_use]
 pub fn core_summary(app: &App) -> String {
     let mut parts = vec![crate::i18n::core_status(app.language(), &app.core)];
+    if let Some(mode) = &app.core_mode {
+        parts.push(format!("{}: {}", app.tr("mode"), app.tr(mode)));
+    }
     if let Some(live) = &app.metrics.latest {
         parts.push(format!(
             "↓{}/s ↑{}/s",

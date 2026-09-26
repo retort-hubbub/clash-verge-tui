@@ -267,6 +267,22 @@ impl NodeRow {
         }
     }
 
+    /// A live proxy that no policy group references.
+    #[must_use]
+    pub fn from_standalone(view: &ProxyView) -> Self {
+        Self {
+            name: view.name.clone(),
+            kind: view.kind.clone(),
+            group: None,
+            delay: view.latest_delay(),
+            alive: view.alive,
+            active: false,
+            is_group: false,
+            members: 0,
+            selectable: false,
+        }
+    }
+
     /// Build a row for a proxy declared in the configuration, before the core
     /// has reported anything. Used when the core is not running, so that the
     /// user still sees what they configured.

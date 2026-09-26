@@ -171,6 +171,7 @@ impl Keymap {
             Binding::new(K::Char('s'), none, A::StartCore, C::Home, "s"),
             Binding::new(K::Char('S'), none, A::StopCore, C::Home, "S"),
             Binding::new(K::Char('R'), none, A::RestartCore, C::Home, "R"),
+            Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Home, "M"),
             Binding::new(K::Char('U'), none, A::UpgradeCore, C::Home, "U"),
             Binding::new(K::Char('g'), none, A::UpdateGeo, C::Home, "g"),
             Binding::new(K::Char('F'), none, A::FlushCaches, C::Home, "F"),
@@ -194,6 +195,7 @@ impl Keymap {
             Binding::new(K::Char('T'), none, A::TestGroup, C::Proxies, "T"),
             Binding::new(K::Char('a'), none, A::TestAllNodes, C::Proxies, "a"),
             Binding::new(K::Char('x'), none, A::ClearNodeSelection, C::Proxies, "x"),
+            Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Proxies, "M"),
             // -- connections -----------------------------------------------
             Binding::new(K::Char('d'), none, A::CloseConnection, C::Connections, "d"),
             Binding::new(
@@ -222,6 +224,7 @@ impl Keymap {
             Binding::new(K::Char('u'), none, A::UpdateRuleProvider, C::Rules, "u"),
             Binding::new(K::Char('U'), none, A::UpdateAllRuleProviders, C::Rules, "U"),
             Binding::new(K::Char('h'), none, A::ToggleDisabledRules, C::Rules, "h"),
+            Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Rules, "M"),
             // -- tests -----------------------------------------------------
             Binding::new(K::Enter, none, A::RunTests, C::Tests, "Enter"),
             Binding::new(K::Char('s'), none, A::CancelTests, C::Tests, "s"),
@@ -478,6 +481,7 @@ mod tests {
             Action::StartCore,
             Action::StopCore,
             Action::RestartCore,
+            Action::CycleCoreMode,
             Action::UpgradeCore,
             Action::UpdateGeo,
             Action::FlushCaches,

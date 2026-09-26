@@ -38,6 +38,13 @@ fn status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let rows = [
         ("state", crate::i18n::core_status(app.language(), &app.core)),
+        (
+            "mode",
+            app.core_mode.as_deref().map_or_else(
+                || app.tr("unknown").to_owned(),
+                |mode| app.tr(mode).to_owned(),
+            ),
+        ),
         ("type", core_type.to_owned()),
         (
             "version",

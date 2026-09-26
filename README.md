@@ -21,6 +21,12 @@ disappeared; press Esc to dismiss a footer notice immediately.
 On Home, press `U` to download or update the managed Mihomo core. Once a profile
 is selected, `s` starts the core and generates the first runtime configuration
 automatically.
+Press `M` on Home, Proxies or Rules to cycle the running core through rule, global and
+direct routing modes. The current live mode appears in the core summary. Mode
+changes made this way last until the next core restart or profile apply.
+The Proxies tab also shows the selected profile's groups and declared members
+while the core is stopped; live health and provider membership appear after it
+starts.
 Press `?` for the full key reference. The interface supports English and
 Simplified Chinese; change **language** on the Settings tab (key `8`) and press
 `s` to save it. The preference is stored as `ui.language: zh-CN` in `cvt.yaml`.

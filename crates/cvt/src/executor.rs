@@ -21,7 +21,7 @@
 //!   spawned task is handed what it needs — usually a `Client` — and the lock
 //!   is released before the spawn.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -328,6 +328,20 @@ impl Executor {
                     )))
                 },
             ),
+            Effect::SetCoreMode { mode } => self.spawn_net(
+                sink,
+                {
+                    let mode = mode.clone();
+                    move |client| async move {
+                        let patch = ConfigPatch {
+                            mode: Some(mode),
+                            ..ConfigPatch::default()
+                        };
+                        client.patch_configs(&patch).await
+                    }
+                },
+                move |()| Event::Done(Done::CoreModeChanged { mode }),
+            ),
             Effect::UpgradeCore => {
                 let service = Arc::clone(&self.service);
                 let sink = sink.clone();
@@ -468,6 +482,34 @@ impl Executor {
                     }
                 });
             }
+            Effect::PrepareConfig => {
+                let service = Arc::clone(&self.service);
+                let sink = sink.clone();
+                tokio::task::spawn_blocking(move || {
+                    let guard = service
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let outcome = match guard.generate() {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error.to_string()));
+                            return;
+                        }
+                    };
+                    let changed = outcome.diff.entries.len();
+                    match guard.pipeline().commit(&outcome, false) {
+                        Ok(()) => {
+                            let _ = sink.send(Event::Done(Done::ConfigApplied {
+                                reload: None,
+                                changed,
+                            }));
+                        }
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error.to_string()));
+                        }
+                    }
+                });
+            }
 
             // ---- everything else is local and answers immediately
             other => {
@@ -506,6 +548,12 @@ impl Executor {
                     .ok_or_else(|| Error::ProfileNotFound { uid: uid.clone() })?;
                 store.set_current(&uid)?;
                 store.save()?;
+                if !service.core_status().is_running() {
+                    let path = service.paths().runtime_config();
+                    if path.exists() {
+                        std::fs::remove_file(&path).map_err(|error| Error::io(&path, error))?;
+                    }
+                }
                 Ok(Event::Done(Done::ProfileSwitched { name }))
             }),
             Effect::SetChain { uids } => self.with_service(|service| {
@@ -516,10 +564,17 @@ impl Executor {
             }),
             Effect::DeleteProfile { uid } => self.with_service(|service| {
                 let mut store = service.store()?;
+                let was_current = store.current_uid() == Some(uid.as_str());
                 let removed = store.remove(&uid)?;
                 store.save()?;
+                if was_current {
+                    let path = service.paths().runtime_config();
+                    if path.exists() {
+                        std::fs::remove_file(&path).map_err(|error| Error::io(&path, error))?;
+                    }
+                }
                 let name = removed.map_or_else(|| uid.clone(), |item| item.name);
-                Ok(Event::Done(Done::ProfileDeleted { name }))
+                Ok(Event::Done(Done::ProfileDeleted { name, was_current }))
             }),
             Effect::RenameProfile { uid, name } => self.with_service(|service| {
                 let mut store = service.store()?;
@@ -605,10 +660,15 @@ impl Executor {
 
     // -------------------------------------------------------------- refresh
 
-    /// A background read has no controller to ask until one is configured.
-    /// Keep an absent endpoint quiet; malformed configuration is still shown.
+    /// A background read only reaches a controller while the core is running.
+    /// Keep a configured but stopped controller quiet.
     fn has_controller_endpoint(&self, sink: &EventSink) -> bool {
-        match self.with_service(|service| service.endpoint()) {
+        match self.with_service(|service| {
+            if !service.core_status().is_running() {
+                return Ok(None);
+            }
+            service.endpoint()
+        }) {
             Ok(Some(_)) => true,
             Ok(None) => false,
             Err(error) => {
@@ -631,6 +691,15 @@ impl Executor {
                         |client| async move { client.version().await },
                         |version| Event::Data(Data::Version(version.trimmed().to_owned())),
                     );
+                    self.spawn_net(
+                        sink,
+                        |client| async move { client.configs().await },
+                        |config| {
+                            Event::Data(Data::CoreMode(
+                                config.mode.unwrap_or_else(|| "rule".to_owned()),
+                            ))
+                        },
+                    );
                 }
             }
             Screen::Logs => self.start_streaming(sink),
@@ -652,7 +721,13 @@ impl Executor {
                         |inventory| Event::Data(Data::Nodes(node_rows(&inventory.proxies))),
                     );
                 } else {
-                    Self::emit(sink, Event::Data(Data::Nodes(Vec::new())));
+                    let rows = self.with_service(|service| {
+                        service
+                            .generate()
+                            .ok()
+                            .map_or_else(Vec::new, |outcome| config_node_rows(&outcome.config))
+                    });
+                    Self::emit(sink, Event::Data(Data::Nodes(rows)));
                 }
             }
             Screen::Connections => {
@@ -710,8 +785,16 @@ impl Executor {
     /// this starts on the first refresh and is then left alone: starting it
     /// again on every tick would open a new WebSocket every refresh interval.
     fn start_streaming(&self, sink: &EventSink) {
-        let level = self.with_service(|service| service.settings().ui.log_level);
-        let endpoint = self.with_service(|service| service.endpoint().ok().flatten());
+        let (level, endpoint) = self.with_service(|service| {
+            (
+                service.settings().ui.log_level,
+                service
+                    .core_status()
+                    .is_running()
+                    .then(|| service.endpoint().ok().flatten())
+                    .flatten(),
+            )
+        });
         let Some(endpoint) = endpoint else {
             // Not worth a status line: the interface works without a running
             // core, it simply has nothing live to show.
@@ -979,11 +1062,91 @@ async fn run_one(
 /// are what is inside them.
 fn node_rows(proxies: &BTreeMap<String, ProxyView>) -> Vec<NodeRow> {
     let mut rows = Vec::new();
+    let mut referenced = HashSet::new();
     for view in proxies.values().filter(|view| view.is_group()) {
         rows.push(NodeRow::from_group(view));
+        for name in view.members() {
+            if let Some(member) = proxies.get(name) {
+                rows.push(NodeRow::from_member(
+                    member,
+                    &view.name,
+                    view.now.as_deref() == Some(name.as_str())
+                        || view.fixed.as_deref() == Some(name.as_str()),
+                ));
+                referenced.insert(name.as_str());
+            }
+        }
     }
-    for view in proxies.values().filter(|view| !view.is_group()) {
-        rows.push(NodeRow::from_member(view, "", false));
+    // A node absent from every group is still useful for diagnosis, but it
+    // must not masquerade as a member of an empty-named group.
+    for view in proxies
+        .values()
+        .filter(|view| !view.is_group() && !referenced.contains(view.name.as_str()))
+    {
+        rows.push(NodeRow::from_standalone(view));
+    }
+    rows
+}
+
+/// Show the selected document while Mihomo is stopped. Live health and
+/// provider-expanded membership become available once the core starts.
+fn config_node_rows(config: &cvt_core::model::config::Config) -> Vec<NodeRow> {
+    use cvt_core::model::proxy::GroupKind;
+
+    let proxies = config.proxies();
+    let groups = config.proxy_groups();
+    let mut rows = Vec::new();
+    let mut referenced = HashSet::new();
+    for group in &groups {
+        let kind = match GroupKind::from_wire(&group.kind) {
+            GroupKind::Select => "Selector",
+            GroupKind::UrlTest => "URLTest",
+            GroupKind::Fallback => "Fallback",
+            GroupKind::LoadBalance => "LoadBalance",
+            GroupKind::Unknown => group.kind.as_str(),
+        };
+        rows.push(NodeRow {
+            name: group.name.clone(),
+            kind: kind.to_owned(),
+            group: None,
+            delay: None,
+            alive: false,
+            active: false,
+            is_group: true,
+            members: group.proxies.len(),
+            selectable: false,
+        });
+        for name in &group.proxies {
+            referenced.insert(name.as_str());
+            let kind = proxies
+                .iter()
+                .find(|proxy| proxy.name == *name)
+                .map_or_else(
+                    || {
+                        groups
+                            .iter()
+                            .find(|candidate| candidate.name == *name)
+                            .map_or("builtin", |candidate| candidate.kind.as_str())
+                    },
+                    |proxy| proxy.kind.as_str(),
+                );
+            rows.push(NodeRow {
+                name: name.clone(),
+                kind: kind.to_owned(),
+                group: Some(group.name.clone()),
+                delay: None,
+                alive: false,
+                active: false,
+                is_group: false,
+                members: 0,
+                selectable: false,
+            });
+        }
+    }
+    for proxy in &proxies {
+        if !referenced.contains(proxy.name.as_str()) {
+            rows.push(NodeRow::from_config_proxy(proxy));
+        }
     }
     rows
 }
@@ -1047,6 +1210,38 @@ fn open_editor(path: &std::path::Path) -> Result<(), Error> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_inventory_places_each_member_under_its_group() {
+        let inventory: cvt_core::mihomo::types::ProxiesResponse = serde_json::from_value(
+            serde_json::json!({"proxies": {
+                "GROUP": {"name":"GROUP", "type":"Selector", "all":["node-a", "DIRECT"], "now":"node-a"},
+                "node-a": {"name":"node-a", "type":"Vless", "alive":true},
+                "DIRECT": {"name":"DIRECT", "type":"Direct", "alive":true}
+            }}),
+        )
+        .unwrap();
+        let rows = node_rows(&inventory.proxies);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].is_group);
+        assert_eq!(rows[0].members, 2);
+        assert_eq!(rows[1].group.as_deref(), Some("GROUP"));
+        assert!(rows[1].active);
+        assert_eq!(rows[2].group.as_deref(), Some("GROUP"));
+    }
+
+    #[test]
+    fn selected_document_has_group_members_even_without_a_core() {
+        let config = cvt_core::model::config::Config::from_yaml(
+            "proxies:\n  - {name: node-a, type: vless}\nproxy-groups:\n  - {name: GROUP, type: select, proxies: [node-a, DIRECT]}\n",
+        )
+        .unwrap();
+        let rows = config_node_rows(&config);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].members, 2);
+        assert_eq!(rows[1].group.as_deref(), Some("GROUP"));
+        assert_eq!(rows[2].name, "DIRECT");
+    }
 
     #[test]
     fn all_due_selects_only_remote_profiles_whose_interval_elapsed() {

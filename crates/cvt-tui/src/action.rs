@@ -213,6 +213,8 @@ pub enum Action {
     StopCore,
     /// Restart the core process.
     RestartCore,
+    /// Cycle rule, global and direct routing modes.
+    CycleCoreMode,
     /// Download or update the managed core binary.
     UpgradeCore,
     /// Refresh the GeoIP and GeoSite databases.
@@ -286,6 +288,7 @@ impl Action {
             Self::StartCore => "start core",
             Self::StopCore => "stop core",
             Self::RestartCore => "restart core",
+            Self::CycleCoreMode => "route mode",
             Self::UpgradeCore => "install core",
             Self::UpdateGeo => "update geo",
             Self::FlushCaches => "flush caches",
@@ -358,6 +361,7 @@ impl Action {
             Self::StartCore => "launch the core with the generated configuration",
             Self::StopCore => "stop the core process",
             Self::RestartCore => "stop and start the core",
+            Self::CycleCoreMode => "switch rule, global and direct routing modes",
             Self::UpgradeCore => "download or update the managed mihomo core",
             Self::UpdateGeo => "download fresh GeoIP and GeoSite databases",
             Self::FlushCaches => "clear the fake-IP and DNS caches",
@@ -430,6 +434,7 @@ impl Action {
             Self::StartCore
             | Self::StopCore
             | Self::RestartCore
+            | Self::CycleCoreMode
             | Self::UpgradeCore
             | Self::UpdateGeo
             | Self::FlushCaches

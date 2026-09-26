@@ -100,6 +100,8 @@ pub enum Effect {
         /// How the change should reach the core.
         mode: ReloadMode,
     },
+    /// Generate the selected profile without starting the core.
+    PrepareConfig,
     /// Restore the most recent snapshot.
     RollbackConfig,
     /// Delete a profile and its document.
@@ -184,6 +186,11 @@ pub enum Effect {
     },
     /// Change the core's minimum log level.
     SetCoreLogLevel(LogLevel),
+    /// Change the running core's routing mode.
+    SetCoreMode {
+        /// `rule`, `global` or `direct`.
+        mode: String,
+    },
     /// Launch the core with the generated configuration.
     StartCore,
     /// Stop the core process.
@@ -239,6 +246,7 @@ impl Effect {
             Self::SetChain { .. } => "save chain",
             Self::PreviewConfig => "preview config",
             Self::ApplyConfig { .. } => "apply config",
+            Self::PrepareConfig => "prepare config",
             Self::RollbackConfig => "roll back",
             Self::DeleteProfile { .. } => "delete profile",
             Self::RenameProfile { .. } => "rename profile",
@@ -258,6 +266,7 @@ impl Effect {
             Self::ToggleRule { .. } => "toggle rule",
             Self::UpdateRuleProviders { .. } => "update rule sets",
             Self::SetCoreLogLevel(_) => "set log level",
+            Self::SetCoreMode { .. } => "set route mode",
             Self::StartCore => "start core",
             Self::StopCore => "stop core",
             Self::RestartCore => "restart core",
@@ -381,6 +390,8 @@ pub enum Data {
     Memory(u64),
     /// What the supervisor reports about the core.
     Core(CoreStatus),
+    /// Routing mode reported by the running core.
+    CoreMode(String),
     /// The core's version string.
     Version(String),
     /// Settings read from disk.
@@ -440,6 +451,8 @@ pub enum Done {
     ProfileDeleted {
         /// What it was called.
         name: String,
+        /// Whether it was the active base profile.
+        was_current: bool,
     },
     /// A profile was renamed.
     ProfileRenamed {
@@ -507,6 +520,11 @@ pub enum Done {
     CoreRestarted {
         /// The new process id.
         pid: u32,
+    },
+    /// The live routing mode changed.
+    CoreModeChanged {
+        /// The mode now running.
+        mode: String,
     },
     /// A newer core was installed.
     CoreUpgraded {
@@ -1467,6 +1485,8 @@ pub struct App {
     pub metrics: Metrics,
     /// What the supervisor last reported.
     pub core: CoreStatus,
+    /// Routing mode reported by Mihomo's live configuration.
+    pub core_mode: Option<String>,
     /// The core's version, once the binary has read it.
     pub version: Option<String>,
     /// The settings, with any unsaved edits.
@@ -1551,6 +1571,7 @@ impl App {
             logs: LogBuffer::new(LOG_CAPACITY),
             metrics: Metrics::new(METRIC_SAMPLES),
             core: CoreStatus::Stopped,
+            core_mode: None,
             version: None,
             settings,
             settings_dirty: false,
@@ -2364,6 +2385,19 @@ impl App {
                 }
                 vec![Effect::RestartCore]
             }
+            Action::CycleCoreMode => {
+                if !self.require_core("changing the routing mode") {
+                    return Vec::new();
+                }
+                let next = match self.core_mode.as_deref() {
+                    Some("rule") => "global",
+                    Some("global") => "direct",
+                    _ => "rule",
+                };
+                vec![Effect::SetCoreMode {
+                    mode: next.to_owned(),
+                }]
+            }
             Action::UpgradeCore => vec![Effect::UpgradeCore],
             Action::UpdateGeo => {
                 if !self.require_core("updating geo databases") {
@@ -3123,8 +3157,20 @@ impl App {
                 if was_running && !self.core.is_running() {
                     // Nothing can be running against a core that is gone.
                     self.abandon_tests();
+                    self.core_mode = None;
+                    self.invalidate_controller_views();
+                    return vec![Effect::Refresh(Screen::Proxies)];
+                }
+                if !was_running && self.core.is_running() {
+                    self.invalidate_controller_views();
+                    return vec![
+                        Effect::Refresh(Screen::Proxies),
+                        Effect::Refresh(Screen::Rules),
+                        Effect::Refresh(Screen::Connections),
+                    ];
                 }
             }
+            Data::CoreMode(mode) => self.core_mode = Some(mode),
             Data::Version(version) => self.version = Some(version),
             Data::Settings(settings) => self.set_settings(*settings),
             Data::Preview(preview) => {
@@ -3196,6 +3242,22 @@ impl App {
         self.all_nodes = rows;
         self.rebuild_nodes();
         self.refresh_test_targets();
+    }
+
+    fn invalidate_controller_views(&mut self) {
+        self.all_nodes.clear();
+        self.nodes.set_items(Vec::new());
+        self.expanded.clear();
+        self.connections.set_items(Vec::new());
+        self.all_rules.clear();
+        self.rules.set_items(Vec::new());
+        self.rule_providers.clear();
+        self.loaded.retain(|screen| {
+            !matches!(
+                screen,
+                Screen::Proxies | Screen::Connections | Screen::Rules
+            )
+        });
     }
 
     /// Flatten the node tree to what the expansion state shows.
@@ -3340,6 +3402,17 @@ impl App {
             Done::ProfilesLoaded => self.set_status(StatusKind::Success, "profiles loaded"),
             Done::ProfileSwitched { name } => {
                 self.set_status(StatusKind::Success, format!("switched to `{name}`"));
+                self.invalidate_controller_views();
+                return vec![
+                    Effect::LoadProfiles,
+                    if self.core.is_running() {
+                        Effect::ApplyConfig {
+                            mode: self.reload_mode(),
+                        }
+                    } else {
+                        Effect::PrepareConfig
+                    },
+                ];
             }
             Done::ProfilesUpdated { updated, failed } => {
                 let kind = if failed == 0 {
@@ -3354,26 +3427,43 @@ impl App {
                 return vec![Effect::LoadProfiles];
             }
             Done::ChainSaved => self.set_status(StatusKind::Success, "chain saved"),
-            Done::ConfigApplied { reload, changed } => match reload {
-                Some(outcome) if outcome.succeeded() => self.set_status(
-                    StatusKind::Success,
-                    format!("{} ({changed} change(s))", outcome.summary()),
-                ),
-                Some(outcome) => {
-                    self.set_status(StatusKind::Error, outcome.summary());
+            Done::ConfigApplied { reload, changed } => {
+                match reload {
+                    Some(outcome) if outcome.succeeded() => self.set_status(
+                        StatusKind::Success,
+                        format!("{} ({changed} change(s))", outcome.summary()),
+                    ),
+                    Some(outcome) => {
+                        self.set_status(StatusKind::Error, outcome.summary());
+                    }
+                    None => self.set_status(
+                        StatusKind::Success,
+                        format!(
+                            "configuration written ({changed} change(s)); the core is not running"
+                        ),
+                    ),
                 }
-                None => self.set_status(
-                    StatusKind::Success,
-                    format!("configuration written ({changed} change(s)); the core is not running"),
-                ),
-            },
+                return vec![
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                    Effect::Refresh(Screen::Rules),
+                    Effect::Refresh(Screen::Connections),
+                ];
+            }
             Done::ConfigRolledBack { snapshot } => self.set_status(
                 StatusKind::Warning,
                 format!("restored {}", snapshot.display()),
             ),
-            Done::ProfileDeleted { name } => {
+            Done::ProfileDeleted { name, was_current } => {
                 self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("deleted `{name}`"));
+                if was_current {
+                    self.invalidate_controller_views();
+                    if self.core.is_running() {
+                        return vec![Effect::LoadProfiles, Effect::StopCore];
+                    }
+                    return vec![Effect::LoadProfiles, Effect::Refresh(Screen::Proxies)];
+                }
                 return vec![Effect::LoadProfiles];
             }
             Done::ProfileRenamed { name } => {
@@ -3424,11 +3514,25 @@ impl App {
             }
             Done::CoreStarted { pid } => {
                 self.set_status(StatusKind::Success, format!("core started (pid {pid})"));
-                return vec![Effect::Refresh(Screen::Home)];
+                return vec![
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                ];
             }
-            Done::CoreStopped => self.set_status(StatusKind::Success, "core stopped"),
+            Done::CoreStopped => {
+                self.set_status(StatusKind::Success, "core stopped");
+                self.invalidate_controller_views();
+                return vec![
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                ];
+            }
             Done::CoreRestarted { pid } => {
                 self.set_status(StatusKind::Success, format!("core restarted (pid {pid})"));
+            }
+            Done::CoreModeChanged { mode } => {
+                self.core_mode = Some(mode.clone());
+                self.set_status(StatusKind::Success, format!("routing mode: {mode}"));
             }
             Done::CoreUpgraded { version } => {
                 self.set_status(
@@ -4243,6 +4347,69 @@ mod tests {
     }
 
     // -- proxies ------------------------------------------------------------
+
+    #[test]
+    fn switching_a_profile_replaces_stale_proxy_data_and_prepares_or_applies() {
+        let mut stopped = loaded();
+        stopped.core = CoreStatus::Stopped;
+        let effects = stopped.on_event(Event::Done(Done::ProfileSwitched {
+            name: "new".to_owned(),
+        }));
+        assert!(stopped.nodes.is_empty());
+        assert!(effects.contains(&Effect::PrepareConfig));
+        assert!(effects.contains(&Effect::LoadProfiles));
+
+        let mut running = loaded();
+        let effects = running.on_event(Event::Done(Done::ProfileSwitched {
+            name: "new".to_owned(),
+        }));
+        assert!(running.nodes.is_empty());
+        assert!(effects.contains(&Effect::ApplyConfig {
+            mode: ReloadMode::Auto,
+        }));
+    }
+
+    #[test]
+    fn deleting_the_current_profile_clears_proxies_and_stops_its_core() {
+        let mut a = loaded();
+        let effects = a.on_event(Event::Done(Done::ProfileDeleted {
+            name: "base".to_owned(),
+            was_current: true,
+        }));
+        assert!(a.nodes.is_empty());
+        assert!(effects.contains(&Effect::StopCore));
+    }
+
+    #[test]
+    fn routing_mode_cycles_through_all_three_core_modes() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Home);
+        a.core_mode = Some("rule".to_owned());
+        assert_eq!(
+            press(&mut a, KeyCode::Char('M')),
+            vec![Effect::SetCoreMode {
+                mode: "global".to_owned(),
+            }]
+        );
+        let _ = a.on_event(Event::Done(Done::CoreModeChanged {
+            mode: "global".to_owned(),
+        }));
+        assert_eq!(
+            press(&mut a, KeyCode::Char('M')),
+            vec![Effect::SetCoreMode {
+                mode: "direct".to_owned(),
+            }]
+        );
+        let _ = a.on_event(Event::Done(Done::CoreModeChanged {
+            mode: "direct".to_owned(),
+        }));
+        assert_eq!(
+            press(&mut a, KeyCode::Char('M')),
+            vec![Effect::SetCoreMode {
+                mode: "rule".to_owned(),
+            }]
+        );
+    }
 
     #[test]
     fn a_group_row_expands_and_collapses_its_members() {
@@ -5156,6 +5323,7 @@ mod tests {
             Action::StartCore,
             Action::StopCore,
             Action::RestartCore,
+            Action::CycleCoreMode,
             Action::UpgradeCore,
             Action::UpdateGeo,
             Action::FlushCaches,

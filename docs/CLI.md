@@ -9,9 +9,8 @@ should branch on.
 clash-verge-tui [OPTIONS] [COMMAND]
 ```
 
-Running it with **no subcommand** starts the terminal interface. Until that
-interface is wired into the binary, the command says so and exits `1`; every
-subcommand below works.
+Running it with **no subcommand** starts the terminal interface. It requires
+an interactive terminal; subcommands also work in pipes and scripts.
 
 ## Global options
 

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Starting or restarting the core waits for its controller before refreshing
+  live views, avoiding a transient connection error. The routing mode appears
+  immediately from the live controller or deployed configuration.
+- Live Proxies hides internal standalone adapters and shows `GLOBAL` only in
+  global mode. Selecting or clearing a group member updates the visible choice
+  immediately and then refreshes it from Mihomo.
 - Stopped cores no longer trigger recurring controller requests and error
   notices. The Proxies tab shows declared groups and members offline.
 - Live proxy inventories now place members under each group, so expanding a

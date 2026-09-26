@@ -3489,14 +3489,32 @@ impl App {
                 self.set_status(StatusKind::Success, format!("imported {count} profile(s)"));
                 return vec![Effect::LoadProfiles];
             }
-            Done::NodeSelected { group, member } => self.set_status(
-                StatusKind::Success,
-                format!("`{group}` now uses `{member}`"),
-            ),
-            Done::NodeCleared { group } => self.set_status(
-                StatusKind::Success,
-                format!("`{group}` chooses automatically again"),
-            ),
+            Done::NodeSelected { group, member } => {
+                for row in &mut self.all_nodes {
+                    if row.group.as_deref() == Some(group.as_str()) {
+                        row.active = row.name == member;
+                    }
+                }
+                self.rebuild_nodes();
+                self.set_status(
+                    StatusKind::Success,
+                    format!("`{group}` now uses `{member}`"),
+                );
+                return vec![Effect::Refresh(Screen::Proxies)];
+            }
+            Done::NodeCleared { group } => {
+                for row in &mut self.all_nodes {
+                    if row.group.as_deref() == Some(group.as_str()) {
+                        row.active = false;
+                    }
+                }
+                self.rebuild_nodes();
+                self.set_status(
+                    StatusKind::Success,
+                    format!("`{group}` chooses automatically again"),
+                );
+                return vec![Effect::Refresh(Screen::Proxies)];
+            }
             Done::NodeTestsFinished { tested } => {
                 self.set_status(StatusKind::Success, format!("measured {tested} node(s)"));
                 self.sort_nodes(SortOrder::LatencyAscending);
@@ -3529,10 +3547,15 @@ impl App {
             }
             Done::CoreRestarted { pid } => {
                 self.set_status(StatusKind::Success, format!("core restarted (pid {pid})"));
+                return vec![
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                ];
             }
             Done::CoreModeChanged { mode } => {
                 self.core_mode = Some(mode.clone());
                 self.set_status(StatusKind::Success, format!("routing mode: {mode}"));
+                return vec![Effect::Refresh(Screen::Proxies)];
             }
             Done::CoreUpgraded { version } => {
                 self.set_status(
@@ -4441,6 +4464,30 @@ mod tests {
                 group: "PROXY".to_owned(),
                 member: "JP 01".to_owned()
             }]
+        );
+    }
+
+    #[test]
+    fn successful_node_selection_updates_the_visible_row_and_refreshes() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Proxies);
+        press(&mut a, KeyCode::Enter);
+        let effects = a.on_event(Event::Done(Done::NodeSelected {
+            group: "PROXY".to_owned(),
+            member: "US 01".to_owned(),
+        }));
+        assert_eq!(effects, vec![Effect::Refresh(Screen::Proxies)]);
+        assert!(
+            a.nodes
+                .items()
+                .iter()
+                .any(|row| row.name == "US 01" && row.active)
+        );
+        assert!(
+            a.nodes
+                .items()
+                .iter()
+                .any(|row| row.name == "JP 01" && !row.active)
         );
     }
 

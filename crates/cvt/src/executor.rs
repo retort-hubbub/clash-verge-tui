@@ -42,6 +42,8 @@ use cvt_tui::{Data, Done, Effect, Event, EventSink, Screen};
 /// Performs effects against a service.
 pub struct Executor {
     service: Arc<Mutex<Service>>,
+    /// Suppress controller reads between process launch and API readiness.
+    starting: Arc<AtomicBool>,
     /// Bumped when the user cancels; a batch notices at the next node instead
     /// of running to the end of a list they no longer want.
     test_epoch: Arc<AtomicU64>,
@@ -62,6 +64,7 @@ impl Executor {
     pub fn new(service: Service) -> Self {
         Self {
             service: Arc::new(Mutex::new(service)),
+            starting: Arc::new(AtomicBool::new(false)),
             test_epoch: Arc::new(AtomicU64::new(0)),
             streaming: Arc::new(AtomicBool::new(false)),
         }
@@ -160,10 +163,12 @@ impl Executor {
                 });
                 if auto_start || update_on_start {
                     let service = Arc::clone(&self.service);
+                    let starting = Arc::clone(&self.starting);
                     let sink = sink.clone();
                     tokio::spawn(async move {
                         if auto_start {
                             let start_service = Arc::clone(&service);
+                            starting.store(true, Ordering::SeqCst);
                             let started = tokio::task::spawn_blocking(move || {
                                 let guard = start_service
                                     .lock()
@@ -171,19 +176,26 @@ impl Executor {
                                 if guard.core_status().is_running() {
                                     Ok(None)
                                 } else {
-                                    guard.start_core().map(Some)
+                                    launch_core(&guard, false).map(Some)
                                 }
                             })
                             .await;
+                            let started = match started {
+                                Ok(Ok(Some(launch))) => ready_mode(launch).await.map(Some),
+                                Ok(Ok(None)) => Ok(None),
+                                Ok(Err(error)) => Err(error),
+                                Err(error) => Err(Error::Unsupported(error.to_string())),
+                            };
+                            starting.store(false, Ordering::SeqCst);
                             match started {
-                                Ok(Ok(Some(pid))) => {
+                                Ok(Some((pid, mode))) => {
+                                    Self::emit(&sink, Event::Data(Data::CoreMode(mode)));
                                     Self::emit(&sink, Event::Done(Done::CoreStarted { pid }));
                                 }
-                                Ok(Ok(None)) => {}
-                                Ok(Err(error)) => {
+                                Ok(None) => {}
+                                Err(error) => {
                                     Self::emit(&sink, Event::Failed(error.to_string()));
                                 }
-                                Err(error) => Self::emit(&sink, Event::Failed(error.to_string())),
                             }
                         }
                         if update_on_start {
@@ -195,6 +207,42 @@ impl Executor {
 
             // ---- refresh, which fans out per screen
             Effect::Refresh(screen) => self.refresh(screen, sink),
+            Effect::StartCore | Effect::RestartCore => {
+                let service = Arc::clone(&self.service);
+                let starting = Arc::clone(&self.starting);
+                let sink = sink.clone();
+                let restart = matches!(effect, Effect::RestartCore);
+                starting.store(true, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        let guard = service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        launch_core(&guard, restart)
+                    })
+                    .await;
+                    let result = match result {
+                        Ok(Ok(launch)) => ready_mode(launch).await,
+                        Ok(Err(error)) => Err(error),
+                        Err(error) => Err(Error::Unsupported(error.to_string())),
+                    };
+                    starting.store(false, Ordering::SeqCst);
+                    match result {
+                        Ok((pid, mode)) => {
+                            Self::emit(&sink, Event::Data(Data::CoreMode(mode)));
+                            Self::emit(
+                                &sink,
+                                Event::Done(if restart {
+                                    Done::CoreRestarted { pid }
+                                } else {
+                                    Done::CoreStarted { pid }
+                                }),
+                            );
+                        }
+                        Err(error) => Self::emit(&sink, Event::Failed(error.to_string())),
+                    }
+                });
+            }
 
             // ---- everything that talks to the core is spawned
             // The two selection effects are hand-written rather than going
@@ -223,13 +271,15 @@ impl Executor {
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 guard.remember_selection(&group, &member)
                             };
-                            let note = match recorded {
-                                Ok(()) => format!("{group}: {member}"),
-                                Err(error) => {
-                                    format!("{group}: {member} (not recorded: {error})")
-                                }
-                            };
-                            let _ = sink.send(Event::Data(Data::Notice(note)));
+                            let _ = sink.send(Event::Done(Done::NodeSelected {
+                                group: group.clone(),
+                                member: member.clone(),
+                            }));
+                            if let Err(error) = recorded {
+                                let _ = sink.send(Event::Data(Data::Notice(format!(
+                                    "{group}: {member} (selection was not saved: {error})"
+                                ))));
+                            }
                         }
                         Err(error) => {
                             let _ = sink.send(Event::Failed(error.to_string()));
@@ -259,13 +309,14 @@ impl Executor {
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 guard.forget_selection(&group)
                             };
-                            let note = match forgotten {
-                                Ok(()) => format!("{group}: automatic"),
-                                Err(error) => {
-                                    format!("{group}: automatic (still remembered: {error})")
-                                }
-                            };
-                            let _ = sink.send(Event::Data(Data::Notice(note)));
+                            let _ = sink.send(Event::Done(Done::NodeCleared {
+                                group: group.clone(),
+                            }));
+                            if let Err(error) = forgotten {
+                                let _ = sink.send(Event::Data(Data::Notice(format!(
+                                    "{group}: automatic (choice was not forgotten: {error})"
+                                ))));
+                            }
                         }
                         Err(error) => {
                             let _ = sink.send(Event::Failed(error.to_string()));
@@ -630,17 +681,9 @@ impl Executor {
                 let snapshot = service.pipeline().rollback()?;
                 Ok(Event::Done(Done::ConfigRolledBack { snapshot }))
             }),
-            Effect::StartCore => self.with_service(|service| {
-                let pid = service.start_core()?;
-                Ok(Event::Done(Done::CoreStarted { pid }))
-            }),
             Effect::StopCore => self.with_service(|service| {
                 service.stop_core()?;
                 Ok(Event::Done(Done::CoreStopped))
-            }),
-            Effect::RestartCore => self.with_service(|service| {
-                let pid = service.restart_core()?;
-                Ok(Event::Done(Done::CoreRestarted { pid }))
             }),
             Effect::SaveSettings { settings } => self.with_service(|service| {
                 service.set_settings(settings);
@@ -663,6 +706,9 @@ impl Executor {
     /// A background read only reaches a controller while the core is running.
     /// Keep a configured but stopped controller quiet.
     fn has_controller_endpoint(&self, sink: &EventSink) -> bool {
+        if self.starting.load(Ordering::SeqCst) {
+            return false;
+        }
         match self.with_service(|service| {
             if !service.core_status().is_running() {
                 return Ok(None);
@@ -717,8 +763,15 @@ impl Executor {
                 if self.has_controller_endpoint(sink) {
                     self.spawn_net(
                         sink,
-                        |client| async move { client.proxies().await },
-                        |inventory| Event::Data(Data::Nodes(node_rows(&inventory.proxies))),
+                        |client| async move {
+                            tokio::try_join!(client.proxies(), client.configs())
+                        },
+                        |(inventory, config)| {
+                            Event::Data(Data::Nodes(node_rows(
+                                &inventory.proxies,
+                                config.mode.as_deref(),
+                            )))
+                        },
                     );
                 } else {
                     let rows = self.with_service(|service| {
@@ -785,6 +838,9 @@ impl Executor {
     /// this starts on the first refresh and is then left alone: starting it
     /// again on every tick would open a new WebSocket every refresh interval.
     fn start_streaming(&self, sink: &EventSink) {
+        if self.starting.load(Ordering::SeqCst) {
+            return;
+        }
         let (level, endpoint) = self.with_service(|service| {
             (
                 service.settings().ui.log_level,
@@ -1056,14 +1112,46 @@ async fn run_one(
     }
 }
 
-/// Flatten the proxy inventory into rows: the groups first, then the nodes.
+/// Start or restart, keeping the service lock only for the local operation.
+fn launch_core(service: &Service, restart: bool) -> Result<(u32, String, Option<Client>), Error> {
+    let pid = if restart {
+        service.restart_core()?
+    } else {
+        service.start_core()?
+    };
+    let text = service.paths().read(&service.paths().runtime_config())?;
+    let configured_mode = cvt_core::model::config::Config::from_yaml(&text)?.mode();
+    let client = service.endpoint()?.map(Client::new).transpose()?;
+    Ok((pid, configured_mode, client))
+}
+
+/// Probe the listener after releasing the service lock.
+async fn ready_mode(launch: (u32, String, Option<Client>)) -> Result<(u32, String), Error> {
+    let (pid, configured_mode, client) = launch;
+    let Some(client) = client else {
+        return Ok((pid, configured_mode));
+    };
+    client.wait_until_ready().await?;
+    let mode = client
+        .configs()
+        .await
+        .ok()
+        .and_then(|config| config.mode)
+        .unwrap_or(configured_mode);
+    Ok((pid, mode))
+}
+
+/// Flatten selectable groups and their members into rows.
 ///
-/// Groups come first because they are what a user chooses between; the nodes
-/// are what is inside them.
-fn node_rows(proxies: &BTreeMap<String, ProxyView>) -> Vec<NodeRow> {
+/// The core also reports internal adapters and an always-present GLOBAL group.
+/// They have no useful action in rule/direct mode and standalone adapters
+/// cannot be selected, so neither belongs in the interactive list.
+fn node_rows(proxies: &BTreeMap<String, ProxyView>, mode: Option<&str>) -> Vec<NodeRow> {
     let mut rows = Vec::new();
-    let mut referenced = HashSet::new();
-    for view in proxies.values().filter(|view| view.is_group()) {
+    for view in proxies
+        .values()
+        .filter(|view| view.is_group() && (view.name != "GLOBAL" || mode == Some("global")))
+    {
         rows.push(NodeRow::from_group(view));
         for name in view.members() {
             if let Some(member) = proxies.get(name) {
@@ -1073,17 +1161,8 @@ fn node_rows(proxies: &BTreeMap<String, ProxyView>) -> Vec<NodeRow> {
                     view.now.as_deref() == Some(name.as_str())
                         || view.fixed.as_deref() == Some(name.as_str()),
                 ));
-                referenced.insert(name.as_str());
             }
         }
-    }
-    // A node absent from every group is still useful for diagnosis, but it
-    // must not masquerade as a member of an empty-named group.
-    for view in proxies
-        .values()
-        .filter(|view| !view.is_group() && !referenced.contains(view.name.as_str()))
-    {
-        rows.push(NodeRow::from_standalone(view));
     }
     rows
 }
@@ -1221,13 +1300,38 @@ mod tests {
             }}),
         )
         .unwrap();
-        let rows = node_rows(&inventory.proxies);
+        let rows = node_rows(&inventory.proxies, Some("rule"));
         assert_eq!(rows.len(), 3);
         assert!(rows[0].is_group);
         assert_eq!(rows[0].members, 2);
         assert_eq!(rows[1].group.as_deref(), Some("GROUP"));
         assert!(rows[1].active);
         assert_eq!(rows[2].group.as_deref(), Some("GROUP"));
+    }
+
+    #[test]
+    fn internal_adapters_are_hidden_and_global_only_appears_in_global_mode() {
+        let inventory: cvt_core::mihomo::types::ProxiesResponse =
+            serde_json::from_value(serde_json::json!({"proxies": {
+                "GLOBAL": {"name":"GLOBAL", "type":"Selector", "all":["node-a"]},
+                "GROUP": {"name":"GROUP", "type":"Selector", "all":["node-a"]},
+                "node-a": {"name":"node-a", "type":"Vless"},
+                "COMPATIBLE": {"name":"COMPATIBLE", "type":"Compatible"},
+                "PASS": {"name":"PASS", "type":"Pass"},
+                "PASS-RULE": {"name":"PASS-RULE", "type":"PassRule"},
+                "REJECT-DROP": {"name":"REJECT-DROP", "type":"RejectDrop"}
+            }}))
+            .unwrap();
+        let rule = node_rows(&inventory.proxies, Some("rule"));
+        assert_eq!(rule.iter().filter(|row| row.is_group).count(), 1);
+        assert!(
+            rule.iter()
+                .all(|row| row.name != "GLOBAL" && row.name != "PASS")
+        );
+        let global = node_rows(&inventory.proxies, Some("global"));
+        assert_eq!(global.iter().filter(|row| row.is_group).count(), 2);
+        assert!(global.iter().any(|row| row.name == "GLOBAL"));
+        assert!(global.iter().all(|row| row.name != "COMPATIBLE"));
     }
 
     #[test]

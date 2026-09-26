@@ -796,30 +796,7 @@ impl Service {
     /// [`Error::ControllerUnreachable`] when it never answers within the
     /// deadline.
     pub async fn wait_until_ready(&self) -> Result<()> {
-        let client = self.client()?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut last = String::from("no attempt made");
-        while std::time::Instant::now() < deadline {
-            // Bounded, not merely checked between calls. `client.version`
-            // carries the client's own timeout, so a core that accepts the
-            // connection and answers nothing could outlive this deadline.
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            match tokio::time::timeout(left, client.version()).await {
-                Ok(Ok(v)) => {
-                    tracing::info!(version = %v.trimmed(), "core is up");
-                    return Ok(());
-                }
-                Ok(Err(e)) => last = e.short(),
-                Err(_) => break,
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-        Err(Error::ControllerUnreachable {
-            endpoint: self
-                .endpoint()?
-                .map_or_else(|| "unknown".to_owned(), |e| e.describe()),
-            source: format!("the core did not become ready: {last}").into(),
-        })
+        self.client()?.wait_until_ready().await
     }
 }
 

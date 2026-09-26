@@ -1303,6 +1303,7 @@ def drain(seconds, stop_on=None):
             return
 
 drain(5.0, b"Home")
+drain(0.5)
 before = termios.tcgetattr(fd)
 os.write(fd, b"q")
 code = None
@@ -1316,6 +1317,7 @@ while time.time() < end:
 if code is None:
     os.kill(pid, signal.SIGKILL)
     _, code = os.waitpid(pid, 0)
+drain(0.2)
 after = termios.tcgetattr(fd)
 
 COLOR = re.compile(rb"\x1b\[((?:3[0-8]|4[0-8]|9[0-8]|38;5;\d+|48;5;\d+));?[0-9]*m")
@@ -1326,6 +1328,9 @@ print(json.dumps({
     "colour_sequences": len(COLOR.findall(out)),
     "alt_enter": b"\x1b[?1049h" in out,
     "alt_leave": b"\x1b[?1049l" in out,
+    "mouse_enter": b"\x1b[?1006h" in out and b"\x1b[?1000h" in out,
+    "mouse_leave": b"\x1b[?1006l" in out and b"\x1b[?1000l" in out,
+    "missing_controller": b"is missing required field" in out,
     "icanon_while_running": bool(before[3] & termios.ICANON),
     "icanon_after_exit": bool(after[3] & termios.ICANON),
     "echo_after_exit": bool(after[3] & termios.ECHO),
@@ -1385,6 +1390,9 @@ fn confirmed_the_terminal_is_taken_over_and_given_back() {
     assert_eq!(report["echo_after_exit"], true, "{report}");
     assert_eq!(report["alt_enter"], true, "{report}");
     assert_eq!(report["alt_leave"], true, "{report}");
+    assert_eq!(report["mouse_enter"], true, "{report}");
+    assert_eq!(report["mouse_leave"], true, "{report}");
+    assert_eq!(report["missing_controller"], false, "{report}");
 }
 
 /// CLAIM (`docs/CLI.md`): "`--no-color` | Never emit ANSI colour. `NO_COLOR` in

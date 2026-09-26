@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The TUI accepts mouse clicks on tabs and table rows, and wheel scrolling in
+  tables, logs, and scrollable dialogs. Mouse capture is restored on exit and
+  while an external editor owns the terminal.
 - The TUI supports Simplified Chinese through the saved `ui.language` setting.
   Tabs visibly show their existing `[1]`–`[9]` direct keys in an accent colour;
   the tab bar uses compact names when the terminal is narrow.
 
 ### Fixed
 
+- Starting the TUI with no controller configured no longer leaves a misleading
+  missing `external-controller` error in the footer.
 - Restoring an old backup reads its contents before retention pruning can
   remove it. The safety backup of the replaced state is retained.
 - TUI subscription fallback uses the deployed proxy listener, not the

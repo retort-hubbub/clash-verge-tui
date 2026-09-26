@@ -573,11 +573,18 @@ impl Executor {
                 self.start_streaming(sink);
                 let status = self.with_service(|service| service.core_status());
                 Self::emit(sink, Event::Data(Data::Core(status)));
-                self.spawn_net(
-                    sink,
-                    |client| async move { client.version().await },
-                    |version| Event::Data(Data::Version(version.trimmed().to_owned())),
-                );
+                // A fresh home has no controller yet. The dashboard can show
+                // the supervisor state without turning that normal setup
+                // state into a permanent "missing external-controller" error.
+                match self.with_service(|service| service.endpoint()) {
+                    Ok(Some(_)) => self.spawn_net(
+                        sink,
+                        |client| async move { client.version().await },
+                        |version| Event::Data(Data::Version(version.trimmed().to_owned())),
+                    ),
+                    Ok(None) => {}
+                    Err(error) => Self::emit(sink, Event::Failed(error.short())),
+                }
             }
             Screen::Logs => self.start_streaming(sink),
             Screen::Profiles => {

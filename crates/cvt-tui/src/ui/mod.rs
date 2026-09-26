@@ -7,7 +7,7 @@
 //! Every screen is a module exporting the same function —
 //! `pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App)` — so the
 //! dispatcher below is a lookup and not a special case per screen. Screens
-//! never mutate [`App`]: anything that changes state goes through a key press,
+//! never mutate [`App`]: anything that changes state goes through an input event,
 //! and a screen that cannot be drawn has nothing to say about it.
 //!
 //! All of this has to survive a terminal of one column by one row, which is
@@ -87,31 +87,14 @@ fn tab_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let summary_width = u16::try_from(summary.width()).unwrap_or(u16::MAX);
     // All nine direct keys need to remain visible on a standard 80-column
     // terminal. The dashboard still shows core state below the tabs.
-    let capped = if area.width < 100 {
-        0
-    } else {
-        summary_width.min(area.width / 3)
-    };
+    let capped = summary_cap(area.width, summary_width);
     let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(capped)]).split(area);
-    let long_titles: Vec<&str> = Screen::all()
-        .iter()
-        .map(|screen| crate::i18n::tab_title(app.language(), *screen))
-        .collect();
-    let long_width: usize = long_titles
-        .iter()
-        .map(|title| title.width() + 3)
-        .sum::<usize>()
-        + 8;
-    let compact = area.width < 100 || long_width > usize::from(chunks[0].width);
+    let compact = compact_tabs(area.width, chunks[0].width, long_tabs_width(app));
     let titles: Vec<Line<'static>> = Screen::all()
         .iter()
         .enumerate()
         .map(|(at, screen)| {
-            let name = if compact {
-                crate::i18n::short_tab(app.language(), *screen)
-            } else {
-                crate::i18n::tab_title(app.language(), *screen)
-            };
+            let name = tab_name(app, *screen, compact);
             Line::from(vec![
                 Span::styled(format!("[{}]", at + 1), app.theme.key_hint()),
                 Span::styled(
@@ -138,6 +121,78 @@ fn tab_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .alignment(Alignment::Right),
         chunks[1],
     );
+}
+
+fn summary_cap(width: u16, summary_width: u16) -> u16 {
+    if width < 100 {
+        0
+    } else {
+        summary_width.min(width / 3)
+    }
+}
+
+fn compact_tabs(width: u16, tab_width: u16, long_width: usize) -> bool {
+    width < 100 || long_width > usize::from(tab_width)
+}
+
+fn long_tabs_width(app: &App) -> usize {
+    Screen::all()
+        .iter()
+        .map(|screen| crate::i18n::tab_title(app.language(), *screen).width() + 5)
+        .sum::<usize>()
+        + 8
+}
+
+fn tab_name(app: &App, screen: Screen, compact: bool) -> &'static str {
+    if compact {
+        crate::i18n::short_tab(app.language(), screen)
+    } else {
+        crate::i18n::tab_title(app.language(), screen)
+    }
+}
+
+/// The screen under a click in the tab bar, using the same widths as `Tabs`.
+pub(crate) fn tab_at(app: &App, column: u16, row: u16) -> Option<Screen> {
+    if row != 0 || column >= app.viewport.0 {
+        return None;
+    }
+    let width = app.viewport.0;
+    let summary_width = u16::try_from(w::core_summary(app).width()).unwrap_or(u16::MAX);
+    let tab_width = width.saturating_sub(summary_cap(width, summary_width));
+    if column >= tab_width {
+        return None;
+    }
+    let compact = compact_tabs(width, tab_width, long_tabs_width(app));
+    let mut start = 0usize;
+    for (index, screen) in Screen::all().into_iter().enumerate() {
+        let name = tab_name(app, screen, compact);
+        // One cell of padding on each side; one divider between tabs.
+        let end = start + 2 + 3 + name.width() + usize::from(index < 8);
+        if usize::from(column) < end {
+            return Some(screen);
+        }
+        start = end;
+    }
+    None
+}
+
+/// The data cells in the current table, excluding its border and header.
+pub(crate) fn table_rows_area(app: &App) -> Option<Rect> {
+    let detail_height = match app.screen {
+        Screen::Profiles | Screen::Tests => 9,
+        Screen::Proxies => 8,
+        Screen::Connections | Screen::Rules => 7,
+        Screen::Settings => 5,
+        Screen::Home | Screen::Logs | Screen::Help => return None,
+    };
+    let content = Rect::new(0, 1, app.viewport.0, app.viewport.1.saturating_sub(2));
+    let (list, _) = w::list_and_detail(content, detail_height);
+    Some(Rect::new(
+        list.x.saturating_add(1),
+        list.y.saturating_add(2),
+        list.width.saturating_sub(2),
+        list.height.saturating_sub(3),
+    ))
 }
 
 /// How the core's state reads.
@@ -337,6 +392,31 @@ fn picker(
     let mut state =
         ListState::default().with_selected(Some(selected.min(items.len().saturating_sub(1))));
     frame.render_stateful_widget(list, popup, &mut state);
+}
+
+/// The choice under a picker click. `ListState` starts at offset zero and
+/// scrolls just enough to keep the selected item in its inner viewport.
+pub(crate) fn picker_item_at(
+    viewport: (u16, u16),
+    items_len: usize,
+    selected: usize,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let area = Rect::new(0, 0, viewport.0, viewport.1);
+    let width = area.width.saturating_sub(4).clamp(12, 72);
+    let height = u16::try_from(items_len)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .min(area.height);
+    let popup = w::centered(area, width, height);
+    let inner = popup.inner(ratatui::layout::Margin::new(1, 1));
+    if !inner.contains(ratatui::layout::Position::new(column, row)) || inner.height == 0 {
+        return None;
+    }
+    let offset = selected.saturating_sub(usize::from(inner.height).saturating_sub(1));
+    let index = offset + usize::from(row - inner.y);
+    (index < items_len).then_some(index)
 }
 
 /// Scrolling text: the configuration preview.

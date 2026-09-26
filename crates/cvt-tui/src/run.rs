@@ -26,7 +26,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossterm::cursor::Show;
-use crossterm::event::{EventStream, KeyEvent};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, EventStream, KeyEvent, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -159,7 +161,7 @@ impl TerminalScope {
             active: true,
             previous_hook: None,
         };
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen) {
+        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
             scope.suspend();
             return Err(RunError::Terminal(error));
         }
@@ -183,7 +185,7 @@ impl TerminalModes for TerminalScope {
         if enable_raw_mode().is_err() {
             return;
         }
-        if execute!(io::stdout(), EnterAlternateScreen).is_err() {
+        if execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture).is_err() {
             // Half-taken: raw mode without the alternate screen is worse than
             // no interface at all, so it is undone rather than kept.
             let _ = disable_raw_mode();
@@ -210,7 +212,12 @@ impl Drop for TerminalScope {
 /// useful answer to "the restore failed" at this point.
 fn give_the_terminal_back() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
+    let _ = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        Show
+    );
 }
 
 /// Install a hook that restores the terminal before the panic is printed.
@@ -431,11 +438,20 @@ fn terminal_input() -> impl Stream<Item = Event> {
     EventStream::new().filter_map(|event| async move {
         match event {
             Ok(crossterm::event::Event::Key(key)) => Some(Event::Key(key)),
+            Ok(crossterm::event::Event::Mouse(mouse))
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::Down(MouseButton::Left)
+                        | MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                ) =>
+            {
+                Some(Event::Mouse(mouse))
+            }
             Ok(crossterm::event::Event::Resize(width, height)) => {
                 Some(Event::Resize(width, height))
             }
-            // Mouse, focus and paste events have no meaning for this
-            // interface; dropping them here keeps `Event` at six variants.
+            // Focus and paste events have no meaning for this interface.
             _ => None,
         }
     })

@@ -11,7 +11,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 
-use super::render;
+use super::{render, tab_at};
 use crate::action::Screen;
 use crate::app::{App, Data, Event, Overlay, Preview, PromptKind, StatusKind};
 use crate::row::{NodeRow, ProfileRow, RuleRow};
@@ -41,6 +41,36 @@ fn text_of(buffer: &Buffer) -> String {
         out.push('\n');
     }
     out
+}
+
+#[test]
+fn clicking_each_rendered_tab_key_opens_its_screen() {
+    for language in [
+        cvt_core::settings::Language::English,
+        cvt_core::settings::Language::Chinese,
+    ] {
+        for width in [80, 120, 200] {
+            let mut app = app_with(Theme::default());
+            app.settings.ui.language = language;
+            app.viewport = (width, 24);
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let mut seen = Vec::new();
+            for column in 0..width.saturating_sub(2) {
+                if buffer[(column, 0)].symbol() == "[" && buffer[(column + 2, 0)].symbol() == "]" {
+                    let digit = buffer[(column + 1, 0)].symbol();
+                    if let Some(index @ 1..=9) = digit.chars().next().and_then(|ch| ch.to_digit(10))
+                    {
+                        let screen = Screen::all()[usize::try_from(index - 1).unwrap()];
+                        assert_eq!(tab_at(&app, column + 1, 0), Some(screen));
+                        seen.push(screen);
+                    }
+                }
+            }
+            assert_eq!(seen, Screen::all(), "{language:?} at {width} columns");
+        }
+    }
 }
 
 /// Collapse runs of spaces so a substring can be looked for across cells.

@@ -3,8 +3,7 @@
 A terminal client for the [mihomo](https://github.com/MetaCubeX/mihomo) core
 (Clash.Meta). It manages subscription profiles, generates and overrides the
 runtime configuration, and talks to a running core to select nodes, watch
-connections and logs, toggle rules and measure latency — from the keyboard,
-without leaving the terminal.
+connections and logs, toggle rules and measure latency from the terminal.
 
 ```console
 $ clash-verge-tui              # the interactive interface
@@ -14,6 +13,9 @@ $ clash-verge-tui doctor       # what is installed, what is missing, what the co
 
 In the TUI, each tab shows its direct key in brackets: `[1]` through `[9]`.
 Press that number to open the tab, or use Tab / Shift+Tab to move between tabs.
+With a mouse, click a tab or a table row to select it; scroll the wheel to move
+through tables, logs and scrollable dialogs. Keyboard shortcuts remain available
+for actions such as activating a profile or confirming a change.
 Press `?` for the full key reference. The interface supports English and
 Simplified Chinese; change **language** on the Settings tab (key `8`) and press
 `s` to save it. The preference is stored as `ui.language: zh-CN` in `cvt.yaml`.

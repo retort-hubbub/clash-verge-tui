@@ -24,9 +24,8 @@
 //! * **the global flags** (`--home`, `--json`, `-v`, `--no-color`), each held
 //!   to what `docs/CLI.md` and `--help` say it does.
 //!
-//! Tests named `defect_*` assert what the code *claims* and are expected to
-//! **fail**. A failing `defect_` test is a finding, not a broken test. Tests
-//! named `confirmed_*` assert a claim that was checked and holds; `observed_*`
+//! `defect_*` names preserve the original findings; all tests now must pass.
+//! Tests named `confirmed_*` assert a claim that was checked and holds; `observed_*`
 //! record a measurement whose verdict is the author's to make.
 //!
 //! ### Why this file is in `cvt-tui`
@@ -473,7 +472,7 @@ fn flat(text: &str) -> String {
 }
 
 fn app_with(theme: Theme) -> App {
-    App::new(PathBuf::from("/tmp/cvt-recheck10"), theme)
+    App::new(PathBuf::from("/tmp/cvt-terminal-rendering"), theme)
 }
 
 /// An application with nothing loaded, showing `screen`.

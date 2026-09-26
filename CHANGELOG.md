@@ -445,7 +445,7 @@ calls it.
 
 A fourth adversarial review checked 0.4.0's own code and found eleven
 problems. All of them are closed, and its 30 tests are kept
-(`crates/cvt-core/tests/recheck3.rs`).
+(`crates/cvt-core/tests/regression_logs_and_subscriptions.rs`).
 
 The one worth naming is the fourth instance of the same pattern: the guard on
 a document's file name covered the field the previous review had named and not
@@ -517,7 +517,7 @@ code rather than by intent and then turned out to be a work list.
 A third adversarial review checked the fixes from the second and found ten more
 problems with them, including the other half of a path traversal the second had
 found and two regressions those fixes had introduced. All ten are closed, and
-its tests are kept (`crates/cvt-core/tests/recheck2.rs`).
+its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.rs`).
 
 ### Added
 
@@ -528,7 +528,7 @@ its tests are kept (`crates/cvt-core/tests/recheck2.rs`).
   know, and a line that is not a rule at all.
 - `docs/FEATURE-COVERAGE.md`: what this project does about each feature of
   `clash-verge-rev`, including the eighteen it does not implement and why.
-- `crates/cvt-core/tests/recheck.rs` and `recheck2.rs`: two independent
+- `crates/cvt-core/tests/regression_config_and_profiles.rs` and `regression_validation_and_overrides.rs`: two independent
   adversarial reviews, kept in the build.
 
 ### Changed

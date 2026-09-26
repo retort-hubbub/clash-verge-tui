@@ -1,15 +1,14 @@
 //! A **third**, independent pass over the newest round of fixes in `cvt-core`.
 //!
 //! Written against the author's claims, not their tests. Three things are
-//! deliberately different from `recheck.rs`:
+//! deliberately different from `regression_config_and_profiles.rs`:
 //!
 //! * every claim that is behavioural over a space of inputs is attacked with a
 //!   generated case rather than the input the author happened to pick;
 //! * every claim about what mihomo accepts was settled by running the real core
 //!   (`/usr/bin/verge-mihomo`, `v1.19.31`) with `-t`, and the exact command and
 //!   output are quoted in the doc comment above the test;
-//! * tests named `defect_*` assert the behaviour the *claim* promises and are
-//!   expected to fail. A failing `defect_` test is a finding, not a broken test.
+//! * `defect_*` names preserve the original findings; all tests now must pass.
 //!
 //! Nothing here starts or stops a long-running core: `-t` validates and exits.
 
@@ -164,13 +163,13 @@ fn cases(n: u32) -> ProptestConfig {
 }
 
 // ==========================================================================
-// 1. The inverted assertions in `recheck.rs`
+// 1. The inverted assertions in `regression_config_and_profiles.rs`
 // ==========================================================================
 
 /// CLAIM: "policy names are matched **exactly** (so `MATCH,direct` reports
 /// `E-DANGLING-POLICY`)".
 ///
-/// `recheck.rs::f1_a_case_mismatched_built_in_policy_is_reported` is an
+/// `regression_config_and_profiles.rs::f1_a_case_mismatched_built_in_policy_is_reported` is an
 /// *inverted* assertion: the second reviewer recorded that the validator
 /// accepted `MATCH,direct`, and the author now asserts it is reported.
 ///
@@ -250,7 +249,7 @@ fn inverted_1_the_policy_table_matches_the_core_exactly() {
 /// CLAIM: the orphan-document check "tests the path about to be written",
 /// looping "until both the uid and that destination are free".
 ///
-/// `recheck.rs::f8_an_orphan_document_is_still_overwritten_when_the_source_file_name_differs`
+/// `regression_config_and_profiles.rs::f8_an_orphan_document_is_still_overwritten_when_the_source_file_name_differs`
 /// is an inverted assertion (the defect it recorded is gone; its doc comment
 /// still says `**FAILING:**`).
 ///
@@ -341,7 +340,7 @@ fn inverted_2b_the_orphan_document_is_left_alone_and_the_import_lands_elsewhere(
 
 /// CLAIM: "`relay` and `smart` group types are refused".
 ///
-/// `recheck.rs::f11_relay_is_still_accepted_although_this_core_removed_it` is an
+/// `regression_config_and_profiles.rs::f11_relay_is_still_accepted_although_this_core_removed_it` is an
 /// inverted assertion (its doc comment still says `**FAILING:**`).
 ///
 /// VERDICT: the inversion is RIGHT. Live core, `v1.19.31`:
@@ -539,7 +538,7 @@ fn inverted_4_every_list_or_map_field_of_every_wire_type_reads_null() {
 /// an append list holding a normal rule and a catch-all lands both. An append
 /// list naming **two** catch-alls is refused by `validate`."
 ///
-/// `recheck.rs::f13_one_append_list_holding_a_rule_and_a_catch_all_keeps_at_most_one`
+/// `regression_config_and_profiles.rs::f13_one_append_list_holding_a_rule_and_a_catch_all_keeps_at_most_one`
 /// is an inverted assertion (its doc comment still says `**FAILING:**`).
 ///
 /// VERDICT: the inversion is RIGHT for the two-item case, and the refusal is
@@ -1547,7 +1546,7 @@ fn vocab_1_a_field_after_a_policy_is_a_warning_and_a_bare_match_is_an_error() {
 /// rules: [MATCH,DIRECT]  -> test is successful
 /// ```
 ///
-/// `recheck.rs::f10_a_bare_match_is_refused_and_an_unknown_kind_is_reported` is
+/// `regression_config_and_profiles.rs::f10_a_bare_match_is_refused_and_an_unknown_kind_is_reported` is
 /// NOT an inversion — it already asserts the fixed behaviour — and it is right.
 #[test]
 fn vocab_2_final_and_a_bare_match_are_refused_by_the_core_and_by_the_parser() {

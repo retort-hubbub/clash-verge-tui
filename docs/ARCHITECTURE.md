@@ -237,7 +237,7 @@ Five layers, each catching what the one below cannot.
 | API contract tests | `tests/client_contract.rs` | The client against a fake controller that answers the observed bytes |
 | Render tests | `cvt-tui/src/ui/render_tests.rs` | Every screen, empty and populated, at four terminal sizes |
 | Live core tests | `tests/live_controller.rs` | The same expectations against a real binary |
-| Review counterexamples | `tests/recheck*.rs` | The claims of past reviews, kept as tests — see below |
+| Review counterexamples | `cvt-core/tests/regression_*.rs`, `cvt-tui/tests/regression_*.rs` | Reproductions from independent reviews, grouped by their main subject |
 
 The property layer is the interesting one, because the risk in this program is
 not a wrong value but a wrong *property*: a merge that is not idempotent, a
@@ -252,29 +252,38 @@ it did, it failed on its fourth assertion.
 
 ### Adversarial review, and where its counterexamples live
 
-Every round of substantial work ends with an independent adversarial pass by an
-agent that did not write the code, whose instructions are to falsify the claims
-rather than confirm them. Eight rounds have produced 96 defects, and **every
-round has found a real problem** — including two rounds whose findings were
-defects *introduced by the previous round's fixes*.
+Independent reviews left counterexamples as ordinary passing integration tests.
+The files originally followed review order; they now name their main subject.
+Each still records its review context at the top, including cases where the
+reviewer's original assertion was wrong. Some suites span more than one area
+because the original review checked cross-cutting behavior.
 
-The counterexamples are in the build, as ordinary passing tests:
-`tests/recheck.rs` through `tests/recheck7.rs`, one file per round, each named
-for what it attacked. A finding is closed by making its test pass, so the suite
-is a list of things that used to be wrong and now are not — which is the useful
-form. A report is prose about a state that no longer exists; a test is a claim
-the build refuses to be green while it stands.
+| Crate | Regression suite | Main subjects |
+|---|---|---|
+| `cvt-core` | `regression_config_and_profiles.rs` | Configuration invariants, profile index, validation and rollback |
+| `cvt-core` | `regression_validation_and_overrides.rs` | Validator behavior, overlays and corrected review claims |
+| `cvt-core` | `regression_logs_and_subscriptions.rs` | Log rotation, subscription metadata and control plane |
+| `cvt-core` | `regression_selection_and_paths.rs` | Selection replay, profile paths, reload and log safety |
+| `cvt-core` | `regression_backups_and_test_targets.rs` | Backup and restore, named test URLs and replay |
+| `cvt-core` | `regression_cli_limits_and_backups.rs` | CLI limits, backup state and controller waits |
+| `cvt-core` | `regression_restore_and_network_probes.rs` | Restore safety, timeouts, network probes and diagnostics |
+| `cvt-core` | `regression_overlay_and_control_plane.rs` | Overlay rules, protected keys, backup safety and diagnostic scan |
+| `cvt-tui` | `regression_settings_and_cli_contract.rs` | Settings editor, CLI flags, controller deadlines and backup races |
+| `cvt-tui` | `regression_terminal_and_rendering.rs` | CLI name checks, rendering, terminal lifecycle and global flags |
+
+The `regression_*.rs` files remain separate Cargo integration test targets so
+their test fixtures and process state do not share one executable.
 
 Three things a reader should know before trusting one of those files:
 
-- **A reviewer's assertion can be wrong.** Eight rounds have produced an
-  assertion that encoded the *buggy* state, a failure message that proved the
+- **A reviewer's assertion can be wrong.** Past reviews produced an assertion
+  that encoded the *buggy* state, a failure message that proved the
   fix worked while the assertion failed, two tests in one round that
   contradicted each other, and a premise that was timing-dependent and flaked.
   Each finding is reproduced by the author before it is acted on, and a
   disagreement is written down beside the assertion rather than silently
   absorbed.
-- **A fix that is narrower than its defect is the recurring failure.** Six
+- **A fix that is narrower than its defect is the recurring failure.** Several
   times, a guard has covered the members of a class that somebody had named
   rather than the class itself: `uid` then `file` then the arm beside it; the
   control plane; `--url` in two commands and then a third; `--concurrency` in

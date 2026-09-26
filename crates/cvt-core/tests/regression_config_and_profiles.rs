@@ -7,11 +7,8 @@
 //! pick; where a claim is about the core's own behaviour, mihomo `v1.19.31`'s
 //! source is quoted.
 //!
-//! Tests whose name starts with a finding id (`f3_`, `f4_`, …) check that
-//! finding. A test that is expected to **fail** carries a `FAILING:` marker in
-//! its doc comment, states the minimal input, and asserts the behaviour the
-//! claim promises — so a run of this file shows at a glance how many of the
-//! author's claims survive.
+//! Tests whose names start with finding ids (`f3_`, `f4_`, …) preserve those
+//! counterexamples. They are regression tests and must pass in the current tree.
 //!
 //! Nothing here starts or stops the mihomo core.
 
@@ -210,7 +207,7 @@ fn f1_the_built_in_policies_are_known_in_rule_targets_and_group_members() {
 /// and `ParseRulePayload` upper-cases the *rule type* only, so `direct` is not
 /// a key of that map.
 ///
-/// The recheck asked for a live core to settle it, so here is the live core.
+/// The review asked for a live core to settle it, so here is the live core.
 /// mihomo v1.19.31, `verge-mihomo -t -f <file>`:
 ///
 /// ```text

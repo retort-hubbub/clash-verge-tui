@@ -17,9 +17,8 @@
 //! * the diagnostic-code scan, attacked as the rewrite it now is rather than as
 //!   the mechanism round 8 described.
 //!
-//! Tests named `defect_*` assert what the code *claims* and are expected to
-//! **fail**. A failing `defect_` test is a finding, not a broken test. Tests
-//! named `confirmed_*` assert a claim that was checked and holds.
+//! `defect_*` names preserve the original findings; all tests now must pass.
+//! Tests named `confirmed_*` assert a claim that was checked and holds.
 //!
 //! Take at `9c66eb6`, with the working tree carrying the author's in-flight
 //! `protect_dns` work in `crates/cvt-core/src/enhance/pipeline.rs`,

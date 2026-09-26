@@ -155,9 +155,10 @@ $ CVT_LIVE_CONTROLLER='127.0.0.1:9090|your-secret' \
   cargo test -p cvt-core --test live_controller -- --test-threads=1 --nocapture
 ```
 
-The counterexamples every adversarial review has found are kept as **passing
-tests** in `tests/recheck*.rs` rather than deleted, so each defect that was
-once real has a reproduction attached and regressing it is a visible act.
+The counterexamples from independent reviews remain as **passing regression
+tests** in `crates/cvt-core/tests/regression_*.rs` and
+`crates/cvt-tui/tests/regression_*.rs`. The [test suite map](docs/ARCHITECTURE.md#adversarial-review-and-where-its-counterexamples-live)
+shows which area each file covers.
 
 ## Relationship to other projects
 

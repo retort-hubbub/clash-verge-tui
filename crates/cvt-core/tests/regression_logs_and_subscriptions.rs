@@ -9,8 +9,7 @@
 //!   generated case rather than the input the author happened to pick;
 //! * every claim about what mihomo accepts is settled by running the real core
 //!   (`/usr/bin/verge-mihomo`, `v1.19.31`) with `-t`, which exits on its own;
-//! * tests named `defect_*` assert the behaviour the *claim* promises and are
-//!   expected to fail. A failing `defect_` test is a finding, not a broken test.
+//! * `defect_*` names preserve the original findings; all tests now must pass.
 //!
 //! Nothing here starts a long-running core, and nothing here modifies a source
 //! file.

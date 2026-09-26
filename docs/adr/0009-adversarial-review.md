@@ -14,7 +14,7 @@ behaviour they already believe in.
 This has happened repeatedly: a guard covered the field a reviewer named
 instead of the whole class of fields, and a fix traded one form of data loss
 for another. The existing tests passed before those counterexamples were
-written. The passing `recheck*.rs` suites now preserve them.
+written. The passing `regression_*.rs` suites now preserve them.
 
 ## Decision
 
@@ -26,7 +26,7 @@ so far is that the author's tests pass while the claim is still false.
 Two consequences are part of the decision rather than incidental:
 
 **The counterexamples are kept.** Each finding becomes a test in the build —
-`recheck.rs`, `recheck2.rs`, `recheck3.rs` — with its minimal input and the
+the relevant `regression_*.rs` suite — with its minimal input and the
 observation in the body. A report is a document *about* the code, lists defects
 that were open when it was written, and is deliberately not in the repository;
 the test is the part that belongs in it. Fixing a finding shows up in the
@@ -51,7 +51,7 @@ found it on the first try.
 
 - The suite is larger than the project strictly needs, and a reader has to know
   which file is whose: `invariants.rs` attacks the library's own claims,
-  `recheck*.rs` attack the claims of *fixes*. Each file says so at the top.
+  `regression_*.rs` attack the claims of *fixes*. Each file says so at the top.
 - Review rounds cost time, and have repeatedly found fixes narrower than their
   intended defect.
 - The reviews have their own failure mode, recorded here because it happened:

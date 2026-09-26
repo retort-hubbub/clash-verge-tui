@@ -24,14 +24,13 @@
 //! * the two new commands' *reading* of other people's responses;
 //! * the diagnostic-code scan, attacked as a mechanism rather than as a list.
 //!
-//! Tests named `defect_*` assert what the code *claims* and are expected to
-//! **fail**. A failing `defect_` test is a finding, not a broken test. Tests
-//! named `pre_fix_*` assert a shape that was never in the tree, on a
+//! `defect_*` names preserve the original findings; all tests now must pass.
+//! Tests named `pre_fix_*` assert a shape that was never in the tree, on a
 //! reconstruction, and exist to show a test would have caught the defect.
 //!
 //! Take at `fbf3d85`, with the working tree one commit dirty in
 //! `crates/cvt-core/src/profile/store.rs`, `crates/cvt/src/commands/profiles.rs`,
-//! `crates/cvt/src/cli.rs`, `crates/cvt-core/tests/recheck6.rs` and `docs/**`.
+//! `crates/cvt/src/cli.rs`, `crates/cvt-core/tests/regression_cli_limits_and_backups.rs` and `docs/**`.
 //! Everything this file attacks in `cvt-core` is at `fbf3d85` and unchanged by
 //! that dirt, except `store.rs`, which gained `set_url` — and `set_url` is
 //! attacked below *because* it is new.

@@ -33,9 +33,8 @@
 //! here rather than the interface tests being dropped. `cargo test -p cvt-tui`
 //! runs all of them.
 //!
-//! Tests named `defect_*` assert what the code *claims* and are expected to
-//! **fail**. A failing `defect_` test is a finding, not a broken test. Tests
-//! named `confirmed_*` assert a claim that was checked and holds; `observed_*`
+//! `defect_*` names preserve the original findings; all tests now must pass.
+//! Tests named `confirmed_*` assert a claim that was checked and holds; `observed_*`
 //! record a measurement whose verdict is the author's to make.
 //!
 //! Nothing here modifies a source file.

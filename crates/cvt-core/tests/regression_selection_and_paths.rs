@@ -9,8 +9,7 @@
 //! * a claim about the core is settled by the core: `/usr/bin/verge-mihomo`
 //!   `v1.19.31`, driven with `-t` (which exits on its own) and — for the
 //!   selection claims — started and probed inside a single test;
-//! * tests named `defect_*` assert what the claim promises and are expected to
-//!   **fail**. A failing `defect_` test is a finding, not a broken test;
+//! * `defect_*` names preserve the original findings; all tests now must pass;
 //! * generated cases where the claim is behavioural, hand-picked only where the
 //!   defect is a specific shape.
 //!

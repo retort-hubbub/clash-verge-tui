@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2026-09-26
+## [0.4.1] - 2026-09-26
 
 ### Fixed
 
@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed, admitted by `looks_like_a_backup`, counted against the keep limit —
   and offered for restore as the newest backup of a home it never finished
   copying.
+
+### Ninth Audit Fixes & Key Protections
 
 ### Fixed
 
@@ -66,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same copy the destination guards were written for.
 - The diagnostic scan sees a code a `concat!` builds. `concat!("E-", "SPLIT")`
   is in neither piece, so reading literals one at a time could not see it.
+
+## [0.4.0] - 2026-09-26
 
 ### Added
 
@@ -685,6 +689,7 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
 [0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
 [0.3.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.1
 [0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0

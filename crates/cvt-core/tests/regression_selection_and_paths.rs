@@ -1377,6 +1377,11 @@ async fn defect_9_the_core_refuses_the_hot_reload_path() {
     let service = service.expect("the core must start for this test to mean anything");
     let _guard = RunningCore(service.clone());
 
+    service
+        .wait_until_ready()
+        .await
+        .expect("the core must become ready before testing hot reload");
+
     let outcome = service.hot_reload().await;
     let shown = outcome
         .as_ref()

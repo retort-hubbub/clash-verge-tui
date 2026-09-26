@@ -918,3 +918,77 @@ fn open_editor(path: &std::path::Path) -> Result<(), Error> {
         })
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    /// Every effect the interface can ask for is executed, and every arm names
+    /// an effect that exists.
+    ///
+    /// Textual, and for the same reason the diagnostic scan is: the enum and
+    /// the match are two lists in two crates that have to agree, and nothing in
+    /// the type system makes them. An effect with no arm is a key that appears
+    /// to work and does nothing — which is what a `match` with a `_ => {}` arm
+    /// looks like from the outside.
+    #[test]
+    fn every_effect_is_executed_and_every_arm_names_an_effect() {
+        let app = include_str!("../../cvt-tui/src/app.rs");
+        let defined: Vec<&str> = app
+            .split("pub enum Effect {")
+            .nth(1)
+            .unwrap_or_default()
+            .split("\n}")
+            .next()
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let name = line
+                    .trim()
+                    .split(['(', '{', ','])
+                    .next()
+                    .unwrap_or_default()
+                    .trim();
+                (line.starts_with("    ")
+                    && !line.starts_with("     ")
+                    && name.chars().next().is_some_and(char::is_uppercase))
+                .then_some(name)
+            })
+            .collect();
+        assert!(
+            defined.len() > 20,
+            "the scan found only {} effects, so it is looking in the wrong place",
+            defined.len()
+        );
+
+        let source = include_str!("executor.rs");
+        let handled: Vec<&str> = source
+            .match_indices("Effect::")
+            .filter_map(|(at, _)| {
+                let rest = &source[at + "Effect::".len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                (!name.is_empty()).then_some(Box::leak(name.into_boxed_str()) as &str)
+            })
+            .collect();
+
+        let unexecuted: Vec<&&str> = defined
+            .iter()
+            .filter(|name| !handled.contains(*name))
+            .collect();
+        assert!(
+            unexecuted.is_empty(),
+            "these effects are defined and no arm executes them: {unexecuted:?}"
+        );
+
+        let unknown: Vec<&&str> = handled
+            .iter()
+            .filter(|name| !defined.contains(*name))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "the executor names effects that do not exist: {unknown:?}"
+        );
+    }
+}

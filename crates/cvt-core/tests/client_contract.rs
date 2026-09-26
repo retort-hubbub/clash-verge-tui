@@ -792,6 +792,17 @@ async fn patch_and_put_configs_send_omitted_fields_as_absent() {
 }
 
 #[tokio::test]
+async fn reloading_a_config_can_outlive_the_clients_polling_timeout() {
+    let core = FakeController::start(handler(|_: &Request| {
+        Response::no_content().after(Duration::from_millis(300))
+    }))
+    .await;
+    let client = Client::with_timeout(core.endpoint(), Duration::from_millis(50)).unwrap();
+    client.reload_configs(None, None, true).await.unwrap();
+    assert_eq!(core.only().target, "/configs?force=true");
+}
+
+#[tokio::test]
 async fn upgrade_queries_build_and_trim_correctly() {
     let core = FakeController::start(handler(live_core)).await;
     let client = core.client();

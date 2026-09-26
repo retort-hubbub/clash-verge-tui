@@ -23,7 +23,28 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     let height = usize::from(inner.height);
-    let (lines, _) = app.log_window(height);
+    let width = usize::from(inner.width).max(1);
+    // The window is in *rows*, not lines. A line that wraps takes more than one
+    // row, so asking for `height` lines and letting the `Paragraph` wrap them
+    // made the pane taller than its area — and the `Paragraph` clips the
+    // bottom, so the newest lines were the ones lost. Following a log is the
+    // one thing this pane is for, so the window is taken generously and then
+    // trimmed from the front until it fits.
+    let (candidates, _) = app.log_window(height.saturating_mul(4).max(height));
+    let mut used = 0;
+    let mut first = candidates.len();
+    for line in candidates.iter().rev() {
+        // What is measured is what is drawn: the stamp, the level and the
+        // message, which is what  puts on the row.
+        let full = format!("{} {} {}", line.at, line.level, line.message);
+        let rows = super::wrapped_rows(&full, width);
+        if used + rows > height {
+            break;
+        }
+        used += rows;
+        first -= 1;
+    }
+    let lines = &candidates[first..];
     if lines.is_empty() {
         let text = if app.logs.is_empty() {
             "no log lines yet — start the core, and check that stream.logs is on"

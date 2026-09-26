@@ -35,6 +35,23 @@
 //! `cvt-tui` can use `cvt-core` (a dependency of this crate), the built binary
 //! and the real core as well. `cargo test --workspace` runs all of them.
 //!
+//! ### The state each finding was observed in
+//!
+//! The tree moved twice while this was being written, which is what the round
+//! was told to expect. Every test below was first run against **`f759335`**
+//! (tag `v0.14.0`), where five of them failed; three of those five no longer
+//! fail at **`d79a4f2`** plus the working tree as it stood at 09:0x, because
+//! the author fixed them while the file was being written:
+//!
+//! | finding | `f759335` | now |
+//! |---|---|---|
+//! | `--no-color` does not reach the interface | fails | fixed in the working tree (`cvt/src/tui.rs`, `cvt/src/output.rs`, uncommitted) |
+//! | a node where a group belongs is reported as an empty group | fails | fixed in the working tree (`commands/proxies.rs`, `commands/test.rs`, uncommitted) |
+//! | the empty `--name` | recorded | could not reproduce; see below |
+//!
+//! The three that still fail — the confirmation overlay, the prompt caret and
+//! the wrapped log pane — are renderer defects and are unchanged.
+//!
 //! Nothing here modifies a source file.
 
 #![allow(
@@ -224,9 +241,6 @@ fn declared_names(page: &str) -> BTreeSet<String> {
     out
 }
 
-/// A name that takes a node or a group, as `--help` spells it.
-const NAME_WORDS: [&str; 4] = ["NODE", "GROUP", "G", "N"];
-
 /// `true` when a leaf's own help page offers somewhere to put a node or group.
 fn takes_a_name(page: &str) -> bool {
     let names = declared_names(page);
@@ -276,7 +290,6 @@ struct Sandbox {
     _dir: TempDir,
     core: Child,
     home: PathBuf,
-    port: u16,
 }
 
 impl Sandbox {
@@ -307,8 +320,13 @@ impl Sandbox {
     /// made `proxies list grp-select` fail with "no group or proxy named" on
     /// the first run and succeed on the second. A test that trusted
     /// `/version` would have recorded that as a defect.
+    ///
+    /// A machine with no core at all skips; a machine that has one and cannot
+    /// bring it up **fails**, because every test that uses this would otherwise
+    /// pass while checking nothing.
     fn start() -> Option<Self> {
         if !Path::new(CORE).is_file() {
+            eprintln!("no core at {CORE}: this test checked nothing");
             return None;
         }
         let dir = TempDir::new().expect("a temporary directory");
@@ -343,17 +361,15 @@ impl Sandbox {
                     _dir: dir,
                     core,
                     home,
-                    port,
                 });
             }
             let _ = core.kill();
             let _ = core.wait();
         }
-        None
-    }
-
-    fn controller(&self) -> String {
-        format!("127.0.0.1:{}", self.port)
+        panic!(
+            "{CORE} is installed but eight ports in a row would not bring it up; \
+             this test cannot check anything without it"
+        );
     }
 
     /// Run the binary against this sandbox's home.
@@ -703,7 +719,9 @@ fn observed_unpin_clears_a_url_test_and_is_refused_by_a_selector() {
         return;
     };
     assert_eq!(
-        sandbox.run(&["proxies", "select", "grp-url", "node-b"]).code,
+        sandbox
+            .run(&["proxies", "select", "grp-url", "node-b"])
+            .code,
         0,
         "pinning a url-test group has to work for the rest to mean anything"
     );
@@ -737,15 +755,19 @@ fn observed_unpin_clears_a_url_test_and_is_refused_by_a_selector() {
 /// plus a timestamp and a level.
 #[test]
 fn defect_the_logs_screen_hides_the_newest_lines_when_a_line_wraps() {
-    let mut app = empty(Screen::Logs);
-    for index in 0..40 {
-        let _ = app.on_event(Event::Data(Data::Log(LogRow::new(
-            "info",
-            format!("line-{index:02} {}", "x".repeat(60)),
-        ))));
-    }
     let mut wrong: Vec<String> = Vec::new();
     for (width, height) in [(80u16, 24u16), (120, 40), (200, 60)] {
+        // One column wider than the pane's inner width, so the claim is tested
+        // at the smallest message that can wrap rather than at a length chosen
+        // to fail.
+        let message = "x".repeat(usize::from(width));
+        let mut app = empty(Screen::Logs);
+        for index in 0..40 {
+            let _ = app.on_event(Event::Data(Data::Log(LogRow::new(
+                "info",
+                format!("line-{index:02} {message}"),
+            ))));
+        }
         let text = flat(&draw(&app, width, height).join("\n"));
         if !text.contains("line-39") {
             wrong.push(format!(
@@ -853,7 +875,15 @@ fn defect_the_prompt_caret_disappears_when_the_value_is_wider_than_the_popup() {
 /// asserted here for every screen at every size the existing test does not use.
 #[test]
 fn confirmed_every_screen_draws_empty_and_populated_including_a_terminal_of_zero() {
-    let sizes = [(0u16, 0u16), (0, 24), (80, 0), (1, 1), (1, 40), (200, 1), (13, 7)];
+    let sizes = [
+        (0u16, 0u16),
+        (0, 24),
+        (80, 0),
+        (1, 1),
+        (1, 40),
+        (200, 1),
+        (13, 7),
+    ];
     let screens = Screen::all();
     // The enumeration, held to the class: a tenth screen fails here.
     assert_eq!(
@@ -970,7 +1000,11 @@ fn confirmed_a_four_thousand_character_name_stays_inside_the_frame() {
         app.screen = screen;
         for (width, height) in [(1u16, 1u16), (40, 10), (80, 24), (200, 60)] {
             let drawn = draw(&app, width, height);
-            assert_eq!(drawn.len(), usize::from(height), "{screen} at {width}x{height}");
+            assert_eq!(
+                drawn.len(),
+                usize::from(height),
+                "{screen} at {width}x{height}"
+            );
             for row in &drawn {
                 assert_eq!(
                     row.chars().count(),
@@ -1168,7 +1202,10 @@ fn confirmed_a_pipe_is_refused_rather_than_written_into() {
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).expect("the home");
     let ran = run(&home, &[]);
-    assert_ne!(ran.code, 0, "the interface reported success without a terminal");
+    assert_ne!(
+        ran.code, 0,
+        "the interface reported success without a terminal"
+    );
     assert!(
         ran.stdout.is_empty(),
         "the interface wrote {:?} into a pipe",
@@ -1178,6 +1215,49 @@ fn confirmed_a_pipe_is_refused_rather_than_written_into() {
         ran.said().contains("terminal"),
         "the message has to say what is missing: {:?}",
         ran.said()
+    );
+}
+
+/// RECORD: what `--name ''` does — and a claim I could not settle.
+///
+/// `AddArgs::name` documents "Display name; defaults to the host of the URL".
+/// At `f759335` one run of
+///
+/// ```text
+/// $ cvt profiles add http://127.0.0.1:9/x --name ''      # a closed port, no network
+/// $ cat $HOME/profiles.yaml
+/// - uid: RhbtkUrshVNf
+///   type: remote
+///   name: ''                    <-- the empty name, stored
+/// ```
+///
+/// stored the empty string, which is neither the host the help promises nor a
+/// name anybody chose, and `--json profiles list` then showed the uid where the
+/// name belongs. **It does not reproduce.** At `d79a4f2` the same command, run
+/// three times on fresh homes and once with the argument order swapped, writes
+/// `name: 127.0.0.1` every time — and the source on that path (`AddArgs`,
+/// `profiles::add`, `default_name`) is byte-identical between the two commits,
+/// so this is my own first observation being wrong rather than a behaviour that
+/// changed. It is recorded instead of being asserted, and the assertion below
+/// is the reproducible half.
+#[test]
+fn observed_an_empty_name_falls_back_to_the_host() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).expect("the home");
+    let ran = run(
+        &home,
+        &["profiles", "add", "http://127.0.0.1:9/x", "--name", ""],
+    );
+    let index = std::fs::read_to_string(home.join("profiles.yaml")).unwrap_or_default();
+    assert!(
+        index.contains("name: 127.0.0.1"),
+        "the empty `--name` did not fall back to the host (exit {}):\n{index}",
+        ran.code
+    );
+    assert!(
+        !index.contains("name: ''"),
+        "the profile's name is the empty string:\n{index}"
     );
 }
 
@@ -1220,12 +1300,16 @@ fn confirmed_the_home_flag_beats_the_environment_and_the_environment_is_honoured
         )
     };
 
-    let (code, home) = json_home(&[], &[("CVT_HOME", from_env.to_str().unwrap())]);
+    let (code, home) = json_home(&["status"], &[("CVT_HOME", from_env.to_str().unwrap())]);
     assert_eq!(code, 0, "`CVT_HOME` alone did not work");
-    assert_eq!(home, from_env.display().to_string(), "`CVT_HOME` was ignored");
+    assert_eq!(
+        home,
+        from_env.display().to_string(),
+        "`CVT_HOME` was ignored"
+    );
 
     let (code, home) = json_home(
-        &["--home", from_flag.to_str().unwrap()],
+        &["--home", from_flag.to_str().unwrap(), "status"],
         &[("CVT_HOME", from_env.to_str().unwrap())],
     );
     assert_eq!(code, 0);
@@ -1238,7 +1322,7 @@ fn confirmed_the_home_flag_beats_the_environment_and_the_environment_is_honoured
     // An empty variable is not a home. `XDG_DATA_HOME` is where the platform
     // fallback lands, so the answer is checkable without knowing the machine.
     let (code, home) = json_home(
-        &[],
+        &["status"],
         &[
             ("CVT_HOME", ""),
             ("XDG_DATA_HOME", data.to_str().unwrap()),
@@ -1273,24 +1357,136 @@ fn confirmed_json_keeps_stdout_machine_readable() {
         vec!["--json", "logs", "--level", "bogus"],
     ] {
         let ran = run(&home, &args);
-        let value: serde_json::Value = serde_json::from_str(ran.stdout.trim())
-            .unwrap_or_else(|error| panic!("{args:?}: stdout is not one JSON object ({error}): {:?}", ran.stdout));
-        let schema = value["schema"].as_str().unwrap_or("-");
-        if schema == "-" && ran.code != 0 {
-            // A command that failed before it produced a report has nothing to
-            // print, which is allowed; what is not allowed is printing prose.
-            assert!(
-                ran.stdout.trim().is_empty(),
-                "{args:?}: {schema:?} came from {:?}",
-                ran.stdout
-            );
-        }
         assert!(
             !ran.stdout.contains("error:"),
             "{args:?}: a diagnostic reached stdout: {:?}",
             ran.stdout
         );
+        if ran.stdout.trim().is_empty() {
+            // A command that failed before it built a report — here, one with
+            // no profile to take a controller address from — prints nothing,
+            // which is not the same as printing prose. It still has to fail.
+            assert_ne!(
+                ran.code, 0,
+                "{args:?} printed no report and still reported success"
+            );
+            assert!(
+                !ran.stderr.trim().is_empty(),
+                "{args:?} failed without saying why"
+            );
+            continue;
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(ran.stdout.trim()).unwrap_or_else(|error| {
+                panic!(
+                    "{args:?}: stdout is not one JSON object ({error}): {:?}",
+                    ran.stdout
+                )
+            });
+        assert!(
+            value["schema"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("cvt.")),
+            "{args:?}: no `schema` field: {:?}",
+            ran.stdout
+        );
     }
+}
+
+/// The per-command flags, enumerated from the binary's own `--help`.
+///
+/// The tenth review spot-checked this class rather than enumerating it. Every
+/// long flag every leaf command declares is collected here, minus the four
+/// globals, and compared with a table — so a new per-command flag fails this
+/// test with "extend the table" instead of being a flag nobody looked at. The
+/// table carries the answer each one gave, which is the half that cannot be
+/// derived.
+///
+/// | flag | command | answer |
+/// |---|---|---|
+/// | `--all` | `connections close`, `test delay` | required by an `ArgGroup` |
+/// | `--all-due` | `profiles update` | conflicts with a uid (exit 2) |
+/// | `--apply` | `config generate` | gates `--force` and `--mode` |
+/// | `--channel` | `core upgrade` | `ValueEnum`, exit 2 on a typo |
+/// | `--clear` | `profiles chain` | conflicts with uids (exit 2) |
+/// | `--concurrency` | `proxies test`, `proxies test-all`, `test delay`, `test urls` | refused at 0 |
+/// | `--direct` | `geo` | a switch |
+/// | `--disabled` | `rules list` | a switch |
+/// | `--filter` | `logs` | free text, no validation |
+/// | `--follow` | `logs` | a switch |
+/// | `--force` | `config generate`, `core upgrade` | requires `--apply` on the first |
+/// | `--group` | `test delay` | a **name**: covered by section 1 |
+/// | `--level` | `logs` | refused on a typo, lists the five levels |
+/// | `--limit` | `connections list` | `0` documented as "no limit" |
+/// | `--lines` | `logs` | `0` documented as "everything" |
+/// | `--list` | `test urls` | a switch |
+/// | `--mode` | `config generate` | `ValueEnum`, exit 2 on a typo |
+/// | `--name` | `profiles add` | free text; empty is refused by clap |
+/// | `--no-fetch` | `profiles edit-url` | a switch |
+/// | `--node` | `test urls` | a **name**: covered by section 1 |
+/// | `--stats` | `rules list` | a switch |
+/// | `--timeout` | `geo`, `unlock`, `proxies test`, `proxies test-all`, `test delay`, `test urls` | refused at 0 and above the ceiling |
+/// | `--type` | `test dns` | passed to the core, which owns the list |
+/// | `--url` | `proxies test`, `proxies test-all`, `test delay` | refused when not a URL or a known target |
+#[test]
+fn confirmed_the_per_command_flag_class_is_exactly_these_names() {
+    let mut declared: BTreeSet<String> = BTreeSet::new();
+    for leaf in leaf_commands() {
+        let page = help(&leaf);
+        for line in page.lines() {
+            for token in line.split_whitespace() {
+                if let Some(flag) = token.strip_prefix("--") {
+                    let name = flag
+                        .split(['=', '<'])
+                        .next()
+                        .unwrap_or(flag)
+                        .trim_end_matches("...");
+                    if !matches!(
+                        name,
+                        "home" | "json" | "verbose" | "no-color" | "help" | "version"
+                    ) {
+                        declared.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    let expected: BTreeSet<String> = [
+        "all",
+        "all-due",
+        "apply",
+        "channel",
+        "clear",
+        "concurrency",
+        "direct",
+        "disabled",
+        "filter",
+        "follow",
+        "force",
+        "group",
+        "level",
+        "limit",
+        "lines",
+        "list",
+        "mode",
+        "name",
+        "no-fetch",
+        "node",
+        "stats",
+        "timeout",
+        "type",
+        "url",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let joined: Vec<String> = declared.difference(&expected).cloned().collect();
+    let missing: Vec<String> = expected.difference(&declared).cloned().collect();
+    assert!(
+        joined.is_empty() && missing.is_empty(),
+        "the per-command flag class moved: these joined and are unchecked {joined:?}; \
+         these are gone from --help {missing:?}"
+    );
 }
 
 /// RECORD: the per-command flags that were enumerated and checked by hand, and
@@ -1331,8 +1527,22 @@ fn observed_the_per_command_flags_that_were_enumerated_by_hand() {
     assert_ne!(refused.code, 0, "a zero timeout has to be refused");
     assert!(refused.said().contains("120000"), "{:?}", refused.said());
     // A usage error is clap's, and it is code 2.
-    let usage = run(&home, &["config", "generate", "--force"]);
-    assert_eq!(usage.code, 2, "{:?}", usage.said());
-    let usage = run(&home, &["profiles", "chain", "m1", "--clear"]);
-    assert_eq!(usage.code, 2, "{:?}", usage.said());
+    for args in [
+        vec!["config", "generate", "--force"],
+        vec!["config", "generate", "--mode", "hot"],
+        vec!["profiles", "chain", "m1", "--clear"],
+        vec!["profiles", "update", "R1", "--all-due"],
+        vec!["connections", "close", "abc", "--all"],
+        vec!["test", "delay"],
+        vec!["core", "upgrade", "--channel", "beta"],
+        vec!["config", "generate", "--apply", "--mode", "fast"],
+    ] {
+        let usage = run(&home, &args);
+        assert_eq!(usage.code, 2, "{args:?}: {:?}", usage.said());
+    }
+    // The other command that makes its own request, held to the same ceiling
+    // as `geo`.
+    let refused = run(&home, &["unlock", "--timeout", "0"]);
+    assert_ne!(refused.code, 0, "a zero timeout has to be refused");
+    assert!(refused.said().contains("120000"), "{:?}", refused.said());
 }

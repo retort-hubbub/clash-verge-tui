@@ -354,9 +354,21 @@ async fn test(ctx: &Ctx, args: &TestArgs) -> Result<()> {
         .ok_or_else(|| Error::invalid("group", format!("no group named `{}`", args.group)))?;
     let members = target.members();
     if members.is_empty() {
-        return Err(
-            Error::invalid("group", format!("`{}` has no members to test", args.group)).into(),
-        );
+        // A node is not a group with no members, and saying so sends the user
+        // to the wrong flag: `--node` is what tests one, and the message they
+        // got named a shape their name does not have.
+        return Err(Error::invalid(
+            "group",
+            if target.is_group() {
+                format!("`{}` has no members to test", args.group)
+            } else {
+                format!(
+                    "`{}` is a node, not a group; use `--node {}` to test it",
+                    args.group, args.group
+                )
+            },
+        )
+        .into());
     }
     let targets: Vec<(String, Vec<String>)> = members
         .iter()

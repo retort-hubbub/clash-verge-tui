@@ -266,6 +266,21 @@ async fn delay(ctx: &Ctx, args: &DelayArgs) -> Result<()> {
             .iter()
             .map(|member| (member.clone(), vec![group.clone()]))
             .collect();
+        if targets.is_empty() {
+            // A name that resolves to a node is not a group whose selection
+            // happens to be empty, and the message sends the user to the wrong
+            // flag if it does not say so. The distinction lives here, where
+            // both the name and what it resolved to are in hand.
+            return Err(Error::invalid(
+                "group",
+                if target.is_group() {
+                    format!("`{group}` has no members to test")
+                } else {
+                    format!("`{group}` is a node, not a group; use `--node {group}` to test it")
+                },
+            )
+            .into());
+        }
         (format!("group {group}"), targets)
     };
 

@@ -177,7 +177,16 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     // this program cannot fetch is one the index should never have held, and
     // finding out afterwards leaves a profile pointing at nothing.
     cvt_core::profile::source::check_fetchable(&url)?;
-    let name = args.name.clone().unwrap_or_else(|| default_name(&url));
+    // An empty `--name` is no name. `--name ""` is what a script produces when
+    // the variable it interpolates is unset, and storing it made a profile
+    // whose name is the empty string — displayed as its uid, so the interface
+    // showed a name the index does not hold and `profiles rename` was the only
+    // way to give it one. The help says the name defaults to the host.
+    let name = args
+        .name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| default_name(&url));
     let uid = ctx.edit_store(|store| Ok(store.add(PrfItem::remote("", name, url.clone()))))?;
     ctx.out()
         .verbose(1, format!("added {uid}; downloading the subscription"));

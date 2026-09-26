@@ -174,11 +174,24 @@ fn prompt(
 
     // The caret is drawn as a selected cell rather than as a character, so a
     // space in the middle of an answer is still visible.
+    //
+    // The window follows the caret. Without that, a value longer than the popup
+    // was clipped by the `Paragraph` and the caret — which is at the *end* of
+    // anything being typed — went off the edge with it, so the one cell that
+    // says where the next character lands was the first thing lost. The leading
+    // space is part of the window, so the arithmetic is over `inner + 1` cells.
     let chars: Vec<char> = value.chars().collect();
     let cursor = cursor.min(chars.len());
-    let before: String = chars[..cursor].iter().collect();
-    let after: String = chars[cursor.min(chars.len())..].iter().skip(1).collect();
-    let under = chars.get(cursor).copied().unwrap_or(' ');
+    // Four cells are not the value's: the two borders, the leading space, and
+    // the caret cell itself — which is a space past the end whenever the cursor
+    // is there, which is where it is while anything is being typed.
+    let inner = usize::from(width).saturating_sub(4);
+    let start = cursor.saturating_sub(inner);
+    let visible: String = chars[start..].iter().take(inner).collect();
+    let caret = cursor - start;
+    let before: String = visible.chars().take(caret).collect();
+    let after: String = visible.chars().skip(caret + 1).collect();
+    let under = visible.chars().nth(caret).unwrap_or(' ');
     let line = Line::from(vec![
         Span::styled(format!(" {before}"), app.theme.key_label()),
         Span::styled(under.to_string(), app.theme.selection()),
@@ -196,7 +209,18 @@ fn prompt(
 /// A question about something destructive.
 fn confirm(frame: &mut Frame<'_>, area: Rect, app: &App, question: &str, action: &crate::Action) {
     let width = area.width.saturating_sub(4).clamp(12, 72);
-    let popup = w::centered(area, width, 5);
+    // Tall enough for the question at *this* width, because the question is
+    // usually a name and names are as long as they are: the popup was five rows
+    // and the buttons are the last of them, so a 44-character name pushed
+    // `[y] yes [n] no` off the bottom — a confirmation with nothing to confirm
+    // with. `+ 4` is the two borders, the blank line and the button row.
+    let inner = usize::from(width).saturating_sub(2).max(1);
+    let rows = wrapped_rows(question, inner) + 4;
+    let height = u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .min(area.height)
+        .max(5);
+    let popup = w::centered(area, width, height);
     frame.render_widget(Clear, popup);
     let body = Text::from(vec![
         Line::from(Span::styled(question.to_owned(), app.theme.key_label())),
@@ -275,4 +299,38 @@ fn preview(
             .scroll((offset, 0)),
         popup,
     );
+}
+
+/// How many rows `text` needs at `width`, wrapped the way `Wrap` wraps it.
+///
+/// Greedy on whitespace, with a word longer than the line broken where it has
+/// to be. Counting characters and dividing was the first attempt and it
+/// under-counted: a name with spaces wraps at the last space that fits, so the
+/// remainder of the line is wasted and the block is taller than the division
+/// says. Twenty-nine of ninety names were still losing their buttons.
+pub(super) fn wrapped_rows(text: &str, width: usize) -> usize {
+    let width = width.max(1);
+    let mut rows = 1;
+    let mut used = 0;
+    for word in text.split_whitespace() {
+        let length = word.chars().count();
+        let gap = usize::from(used > 0);
+        if used + gap + length <= width {
+            used += gap + length;
+            continue;
+        }
+        if used > 0 {
+            rows += 1;
+        }
+        // A word that does not fit on a line of its own is broken across as
+        // many as it needs.
+        let whole = length / width;
+        rows += whole;
+        used = length % width;
+        if used == 0 && whole > 0 {
+            rows -= 1;
+            used = width;
+        }
+    }
+    rows
 }

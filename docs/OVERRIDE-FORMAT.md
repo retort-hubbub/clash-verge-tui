@@ -5,7 +5,7 @@ things you want to change about it live in a *different* document — one you
 wrote, one a subscription update will not replace, and one that can be
 validated, diffed and undone before it reaches the core.
 
-There are three shapes, and they are all you need:
+There are three supported shapes:
 
 | Shape | Profile type | For |
 |---|---|---|
@@ -258,5 +258,5 @@ a document that rewrites it does not break this program's connection, it
 settings, or declare them in the base profile.
 
 There is no JavaScript. A `script` profile is reported as skipped rather than
-silently ignored — see `docs/FEATURE-COVERAGE.md` for why, and for what a
-script can do that these three shapes cannot.
+silently ignored. See the [feature limits](../README.md#feature-coverage-and-limits)
+for the tradeoff.

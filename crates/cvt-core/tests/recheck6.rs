@@ -1204,7 +1204,7 @@ fn defect_4_two_backups_in_one_second_can_share_a_sequence() {
     );
 }
 
-/// CLAIM (`docs/FEATURE-COVERAGE.md`): "Local backup / restore … over the
+/// CLAIM (the former feature coverage table): "Local backup / restore … over the
 /// profiles, the index, the settings and the overrides", reported by
 /// `cvt backup create`.
 ///

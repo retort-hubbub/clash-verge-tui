@@ -5,7 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.1] - 2026-09-26
+## [Unreleased]
+
+### Fixed
+
+- TUI subscription fallback uses the deployed proxy listener, not the
+  controller endpoint. The TUI's bulk update and launch update select only
+  subscriptions whose interval has elapsed.
+- `core.auto_start` and `update.update_on_start` now run when the TUI launches.
+- TLS controller endpoints use HTTPS and secure WebSockets.
+
+### Changed
+
+- The user-facing feature summary and limits now live in the README instead
+  of a separate coverage ledger whose TUI/CLI claims had become stale.
+
+## [0.14.0] - 2026-09-26
 
 ### Fixed
 
@@ -36,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and offered for restore as the newest backup of a home it never finished
   copying.
 
-### Ninth Audit Fixes & Key Protections
+## [0.13.0] - 2026-09-26
 
 ### Fixed
 
@@ -69,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The diagnostic scan sees a code a `concat!` builds. `concat!("E-", "SPLIT")`
   is in neither piece, so reading literals one at a time could not see it.
 
-## [0.4.0] - 2026-09-26
+## [0.12.0] - 2026-09-26
 
 ### Added
 
@@ -83,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no enhancement may change — so it is a *list* on the pipeline rather than a
   second special case beside it.
 
-### Dialer Proxy Topology
+## [0.11.0] - 2026-09-26
 
 ### Added
 
@@ -98,7 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency ``). A chain, and a *group* as the dialer, stay accepted — both
   were checked against the core.
 
-### Profile URL Editing & Audit Fixes
+## [0.10.0] - 2026-09-26
 
 ### Fixed
 
@@ -182,7 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `free_backup_path` checks its last-resort name, so the thousand-and-first
   backup in one second does not write into the thousandth's directory.
 
-### Network Probes & Unlock Checks
+## [0.9.0] - 2026-09-26
 
 ### Fixed
 
@@ -240,7 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was fixed for three times, and the sixth review found this fourth instance by
   reading rather than running.
 
-## [0.3.1] - 2026-09-26
+## [0.8.0] - 2026-09-26
 
 ### Fixed
 
@@ -317,7 +332,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and checked nothing. Replaced by a severity assertion, which then failed and
   showed that the document it tested named a policy that does not exist.
 
-## [0.3.0] - 2026-09-26
+## [0.7.0] - 2026-09-26
 
 ### Added
 
@@ -340,7 +355,7 @@ than the front page: a robots file is a few hundred bytes, it is served over
 the same TLS connection, and fetching a video page to measure latency would be
 a strange thing for a monitoring tool to do.
 
-### Backup and Restore System
+## [0.6.0] - 2026-09-26
 
 A fifth adversarial review, of the newest work. It found twelve problems: eight
 in what it was sent to check, and four more that opened while it ran, because
@@ -403,11 +418,34 @@ calls it.
 - A rolled-back apply no longer replays the choices of the configuration that
   failed to apply.
 
-## [0.2.1] - 2026-09-26
+## [0.5.0] - 2026-09-26
+
+### Added
+
+- The node chosen in a group is remembered on the profile and replayed after
+  every apply. A reload rebuilds every group, so without this the choice lasts
+  until the next configuration change — which, for a subscription that updates
+  on a schedule, is not long.
+- `cvt proxies select` and `unpin`, and the interface's equivalents, record and
+  forget the choice. The replay waits for a group to answer again before
+  choosing and then confirms the choice took: the core applies a reload in the
+  background, and the first version of this replayed into that window, where
+  the selection was silently discarded. It cost an afternoon of believing the
+  feature worked; the end-to-end check is what caught it.
+- The whole replay shares one deadline rather than taking one per group, so a
+  profile with many remembered groups and a core that has lost them all cannot
+  hold an apply for half a minute.
+
+### Changed
+
+- `ApplyReport` carries `selections_restored`, because a choice is something a
+  user made and one that could not be replayed is worth being able to see.
+
+## [0.4.1] - 2026-09-26
 
 A fourth adversarial review checked 0.4.0's own code and found eleven
 problems. All of them are closed, and its 30 tests are kept
-(`crates/cvt-core/tests/regression_logs_and_subscriptions.rs`).
+(`crates/cvt-core/tests/recheck3.rs`).
 
 The one worth naming is the fourth instance of the same pattern: the guard on
 a document's file name covered the field the previous review had named and not
@@ -446,30 +484,7 @@ through the same guard now, and the fallback no longer keeps the uid verbatim.
   RFC 5987 spelling, which is the one that form actually uses, stopped being
   read at all.
 
-## [0.2.0] - 2026-09-26
-
-### Added
-
-- The node chosen in a group is remembered on the profile and replayed after
-  every apply. A reload rebuilds every group, so without this the choice lasts
-  until the next configuration change — which, for a subscription that updates
-  on a schedule, is not long.
-- `cvt proxies select` and `unpin`, and the interface's equivalents, record and
-  forget the choice. The replay waits for a group to answer again before
-  choosing and then confirms the choice took: the core applies a reload in the
-  background, and the first version of this replayed into that window, where
-  the selection was silently discarded. It cost an afternoon of believing the
-  feature worked; the end-to-end check is what caught it.
-- The whole replay shares one deadline rather than taking one per group, so a
-  profile with many remembered groups and a core that has lost them all cannot
-  hold an apply for half a minute.
-
-### Changed
-
-- `ApplyReport` carries `selections_restored`, because a choice is something a
-  user made and one that could not be replayed is worth being able to see.
-
-### Log Rotation and Header Names
+## [0.4.0] - 2026-09-26
 
 Three gaps from `docs/FEATURE-COVERAGE.md`, which was written by reading the
 code rather than by intent and then turned out to be a work list.
@@ -497,12 +512,12 @@ code rather than by intent and then turned out to be a work list.
   screen, where a rule that profiles may not set a value has to be reachable
   from if it is to be usable at all.
 
-### Control Plane Ownership & Audit Fixes
+## [0.3.0] - 2026-09-26
 
 A third adversarial review checked the fixes from the second and found ten more
 problems with them, including the other half of a path traversal the second had
 found and two regressions those fixes had introduced. All ten are closed, and
-its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.rs`).
+its tests are kept (`crates/cvt-core/tests/recheck2.rs`).
 
 ### Added
 
@@ -513,7 +528,7 @@ its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.r
   know, and a line that is not a rule at all.
 - `docs/FEATURE-COVERAGE.md`: what this project does about each feature of
   `clash-verge-rev`, including the eighteen it does not implement and why.
-- `crates/cvt-core/tests/regression_config_and_profiles.rs` and `regression_validation_and_overrides.rs`: two independent
+- `crates/cvt-core/tests/recheck.rs` and `recheck2.rs`: two independent
   adversarial reviews, kept in the build.
 
 ### Changed
@@ -545,7 +560,7 @@ its tests are kept (`crates/cvt-core/tests/regression_validation_and_overrides.r
   into a list (`a[0].b`) is how an element is addressed, and one writing an
   *ancestor* of a list was never compared against the value it writes.
 
-## [0.1.1] - 2026-09-26
+## [0.2.0] - 2026-09-26
 
 ### Fixed
 
@@ -689,11 +704,19 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.14.0...develop
+[0.14.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.14.0
+[0.13.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.13.0
+[0.12.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.12.0
+[0.11.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.11.0
+[0.10.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.10.0
+[0.9.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.9.0
+[0.8.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.8.0
+[0.7.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.7.0
+[0.6.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.6.0
+[0.5.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.5.0
 [0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
 [0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
-[0.3.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.1
 [0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0
-[0.2.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.1
 [0.2.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.2.0
-[0.1.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.1.0

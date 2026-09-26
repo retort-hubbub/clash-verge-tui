@@ -38,7 +38,7 @@
 //!
 //! The tree moved twice while this was being written, which is what the round
 //! was told to expect. Every test below was first run against **`f759335`**
-//! (tag `v0.14.0`), where five of them failed; three of those five no longer
+//! (tag `v0.4.1`), where five of them failed; three of those five no longer
 //! fail at **`d79a4f2`** plus the working tree as it stood at 09:0x, because
 //! the author fixed them while the file was being written:
 //!
@@ -1270,8 +1270,8 @@ fn confirmed_a_four_thousand_character_name_stays_inside_the_frame() {
 const PTY_DRIVER: &str = r#"
 import fcntl, json, os, pty, re, select, signal, struct, sys, termios, time
 
-binary, home, env_mode = sys.argv[1], sys.argv[2], sys.argv[3]
-args = sys.argv[4:]
+binary, home, env_mode, keys = sys.argv[1:5]
+args = sys.argv[5:]
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -1304,6 +1304,9 @@ def drain(seconds, stop_on=None):
 
 drain(5.0, b"Home")
 drain(0.5)
+for key in keys:
+    os.write(fd, key.encode("ascii"))
+    drain(0.3)
 before = termios.tcgetattr(fd)
 os.write(fd, b"q")
 code = None
@@ -1331,6 +1334,9 @@ print(json.dumps({
     "mouse_enter": b"\x1b[?1006h" in out and b"\x1b[?1000h" in out,
     "mouse_leave": b"\x1b[?1006l" in out and b"\x1b[?1000l" in out,
     "missing_controller": b"is missing required field" in out,
+    "empty_proxies": b"no proxies yet" in out,
+    "empty_connections": b"no connections" in out,
+    "empty_rules": b"no rules" in out,
     "icanon_while_running": bool(before[3] & termios.ICANON),
     "icanon_after_exit": bool(after[3] & termios.ICANON),
     "echo_after_exit": bool(after[3] & termios.ECHO),
@@ -1339,6 +1345,15 @@ print(json.dumps({
 
 /// Run the interface under a real pty and return the driver's JSON object.
 fn under_a_terminal(home: &Path, args: &[&str], no_color_env: bool) -> serde_json::Value {
+    under_a_terminal_with_keys(home, args, no_color_env, "")
+}
+
+fn under_a_terminal_with_keys(
+    home: &Path,
+    args: &[&str],
+    no_color_env: bool,
+    keys: &str,
+) -> serde_json::Value {
     let dir = TempDir::new().expect("a temporary directory");
     let script = dir.path().join("pty_driver.py");
     std::fs::write(&script, PTY_DRIVER).expect("the driver is written");
@@ -1348,6 +1363,7 @@ fn under_a_terminal(home: &Path, args: &[&str], no_color_env: bool) -> serde_jso
         .arg(cvt_binary())
         .arg(home)
         .arg(if no_color_env { "nocolor" } else { "clean" })
+        .arg(keys)
         .args(args);
     let out = command.output().expect("python3 runs the driver");
     assert!(
@@ -1392,6 +1408,21 @@ fn confirmed_the_terminal_is_taken_over_and_given_back() {
     assert_eq!(report["alt_leave"], true, "{report}");
     assert_eq!(report["mouse_enter"], true, "{report}");
     assert_eq!(report["mouse_leave"], true, "{report}");
+    assert_eq!(report["missing_controller"], false, "{report}");
+}
+
+#[test]
+fn empty_home_can_visit_every_controller_screen_without_a_missing_field_error() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).expect("the home");
+    // 3, 4 and 6 visit Proxies, Connections and Rules respectively. Capturing
+    // every frame catches even an error hidden by a later screen's status.
+    let report = under_a_terminal_with_keys(&home, &[], false, "346");
+    assert_eq!(report["exit"], 0, "{report}");
+    assert_eq!(report["empty_proxies"], true, "{report}");
+    assert_eq!(report["empty_connections"], true, "{report}");
+    assert_eq!(report["empty_rules"], true, "{report}");
     assert_eq!(report["missing_controller"], false, "{report}");
 }
 

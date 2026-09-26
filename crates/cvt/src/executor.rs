@@ -566,6 +566,19 @@ impl Executor {
 
     // -------------------------------------------------------------- refresh
 
+    /// A background read has no controller to ask until one is configured.
+    /// Keep an absent endpoint quiet; malformed configuration is still shown.
+    fn has_controller_endpoint(&self, sink: &EventSink) -> bool {
+        match self.with_service(|service| service.endpoint()) {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(error) => {
+                Self::emit(sink, Event::Failed(error.short()));
+                false
+            }
+        }
+    }
+
     /// Read whatever a screen shows.
     fn refresh(&self, screen: Screen, sink: &EventSink) {
         match screen {
@@ -573,17 +586,12 @@ impl Executor {
                 self.start_streaming(sink);
                 let status = self.with_service(|service| service.core_status());
                 Self::emit(sink, Event::Data(Data::Core(status)));
-                // A fresh home has no controller yet. The dashboard can show
-                // the supervisor state without turning that normal setup
-                // state into a permanent "missing external-controller" error.
-                match self.with_service(|service| service.endpoint()) {
-                    Ok(Some(_)) => self.spawn_net(
+                if self.has_controller_endpoint(sink) {
+                    self.spawn_net(
                         sink,
                         |client| async move { client.version().await },
                         |version| Event::Data(Data::Version(version.trimmed().to_owned())),
-                    ),
-                    Ok(None) => {}
-                    Err(error) => Self::emit(sink, Event::Failed(error.short())),
+                    );
                 }
             }
             Screen::Logs => self.start_streaming(sink),
@@ -597,26 +605,42 @@ impl Executor {
                 let settings = self.with_service(|service| service.settings().clone());
                 Self::emit(sink, Event::Data(Data::Settings(Box::new(settings))));
             }
-            Screen::Proxies => self.spawn_net(
-                sink,
-                |client| async move { client.proxies().await },
-                |inventory| Event::Data(Data::Nodes(node_rows(&inventory.proxies))),
-            ),
-            Screen::Connections => self.spawn_net(
-                sink,
-                |client| async move { client.connections().await },
-                |response| {
-                    let rows = response
-                        .connections
-                        .unwrap_or_default()
-                        .iter()
-                        .map(ConnectionRow::from_connection)
-                        .collect();
-                    Event::Data(Data::Connections(rows))
-                },
-            ),
+            Screen::Proxies => {
+                if self.has_controller_endpoint(sink) {
+                    self.spawn_net(
+                        sink,
+                        |client| async move { client.proxies().await },
+                        |inventory| Event::Data(Data::Nodes(node_rows(&inventory.proxies))),
+                    );
+                } else {
+                    Self::emit(sink, Event::Data(Data::Nodes(Vec::new())));
+                }
+            }
+            Screen::Connections => {
+                if self.has_controller_endpoint(sink) {
+                    self.spawn_net(
+                        sink,
+                        |client| async move { client.connections().await },
+                        |response| {
+                            let rows = response
+                                .connections
+                                .unwrap_or_default()
+                                .iter()
+                                .map(ConnectionRow::from_connection)
+                                .collect();
+                            Event::Data(Data::Connections(rows))
+                        },
+                    );
+                } else {
+                    Self::emit(sink, Event::Data(Data::Connections(Vec::new())));
+                }
+            }
             Screen::Rules => {
-                let providers_sink = sink.clone();
+                if !self.has_controller_endpoint(sink) {
+                    Self::emit(sink, Event::Data(Data::Rules(Vec::new())));
+                    Self::emit(sink, Event::Data(Data::RuleProviders(Vec::new())));
+                    return;
+                }
                 self.spawn_net(
                     sink,
                     |client| async move { client.rules().await },
@@ -625,7 +649,7 @@ impl Executor {
                     },
                 );
                 self.spawn_net(
-                    &providers_sink,
+                    sink,
                     |client| async move { client.rule_providers().await },
                     |providers| {
                         Event::Data(Data::RuleProviders(

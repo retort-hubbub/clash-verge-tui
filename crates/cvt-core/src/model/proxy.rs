@@ -75,7 +75,9 @@ pub enum GroupKind {
 }
 
 impl GroupKind {
-    /// Classify a group by its `type` string.
+    /// Classify a group by the `type` spelling used in configuration files.
+    ///
+    /// That is `select`, `url-test` and friends, as written by a user.
     #[must_use]
     pub fn from_wire(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
@@ -86,6 +88,27 @@ impl GroupKind {
             "relay" => Self::Relay,
             "smart" => Self::Smart,
             _ => Self::Unknown,
+        }
+    }
+
+    /// Classify a group by the **adapter type** the core reports.
+    ///
+    /// `GET /proxies` returns Go type names — `Selector`, `URLTest`,
+    /// `LoadBalance` — not the configuration spelling, so a caller that feeds
+    /// those to [`GroupKind::from_wire`] gets [`GroupKind::Unknown`] and loses
+    /// the ability to tell a selectable group from a load balancer. Both
+    /// spellings are therefore supported explicitly rather than guessed at.
+    #[must_use]
+    pub fn from_adapter(s: &str) -> Self {
+        match s {
+            "Selector" => Self::Select,
+            "URLTest" => Self::UrlTest,
+            "Fallback" => Self::Fallback,
+            "LoadBalance" => Self::LoadBalance,
+            "Relay" => Self::Relay,
+            "Smart" => Self::Smart,
+            // Tolerate a caller that passes the configuration spelling anyway.
+            other => Self::from_wire(other),
         }
     }
 
@@ -106,7 +129,20 @@ impl GroupKind {
     /// Whether the group supports latency testing its members.
     #[must_use]
     pub fn is_testable(self) -> bool {
-        matches!(self, Self::UrlTest | Self::Fallback | Self::LoadBalance | Self::Smart)
+        matches!(
+            self,
+            Self::UrlTest | Self::Fallback | Self::LoadBalance | Self::Smart
+        )
+    }
+
+    /// Whether a member can be pinned with `PUT /proxies/{name}`.
+    ///
+    /// The core's `SelectAble` covers exactly `Selector`, `URLTest` and
+    /// `Fallback`; a `LoadBalance` group answers `400 Must be a Selector`, and
+    /// the plain proxies are not groups at all.
+    #[must_use]
+    pub fn is_selectable(self) -> bool {
+        matches!(self, Self::Select | Self::UrlTest | Self::Fallback)
     }
 }
 
@@ -294,12 +330,39 @@ client-fingerprint: chrome
     }
 
     #[test]
-    fn classifies_group_kinds() {
+    fn classifies_group_kinds_from_config_spelling() {
         assert_eq!(GroupKind::from_wire("url-test"), GroupKind::UrlTest);
         assert_eq!(GroupKind::from_wire("load-balance"), GroupKind::LoadBalance);
         assert_eq!(GroupKind::from_wire("nonsense"), GroupKind::Unknown);
         assert!(GroupKind::UrlTest.is_testable());
         assert!(!GroupKind::Select.is_testable());
+        // Selection and testing are deliberately different sets.
+        assert!(GroupKind::Select.is_selectable());
+        assert!(GroupKind::UrlTest.is_selectable());
+        assert!(GroupKind::Fallback.is_selectable());
+        assert!(!GroupKind::LoadBalance.is_selectable());
+        assert!(!GroupKind::Relay.is_selectable());
+        assert!(!GroupKind::Unknown.is_selectable());
+    }
+
+    #[test]
+    fn classifies_group_kinds_from_core_adapter_names() {
+        // The core reports Go type names, which the configuration spelling
+        // does not match.
+        assert_eq!(GroupKind::from_adapter("Selector"), GroupKind::Select);
+        assert_eq!(GroupKind::from_adapter("URLTest"), GroupKind::UrlTest);
+        assert_eq!(GroupKind::from_adapter("Fallback"), GroupKind::Fallback);
+        assert_eq!(
+            GroupKind::from_adapter("LoadBalance"),
+            GroupKind::LoadBalance
+        );
+        assert_eq!(GroupKind::from_adapter("Relay"), GroupKind::Relay);
+        assert_eq!(GroupKind::from_adapter("SomethingNew"), GroupKind::Unknown);
+        // Feeding adapter names to the config parser is exactly the mistake
+        // this exists to prevent.
+        assert_eq!(GroupKind::from_wire("Selector"), GroupKind::Unknown);
+        // But a caller that passes config spelling anyway is still understood.
+        assert_eq!(GroupKind::from_adapter("url-test"), GroupKind::UrlTest);
     }
 
     #[test]

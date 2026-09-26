@@ -5,7 +5,11 @@ members = ["crates/cvt-core", "crates/cvt-tui", "crates/cvt"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Not a guess: ratatui 0.30 declares 1.88, and it is the highest floor in the
+# dependency graph. The CI `msrv` job builds the workspace against exactly this
+# version, so lowering it without checking that job is a lie rather than an
+# optimisation.
+rust-version = "1.88"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/retort-hubbub/clash-verge-tui"
 homepage = "https://github.com/retort-hubbub/clash-verge-tui"
@@ -73,6 +77,20 @@ option_if_let_else = "allow"
 items_after_statements = "allow"
 unused_async = "allow"
 future_not_send = "allow"
+# Style lints that produce noise without catching defects. Each is a deliberate
+# choice, not an oversight:
+#
+# * `missing_const_for_fn` fires on ~30 trivial accessors. Marking them `const`
+#   buys nothing here (they are not used in const context) and makes signatures
+#   harder to read and to change.
+# * `derive_partial_eq_without_eq` wants `Eq` on every value type. Several of
+#   ours hold `serde_json::Value`, which is not `Eq`, and none is used as a map
+#   key, so the derive would buy nothing.
+# * `needless_raw_string_hashes` fires on every `r#"..."#` in the tests.
+#   Uniform raw-string syntax is worth more than the two characters it saves.
+missing_const_for_fn = "allow"
+derive_partial_eq_without_eq = "allow"
+needless_raw_string_hashes = "allow"
 
 [profile.release]
 lto = "thin"

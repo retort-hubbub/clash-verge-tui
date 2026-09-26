@@ -152,7 +152,8 @@ impl Report {
 
     /// Sort so errors surface first, then warnings.
     pub fn sort(&mut self) {
-        self.diagnostics.sort_by_key(|d| std::cmp::Reverse(d.severity));
+        self.diagnostics
+            .sort_by_key(|d| std::cmp::Reverse(d.severity));
     }
 
     /// One-line summary, e.g. `2 errors, 3 warnings`.
@@ -201,7 +202,9 @@ impl Report {
 
     /// Iterator over errors only.
     pub fn errors_iter(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics.iter().filter(|d| d.severity == Severity::Error)
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
     }
 }
 
@@ -209,8 +212,23 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// Policies that are always in scope.
-const BUILTIN_POLICIES: &[&str] = &["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"];
+/// Policies that are always in scope, even though nothing in the document
+/// defines them.
+///
+/// Verified against mihomo v1.19.31, which reports all seven through
+/// `GET /proxies` for a document with two proxies and two groups — eleven
+/// entries in total. `GLOBAL` and `PASS-RULE` are the two that are easy to
+/// mistake for a typo: a rule targeting either is legal, so calling it dangling
+/// would reject a configuration the core accepts and runs.
+const BUILTIN_POLICIES: &[&str] = &[
+    "DIRECT",
+    "REJECT",
+    "REJECT-DROP",
+    "PASS",
+    "PASS-RULE",
+    "COMPATIBLE",
+    "GLOBAL",
+];
 
 /// Validate a configuration, returning every problem found.
 #[must_use]
@@ -255,11 +273,8 @@ pub fn check(config: &Config) -> Report {
         }
         if p.port.is_none() && p.extra.get("port").is_none() {
             report.diagnostics.push(
-                Diagnostic::warn(
-                    "W-MISSING-PORT",
-                    format!("proxy `{}` has no port", p.name),
-                )
-                .at(format!("proxies[{i}]")),
+                Diagnostic::warn("W-MISSING-PORT", format!("proxy `{}` has no port", p.name))
+                    .at(format!("proxies[{i}]")),
             );
         }
     }
@@ -282,7 +297,9 @@ pub fn check(config: &Config) -> Report {
     // Everything a policy may legally point at.
     let provider_node_names: HashSet<&str> = proxy_providers.keys().map(String::as_str).collect();
     let is_known_policy = |name: &str| {
-        BUILTIN_POLICIES.iter().any(|b| b.eq_ignore_ascii_case(name))
+        BUILTIN_POLICIES
+            .iter()
+            .any(|b| b.eq_ignore_ascii_case(name))
             || proxy_names.contains(name)
             || group_names.contains(name)
             || provider_node_names.contains(name)
@@ -311,7 +328,10 @@ pub fn check(config: &Config) -> Report {
                 report.diagnostics.push(
                     Diagnostic::error(
                         "E-DANGLING-GROUP-MEMBER",
-                        format!("group `{}` lists `{m}`, which is not a proxy or group", g.name),
+                        format!(
+                            "group `{}` lists `{m}`, which is not a proxy or group",
+                            g.name
+                        ),
                     )
                     .at(format!("proxy-groups[{i}].proxies"))
                     .fix("a stale subscription usually causes this; update the profile"),
@@ -323,7 +343,10 @@ pub fn check(config: &Config) -> Report {
                 report.diagnostics.push(
                     Diagnostic::error(
                         "E-DANGLING-PROVIDER",
-                        format!("group `{}` uses provider `{u}`, which is not defined", g.name),
+                        format!(
+                            "group `{}` uses provider `{u}`, which is not defined",
+                            g.name
+                        ),
                     )
                     .at(format!("proxy-groups[{i}].use")),
                 );
@@ -437,26 +460,23 @@ pub fn check(config: &Config) -> Report {
                 .fix("check the group name for typos, or add the missing group"),
             );
         }
-        if let Some(set) = r.rule_set_name() {
-            if !rule_providers.contains_key(set) {
-                report.diagnostics.push(
-                    Diagnostic::error(
-                        "E-DANGLING-RULE-SET",
-                        format!("rule `{r}` uses rule-set `{set}`, which is not defined"),
-                    )
-                    .at(format!("rules[{i}]"))
-                    .fix("add the provider under `rule-providers` or remove the rule"),
-                );
-            }
+        if let Some(set) = r.rule_set_name()
+            && !rule_providers.contains_key(set)
+        {
+            report.diagnostics.push(
+                Diagnostic::error(
+                    "E-DANGLING-RULE-SET",
+                    format!("rule `{r}` uses rule-set `{set}`, which is not defined"),
+                )
+                .at(format!("rules[{i}]"))
+                .fix("add the provider under `rule-providers` or remove the rule"),
+            );
         }
         check_rule_payload(r, i, &mut report);
     }
 
     // -- unused declarations -----------------------------------------------
-    let referenced_sets: HashSet<&str> = rules
-        .iter()
-        .filter_map(|r| r.rule_set_name())
-        .collect();
+    let referenced_sets: HashSet<&str> = rules.iter().filter_map(|r| r.rule_set_name()).collect();
     for name in rule_providers.keys() {
         if !referenced_sets.contains(name.as_str()) {
             report.diagnostics.push(
@@ -534,7 +554,7 @@ fn check_rule_payload(rule: &crate::model::rule::Rule, index: usize, report: &mu
                 "E-MATCH-WITH-PAYLOAD",
                 format!("`{rule}` gives a payload to MATCH, which takes none"),
             )
-            .at(loc.clone())
+            .at(loc)
             .fix("write `MATCH,<policy>`"),
         );
     }
@@ -640,16 +660,16 @@ fn check_ports(config: &Config, report: &mut Report) {
             )
             .fix("add `external-controller: 127.0.0.1:9090`"),
         );
-    } else if let Some(addr) = config.external_controller() {
-        if !addr.contains(':') {
-            report.diagnostics.push(
-                Diagnostic::error(
-                    "E-CONTROLLER-FORMAT",
-                    format!("external-controller `{addr}` is missing a port"),
-                )
-                .fix("use `host:port`"),
-            );
-        }
+    } else if let Some(addr) = config.external_controller()
+        && !addr.contains(':')
+    {
+        report.diagnostics.push(
+            Diagnostic::error(
+                "E-CONTROLLER-FORMAT",
+                format!("external-controller `{addr}` is missing a port"),
+            )
+            .fix("use `host:port`"),
+        );
     }
 }
 
@@ -666,11 +686,15 @@ fn check_dns(config: &Config, report: &mut Report) {
         }
         return;
     };
-    let enabled = dns.get("enable").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let enabled = dns
+        .get("enable")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     if !enabled {
-        report.diagnostics.push(
-            Diagnostic::info("I-DNS-DISABLED", "`dns.enable` is false; the core uses the system resolver"),
-        );
+        report.diagnostics.push(Diagnostic::info(
+            "I-DNS-DISABLED",
+            "`dns.enable` is false; the core uses the system resolver",
+        ));
         return;
     }
     let has_ns = dns
@@ -680,8 +704,11 @@ fn check_dns(config: &Config, report: &mut Report) {
         || dns.contains_key("nameserver-policy");
     if !has_ns {
         report.diagnostics.push(
-            Diagnostic::error("E-DNS-NO-NAMESERVER", "`dns.enable` is true but no nameserver is configured")
-                .fix("add `nameserver: [1.1.1.1]`"),
+            Diagnostic::error(
+                "E-DNS-NO-NAMESERVER",
+                "`dns.enable` is true but no nameserver is configured",
+            )
+            .fix("add `nameserver: [1.1.1.1]`"),
         );
     }
     let enhanced = dns
@@ -705,7 +732,10 @@ fn check_dns(config: &Config, report: &mut Report) {
     }
     // The ULA trap: a fake-ip-range6 inside fc00::/7 makes browsers treat the
     // synthesised address as local, which triggers LNA prompts and LAN rules.
-    if let Some(range6) = dns.get("fake-ip-range6").and_then(serde_json::Value::as_str) {
+    if let Some(range6) = dns
+        .get("fake-ip-range6")
+        .and_then(serde_json::Value::as_str)
+    {
         let lower = range6.to_ascii_lowercase();
         let ula = lower.starts_with("fc")
             || lower.starts_with("fd")
@@ -749,8 +779,11 @@ fn check_tun(config: &Config, report: &mut Report) {
         && config.dns().is_none()
     {
         report.diagnostics.push(
-            Diagnostic::warn("W-TUN-AUTOROUTE-NO-DNS", "TUN auto-route without DNS leaks queries")
-                .fix("enable `dns` with a fake-ip pool, or set `dns-hijack`"),
+            Diagnostic::warn(
+                "W-TUN-AUTOROUTE-NO-DNS",
+                "TUN auto-route without DNS leaks queries",
+            )
+            .fix("enable `dns` with a fake-ip pool, or set `dns-hijack`"),
         );
     }
 }
@@ -785,7 +818,12 @@ rules:
         let r = check(&c);
         assert!(r.is_ok(), "unexpected findings:\n{}", r.render());
         assert_eq!(r.errors(), 0);
-        assert_eq!(r.warnings(), 0, "clean config must be totally clean:\n{}", r.render());
+        assert_eq!(
+            r.warnings(),
+            0,
+            "clean config must be totally clean:\n{}",
+            r.render()
+        );
     }
 
     #[test]
@@ -801,9 +839,56 @@ rules:
 "#);
         let r = check(&c);
         let cs = codes(&r);
-        assert!(cs.contains(&"E-DANGLING-POLICY"), "{cs:?}");
+        match r.diagnostics.iter().find(|d| d.code == "E-DANGLING-POLICY") {
+            Some(d) => assert!(d.message.contains("NOPE"), "{}", d.message),
+            None => panic!("expected a dangling policy: {:?}", codes(&r)),
+        }
         assert!(cs.contains(&"E-DANGLING-GROUP-MEMBER"), "{cs:?}");
         assert!(!r.is_ok());
+    }
+
+    /// Finding F1: `GLOBAL` and `PASS-RULE` are built in, so a rule may target
+    /// them without the document defining anything. The validator used to call
+    /// both dangling, which rejected a configuration the core accepts — the
+    /// live check installs exactly such a document and `PUT /configs` answers
+    /// `204 No Content`.
+    #[test]
+    fn the_builtin_policies_are_not_dangling() {
+        let c = cfg(r#"
+mixed-port: 7890
+external-controller: 127.0.0.1:9090
+proxies:
+  - { name: "JP 01", type: socks5, server: 1.2.3.4, port: 1080 }
+proxy-groups:
+  - { name: PROXY, type: select, proxies: ["JP 01", GLOBAL, PASS-RULE] }
+rules:
+  - DOMAIN-SUFFIX,a.example,GLOBAL
+  - DOMAIN-SUFFIX,b.example,PASS-RULE
+  - MATCH,PROXY
+"#);
+        let r = check(&c);
+        assert!(
+            !codes(&r).contains(&"E-DANGLING-POLICY"),
+            "the core accepts these: {:?}",
+            codes(&r)
+        );
+        assert!(
+            !codes(&r).contains(&"E-DANGLING-GROUP-MEMBER"),
+            "and a group may list them: {:?}",
+            codes(&r)
+        );
+
+        // Every built-in, so a future edit to the list cannot drop one quietly.
+        for builtin in BUILTIN_POLICIES {
+            let c = cfg(&format!(
+                "mixed-port: 7890\nexternal-controller: 127.0.0.1:9090\n\
+                 rules:\n  - DOMAIN-SUFFIX,x.example,{builtin}\n  - MATCH,DIRECT\n"
+            ));
+            assert!(
+                !codes(&check(&c)).contains(&"E-DANGLING-POLICY"),
+                "{builtin} is built in"
+            );
+        }
     }
 
     #[test]
@@ -836,7 +921,11 @@ rules:
   - MATCH,REJECT
 "#);
         let report = check(&c);
-        assert!(codes(&report).contains(&"E-UNREACHABLE-RULES"), "{}", report.render());
+        assert!(
+            codes(&report).contains(&"E-UNREACHABLE-RULES"),
+            "{}",
+            report.render()
+        );
         assert!(!report.is_ok());
     }
 
@@ -893,7 +982,11 @@ proxy-groups:
 rules: [MATCH,A]
 "#);
         let cyclic_report = check(&cyclic);
-        assert!(codes(&cyclic_report).contains(&"E-RELAY-CYCLE"), "{}", cyclic_report.render());
+        assert!(
+            codes(&cyclic_report).contains(&"E-RELAY-CYCLE"),
+            "{}",
+            cyclic_report.render()
+        );
 
         let acyclic = cfg(r#"
 external-controller: 127.0.0.1:9090
@@ -937,7 +1030,11 @@ dns:
 rules: [MATCH,DIRECT]
 "#);
         let fixed_report = check(&fixed);
-        assert!(!codes(&fixed_report).contains(&"W-FAKEIP6-ULA"), "{}", fixed_report.render());
+        assert!(
+            !codes(&fixed_report).contains(&"W-FAKEIP6-ULA"),
+            "{}",
+            fixed_report.render()
+        );
     }
 
     #[test]

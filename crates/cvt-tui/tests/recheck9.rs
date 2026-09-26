@@ -1223,12 +1223,7 @@ fn confirmed_14_the_url_change_report_names_an_address_the_command_put_back() {
         ran.said().trim()
     );
     let mut wrong = Vec::new();
-    if now != before {
-        wrong.push(format!(
-            "the index holds `{now}` and held `{before}` before the command; without \
-             the rollback there is nothing to report"
-        ));
-    } else {
+    if now == before {
         // The rollback happened, which is what makes the report wrong rather
         // than merely confusing.
         if reported["url"].as_str() != Some(now.as_str()) {
@@ -1254,6 +1249,11 @@ fn confirmed_14_the_url_change_report_names_an_address_the_command_put_back() {
                 ran.stderr.trim()
             ));
         }
+    } else {
+        wrong.push(format!(
+            "the index holds `{now}` and held `{before}` before the command; without \
+             the rollback there is nothing to report"
+        ));
     }
 
     assert!(

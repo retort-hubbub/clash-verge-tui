@@ -64,6 +64,17 @@
 //! | [`defect_the_confirmation_popup_is_sized_in_characters_not_columns`] | `wrapped_rows` counts `chars()` where the terminal counts columns: 164 of 240 CJK names lose the buttons |
 //! | [`defect_the_prompt_window_is_measured_in_characters_not_columns`] | the window is `chars` and the popup is columns: 37 of 192 caret positions, every one with wide characters |
 //!
+//! All three were fixed in turn (`3afc4d1` and the working tree), and the fixes
+//! were then attacked with hostile input rather than trusted: eight log levels
+//! (including one longer than the seven-column pad) over every message length,
+//! seven kinds of profile name (spaces, CJK, emoji, ZWJ sequences, combining
+//! marks) at six widths, and every caret position of four kinds of value. Two
+//! of those sweeps are clean; the third found one more:
+//!
+//! | finding | state |
+//! |---|---|
+//! | [`defect_the_caret_is_not_drawn_when_it_sits_on_a_combining_mark`] | **still failing** — pre-existing, not a regression: the caret's cell holds a zero-width character and ratatui draws nothing, so no caret appears at 78 of 156 cursor positions |
+//!
 //! Nothing here modifies a source file.
 
 #![allow(
@@ -1027,6 +1038,73 @@ fn defect_the_prompt_window_is_measured_in_characters_not_columns() {
         wrong.is_empty(),
         "the caret is not drawn for {} of 192 cases, {wide} of them with wide \
          characters: {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(4)]
+    );
+}
+
+/// CLAIM (`crates/cvt-tui/src/ui/mod.rs`, `prompt`): the caret is drawn as a
+/// selected cell, "so a space in the middle of an answer is still visible".
+///
+/// The cell's content is `chars.get(cursor)`, and a character with no width of
+/// its own is not drawn by ratatui at all — so a caret that lands on it styles
+/// nothing and the cursor disappears while the user is editing. The position is
+/// reachable with one keypress: text in decomposed form (NFD, which is what
+/// macOS and several input methods produce) puts a combining mark immediately
+/// after its base character, and the cursor is legitimately between them.
+///
+/// **Pre-existing rather than a regression of the fix above**: the version at
+/// `f759335` was `let under = chars.get(cursor).copied().unwrap_or(' ')` and
+/// did the same thing. It is here because the sweep for the fix found it.
+///
+/// The dump that settles it, at 40x12 with the value `e\u{301}`:
+///
+/// ```text
+/// cursor=1 (before the mark): styled cells = []      <-- no caret at all
+/// cursor=0 (on the `e`):      styled cells = ["e"]   <-- the caret, as intended
+/// ```
+///
+/// Generated over value lengths and **every** cursor position, so the claim is
+/// about the class "the caret is on a combining mark" rather than about one
+/// string.
+#[test]
+fn defect_the_caret_is_not_drawn_when_it_sits_on_a_combining_mark() {
+    let theme = Theme::default();
+    let caret_style = theme.selection();
+    let mut wrong: Vec<String> = Vec::new();
+    for width in [20u16, 40, 80] {
+        for pairs in [1usize, 5, 20] {
+            let value = "e\u{301}".repeat(pairs);
+            let characters = value.chars().count();
+            for cursor in 0..=characters {
+                let mut app = app_with(theme);
+                app.screen = Screen::Profiles;
+                app.overlay = Some(Overlay::Prompt {
+                    label: "subscription URL".to_owned(),
+                    kind: PromptKind::Text,
+                    value: value.clone(),
+                    cursor,
+                });
+                let mut terminal = Terminal::new(TestBackend::new(width, 12)).expect("backend");
+                terminal
+                    .draw(|frame| cvt_tui::ui::render(frame, &app))
+                    .expect("draw");
+                let drawn = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .any(|cell| cell.bg == caret_style.bg.unwrap_or(Color::Reset));
+                if !drawn {
+                    wrong.push(format!("{width} pairs={pairs} cursor={cursor}"));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the caret is not drawn for {} of 156 cursor positions, every one of them \
+         on a combining mark: {:?}",
         wrong.len(),
         &wrong[..wrong.len().min(4)]
     );

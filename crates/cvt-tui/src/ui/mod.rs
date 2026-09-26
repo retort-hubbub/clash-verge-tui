@@ -199,7 +199,10 @@ fn prompt(
     let mut start = cursor;
     let mut cells = 0;
     while start > 0 {
-        let wide = UnicodeWidthStr::width(chars[start - 1].to_string().as_str()).max(1);
+        // The true width, not a minimum of one: a combining mark occupies no
+        // cell of its own, and counting it as one walked the window back a
+        // character too few.
+        let wide = cell_width(chars[start - 1]);
         if cells + wide > room {
             break;
         }
@@ -212,9 +215,18 @@ fn prompt(
     // for every wide one — 30 columns of CJK is 15 characters, so `take(30)`
     // reached 60 columns and pushed the caret off the popup entirely.
     let caret = cursor - start;
-    let before: String = visible.chars().take(caret).collect();
+    let mut before: String = visible.chars().take(caret).collect();
     let after: String = visible.chars().skip(caret + 1).collect();
-    let under = visible.chars().nth(caret).unwrap_or(' ');
+    let mut under = visible.chars().nth(caret).unwrap_or(' ');
+    // A combining mark has no cell to put a caret in, and the cell it *would*
+    // take is the one its base character is already using. Moving it behind the
+    // caret keeps it attached to its base — where the text puts it — and gives
+    // the caret a cell of its own, instead of the zero-width cell it cannot be
+    // drawn in.
+    if under != ' ' && cell_width(under) == 0 {
+        before.push(under);
+        under = ' ';
+    }
     let line = Line::from(vec![
         Span::styled(format!(" {before}"), app.theme.key_label()),
         Span::styled(under.to_string(), app.theme.selection()),
@@ -331,6 +343,16 @@ fn preview(
 /// under-counted: a name with spaces wraps at the last space that fits, so the
 /// remainder of the line is wasted and the block is taller than the division
 /// says. Twenty-nine of ninety names were still losing their buttons.
+/// How many cells one character occupies.
+///
+/// Zero for a combining mark, which is the case that matters: it is a character
+/// with no cell of its own, so anything that assumes at least one is wrong in
+/// both directions — a window that is one character short, and a caret drawn in
+/// a cell that does not exist.
+fn cell_width(ch: char) -> usize {
+    UnicodeWidthStr::width(ch.to_string().as_str())
+}
+
 pub(super) fn wrapped_rows(text: &str, width: usize) -> usize {
     let width = width.max(1);
     // Columns, not characters: a CJK message is twice as wide as its character

@@ -1,22 +1,20 @@
 //! Turning a profile chain into the configuration the core runs.
 //!
-//! This is the one place that decides what the core is handed. Keeping it a
-//! pure function of the store — [`Pipeline::generate`] reads, computes and
-//! returns; [`Pipeline::commit`] is a separate call that writes — means the
-//! whole pipeline can be exercised in tests and previewed in the UI without
-//! touching a running core.
+//! [`Pipeline::generate`] reads the profile documents, computes the result and
+//! returns without writing or contacting the core. [`Pipeline::commit`] writes
+//! separately, allowing the UI to preview changes before applying them.
 //!
 //! # The stages
 //!
 //! ```text
 //! base document            remote subscription or a local file
-//!   -> merge profiles      deep merge, with the directives of each honoured
-//!   -> override profiles   declarative path edits
-//!   -> sequence patches    prepend/append/delete on rules, proxies, groups
+//!   -> chain profiles      merge, override and sequence edits in chain order
 //!   -> validate            whole-document pre-flight checks
-//!   -> render              YAML, written atomically
-//!   -> reload              PUT /configs, falling back to a restart
+//!   -> render              return YAML and diagnostics
+//!   -> commit              snapshot and write, when requested by the caller
 //! ```
+//!
+//! [`crate::service::Service`] coordinates reloading the committed document.
 //!
 //! Every stage is reported in the [`Outcome`], including a structural diff
 //! against the previously generated configuration and one [`AppliedProfile`]

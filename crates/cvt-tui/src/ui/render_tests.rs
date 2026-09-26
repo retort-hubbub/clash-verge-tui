@@ -225,13 +225,23 @@ fn every_screen_renders_empty_at_every_size() {
     }
 }
 
+/// Populated, every screen draws something at every size.
+///
+/// The name said "renders" and the body asserted only that it did not panic —
+/// `let _ = draw(…)`, with the buffer dropped. A screen that drew nothing at
+/// all passed, which is the failure this file exists to catch, so it is
+/// asserted now the same way the empty case asserts it.
 #[test]
 fn every_screen_renders_populated_at_every_size() {
     for screen in screens() {
         let mut app = ready(screen);
         for (width, height) in SIZES {
             let _ = app.on_event(Event::Resize(width, height));
-            let _ = draw(&app, width, height);
+            let text = draw(&app, width, height);
+            assert!(
+                !text.trim().is_empty() || height <= 1,
+                "{screen} at {width}x{height} drew nothing with rows on it"
+            );
         }
     }
 }
@@ -363,11 +373,22 @@ fn the_colour_theme_actually_uses_colour() {
 
 #[test]
 fn an_empty_state_is_still_drawn_at_a_degenerate_size() {
+    // "Is still drawn" was the name and the body discarded every buffer, so it
+    // asserted only that a 1x1 or 200x1 terminal does not panic. That is worth
+    // knowing and it is not what the name says: where there is room for a
+    // character, there has to be one.
     for screen in screens() {
         let app = empty(screen);
-        let _ = draw(&app, 1, 1);
-        let _ = draw(&app, 1, 40);
-        let _ = draw(&app, 200, 1);
+        for (width, height) in [(1, 1), (1, 40), (200, 1)] {
+            let text = draw(&app, width, height);
+            let room = usize::from(width) * usize::from(height);
+            if room >= 2 {
+                assert!(
+                    !text.trim().is_empty(),
+                    "{screen} at {width}x{height} drew nothing at all"
+                );
+            }
+        }
     }
 }
 

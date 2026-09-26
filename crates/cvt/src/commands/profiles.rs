@@ -173,6 +173,10 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     if url.is_empty() {
         return Err(Error::invalid("url", "the subscription URL is empty").into());
     }
+    // Before the profile exists, and with the fetcher's own rule: an address
+    // this program cannot fetch is one the index should never have held, and
+    // finding out afterwards leaves a profile pointing at nothing.
+    cvt_core::profile::source::check_fetchable(&url)?;
     let name = args.name.clone().unwrap_or_else(|| default_name(&url));
     let uid = ctx.edit_store(|store| Ok(store.add(PrfItem::remote("", name, url.clone()))))?;
     ctx.out()

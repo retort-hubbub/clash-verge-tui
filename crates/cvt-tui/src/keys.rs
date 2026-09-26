@@ -380,7 +380,7 @@ mod tests {
                 let rest = &include_str!("keys.rs")[at + "Action::".len()..];
                 let name: String = rest
                     .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .take_while(char::is_ascii_alphanumeric)
                     .collect();
                 (!name.is_empty()).then_some(name)
             })

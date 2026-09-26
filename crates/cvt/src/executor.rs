@@ -511,7 +511,12 @@ impl Executor {
             Effect::SaveSettings { settings } => self.with_service(|service| {
                 service.set_settings(settings);
                 service.save_settings()?;
-                Ok(Event::Data(Data::Notice("settings saved".to_owned())))
+                // `Done::SettingsSaved`, not a notice: it is the variant that
+                // clears the interface's dirty flag, and nothing produced it, so
+                // the flag stayed set after a successful save. The status line
+                // and the flag are two different things, and only one of them
+                // was being sent.
+                Ok(Event::Done(Done::SettingsSaved))
             }),
             other => Err(Error::Unsupported(format!(
                 "the interactive interface does not perform {other:?} yet"
@@ -967,7 +972,7 @@ mod tests {
                 let rest = &source[at + "Effect::".len()..];
                 let name: String = rest
                     .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .take_while(char::is_ascii_alphanumeric)
                     .collect();
                 (!name.is_empty()).then_some(Box::leak(name.into_boxed_str()) as &str)
             })

@@ -884,7 +884,14 @@ impl Service {
         // other was still filling. `create_dir` fails when the name is taken,
         // and that failure is the lock.
         let destination = self.reserve_backup_path(Utc::now().timestamp())?;
-        copy_state(self.paths.home(), &destination)?;
+        if let Err(error) = copy_state(self.paths.home(), &destination) {
+            // The reservation *created* the directory, so a copy that fails
+            // leaves one behind that `backups()` lists, `looks_like_a_backup`
+            // admits and the keep-limit counts — the newest backup of a home it
+            // never finished copying, offered for restore by `restore`.
+            let _ = std::fs::remove_dir_all(&destination);
+            return Err(error);
+        }
         // Pruned around the new one, never through it. Ordering by timestamp is
         // right — the newest backups are the ones worth keeping — but it is the
         // *filesystem's* timestamps, and a directory holding five entries named

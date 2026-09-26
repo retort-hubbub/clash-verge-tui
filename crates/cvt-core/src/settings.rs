@@ -404,6 +404,29 @@ impl Settings {
         if self.test.concurrency == 0 {
             return Err(Error::invalid("test.concurrency", "must be at least 1"));
         }
+        // `core.external_controller` is forced over every profile, so a value
+        // the generator refuses means *every* configuration is refused — with
+        // `E-CONTROLLER-FORMAT`, from a file the settings accepted. Every other
+        // relationship the settings carry is checked here; this one was not
+        // checked at all.
+        if let Some(controller) = &self.core.external_controller {
+            let trimmed = controller.trim();
+            // The generator's own rule, not a second one written here: it
+            // refuses a controller without a colon with `E-CONTROLLER-FORMAT`,
+            // and a stricter check in the settings would refuse values the
+            // generator accepts — the mistake this project has recorded more
+            // than any other.
+            if !trimmed.is_empty() && !trimmed.contains(':') {
+                return Err(Error::invalid(
+                    "settings",
+                    format!(
+                        "core.external_controller is `{controller}`, which is not \
+                         `host:port`; the core would refuse every configuration \
+                         generated from it"
+                    ),
+                ));
+            }
+        }
         if self.test.concurrency > MAX_TEST_CONCURRENCY {
             return Err(Error::invalid(
                 "test.concurrency",

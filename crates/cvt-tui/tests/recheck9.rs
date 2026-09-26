@@ -1115,6 +1115,10 @@ fn confirmed_6_the_flag_and_the_settings_answer_at_their_shared_ceiling() {
     );
 }
 
+/// **Observed failing while this round ran**, and fixed in it (commit
+/// `13adc95`, with the fetcher's own rule rather than a second one), so this is
+/// kept as the regression guard.
+///
 /// CLAIM (`AddArgs.url`'s help): "Subscription URL to download from" — and
 /// `add`'s own doc: "Add a subscription, download it, and leave it ready to
 /// switch to."
@@ -1129,13 +1133,13 @@ fn confirmed_6_the_flag_and_the_settings_answer_at_their_shared_ceiling() {
 /// fails, while `add` has no previous address to restore and says so in as many
 /// words ("the profile exists either way").
 ///
-/// That reasoning holds for a *download* failure and not for this one: the
+/// That reasoning held for a *download* failure and not for this one: the
 /// fetcher refuses `not-a-url` outright — "is not a URL" — so the retry the
-/// program suggests is a command that can never succeed, and the index keeps a
-/// profile whose only purpose is to be fetched from an address this program
-/// will not fetch from.
+/// program suggested was a command that could never succeed, and the index kept
+/// a profile whose only purpose is to be fetched from an address this program
+/// would not fetch from.
 #[test]
-fn defect_13_a_subscription_address_the_fetcher_refuses_is_recorded_anyway() {
+fn confirmed_13_a_subscription_address_the_fetcher_refuses_is_recorded_anyway() {
     let Some(_) = cvt_binary() else {
         eprintln!("SKIP: no built binary; nothing to run");
         return;
@@ -1163,6 +1167,110 @@ fn defect_13_a_subscription_address_the_fetcher_refuses_is_recorded_anyway() {
          add; an address that is not one is not — and the hint the failure prints \
          (`retry with profiles update`) names a command that can never succeed."
     );
+}
+
+/// CLAIM (`UrlChangeReport::url`'s doc): "The URL it now points at" — and the
+/// hint the failure prints: "`RX` points at the new URL but could not be
+/// downloaded from it; retry with `clash-verge-tui profiles update RX`".
+///
+/// `edit-url` puts the previous address back when the fetch fails — round 8's
+/// fix, and it works: the index is restored. What was not updated is everything
+/// the command *says*. The report was written for the world before the rollback,
+/// where the new address really did stay, so `url` names an address the profile
+/// no longer has, and the hint names a command that would fetch the old one.
+///
+/// **Observed failing twice while this round ran**, and fixed in it, so this is kept
+/// as the regression guard. The first state reported `url: not-a-url` and the hint
+/// "points at the new URL" while the index held the old one; the second kept `url`
+/// right and put the address that was *tried* in `previous`, whose doc says it is
+/// "what it pointed at before" — a consumer rendering `previous -> url` read the move
+/// backwards. Both fields and the hint now agree with the state the rollback leaves.
+///
+/// The fourth member of the URL class, one layer down from the address check above: there
+/// the address was wrong and the state followed it, here the state is right and
+/// what the program reports is not. A `--json` consumer is told the profile
+/// moved to the address it was moved back from.
+#[test]
+fn confirmed_14_the_url_change_report_names_an_address_the_command_put_back() {
+    let Some(_) = cvt_binary() else {
+        eprintln!("SKIP: no built binary; nothing to run");
+        return;
+    };
+    let (dir, paths) = inhabited_home();
+    std::fs::write(
+        paths.profiles_index(),
+        "current: L1\nitems:\n  - uid: RX\n    type: remote\n    name: sub\n    \
+         url: https://example.com/sub\n    file: RX.yaml\n  - uid: L1\n    type: local\n    \
+         name: base\n    file: L1.yaml\n",
+    )
+    .unwrap();
+    // What it pointed at before the command — read from the index rather than
+    // written twice, so the assertion is against the state and not against a
+    // second copy of the fixture.
+    let before = url_in(&paths);
+
+    let ran = run(
+        dir.path(),
+        &["profiles", "edit-url", "RX", "not-a-url", "--json"],
+    );
+    let now = url_in(&paths);
+    let reported: serde_json::Value = serde_json::from_str(ran.stdout.trim())
+        .unwrap_or_else(|error| panic!("`--json` prints one object: {error}: {}", ran.stdout));
+
+    assert!(
+        ran.code != 0,
+        "the address is one the fetcher refuses, so the command must fail: {}",
+        ran.said().trim()
+    );
+    let mut wrong = Vec::new();
+    if now != before {
+        wrong.push(format!(
+            "the index holds `{now}` and held `{before}` before the command; without \
+             the rollback there is nothing to report"
+        ));
+    } else {
+        // The rollback happened, which is what makes the report wrong rather
+        // than merely confusing.
+        if reported["url"].as_str() != Some(now.as_str()) {
+            wrong.push(format!(
+                "`cvt.profiles.url.v1` says `url: {}`, and the field's doc says it is \
+                 \"The URL it now points at\" — which is `{now}`",
+                reported["url"]
+            ));
+        }
+        if reported["previous"].as_str() != Some(before.as_str()) {
+            wrong.push(format!(
+                "`previous` is {}, and the field's doc says it is \"What it pointed at \
+                 before, when it had a URL at all\" — which is `{before}`, the address \
+                 it still points at. The address that was *tried* is now in this field \
+                 and nowhere else: a consumer rendering `previous -> url` reads the \
+                 move backwards",
+                reported["previous"]
+            ));
+        }
+        if ran.stderr.contains("points at the new URL") {
+            wrong.push(format!(
+                "the failure says {:?}, and the profile points at the old address",
+                ran.stderr.trim()
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "`edit-url` put the previous address back — the index says so — and what the \
+         command reports does not agree with the state it left:\n{}",
+        wrong.join("\n")
+    );
+}
+
+/// The `url:` line of the current profile, as the index holds it.
+fn url_in(paths: &AppPaths) -> String {
+    std::fs::read_to_string(paths.profiles_index())
+        .unwrap_or_default()
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("url: ").map(str::to_owned))
+        .unwrap_or_else(|| "(none)".to_owned())
 }
 
 // ==============================================================================

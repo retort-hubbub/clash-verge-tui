@@ -1,11 +1,8 @@
-//! A second verifier's re-check of the eighteen findings in
-//! `docs/VERIFICATION-REPORT.md`.
+//! Regression cases for configuration parsing, enhancement and profile handling.
 //!
-//! This file is written from the *claims* the author makes, not from the tests
-//! they wrote for them. Where a claim is behavioural over a space of inputs, a
-//! generated attack is used rather than the one input the author happened to
-//! pick; where a claim is about the core's own behaviour, mihomo `v1.19.31`'s
-//! source is quoted.
+//! These cases began as an independent review of eighteen claims. Where a
+//! claim covers a space of inputs, generated cases check the broader behavior;
+//! cases involving mihomo are grounded in its `v1.19.31` implementation.
 //!
 //! Tests whose names start with finding ids (`f3_`, `f4_`, …) preserve those
 //! counterexamples. They are regression tests and must pass in the current tree.

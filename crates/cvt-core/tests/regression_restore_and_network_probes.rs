@@ -703,21 +703,15 @@ fn defect_16_the_stamp_is_not_canonical_so_two_names_still_tie() {
 /// `let deadline = Instant::now() + Duration::from_secs(10)`.
 ///
 /// `wait_until_ready` is the fifth loop that calls the controller, and it has
-/// the *first* half of that pair and nothing else: `client.version()` is
-/// awaited straight, carries the client's own timeout — `ui.refresh_ms * 5`,
-/// which is 30 s at the ceiling and 5 s at the default — and the 10-second
-/// deadline is only consulted between calls. So a core that answers the socket
-/// and never answers `/version` holds `restart_with_rollback` — and therefore
-/// `config generate --apply` — for one whole client timeout past the deadline
-/// it promised, and for 30× the settings' refresh interval at the ceiling.
-///
-/// Observed: `wait_until_ready` returned after **30.2 s** with
-/// `ui.refresh_ms = 6000` (a 30 s per-call timeout) and a 10 s deadline.
+/// the *first* half of that pair and nothing else in the original version:
+/// `client.version()` was awaited straight, while the ten-second deadline was
+/// consulted only between calls. The current implementation bounds each call.
+/// The UI refresh interval no longer changes the client's timeout.
 #[tokio::test]
 async fn defect_7_wait_until_ready_cannot_enforce_its_ten_second_deadline() {
     let (port, accepted) = black_hole();
     let (_dir, paths) = index_one(&document(&format!("127.0.0.1:{port}")));
-    // `Service::client`'s timeout is `refresh_ms * 5`, so this is 30 s.
+    // A large UI refresh interval must not change the controller deadline.
     std::fs::write(paths.settings_file(), "ui:\n  refresh_ms: 6000\n").unwrap();
     let service = Service::open(paths).unwrap();
 
@@ -732,10 +726,8 @@ async fn defect_7_wait_until_ready_cannot_enforce_its_ten_second_deadline() {
     assert!(
         elapsed <= Duration::from_millis(10_300),
         "`wait_until_ready` promises a 10-second deadline and returned after \
-         {elapsed:?}: its call carries the client's own timeout \
-         (`ui.refresh_ms * 5`) and the deadline is checked between calls, \
-         which is the exact shape `wait_for_document` was rewritten to remove \
-         one function up"
+         {elapsed:?}: a controller call must be bounded by the remaining \
+         deadline, even when the controller accepts a connection and never answers"
     );
 }
 

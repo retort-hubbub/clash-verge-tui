@@ -8,7 +8,7 @@
 *.log
 
 # proptest writes seeds for failing cases here. Confirmed counterexamples are
-# kept as passing tests in the recheck suites instead of committing generated
+# kept as passing regression tests instead of committing generated
 # seed files.
 *.proptest-regressions
 

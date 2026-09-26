@@ -1278,10 +1278,10 @@ fn url_in(paths: &AppPaths) -> String {
 
 /// CLAIM (`restore_selections`' doc): "Best effort per group"; and
 /// `select_within`'s: "a core that answers `GET /group/…` and never answers the
-/// `PUT` costs the *client's* timeout — five seconds from the settings — which
+/// `PUT` costs the *client's* timeout — ten seconds by default — which
 /// is not the replay's budget and cannot be enforced from here."
 ///
-/// The client's timeout is `ui.refresh_ms * 5`, so every read and every write in
+/// The client's default timeout is ten seconds, so every read and every write in
 /// the replay is bounded by a deadline the *client* owns unless the call itself
 /// is wrapped. A controller that accepts the connection and answers nothing is
 /// the only shape that tells the two apart, and twenty remembered choices make
@@ -1305,7 +1305,7 @@ async fn confirmed_7_the_replay_is_bounded_by_a_controller_that_never_answers() 
     assert!(
         elapsed < Duration::from_secs(4),
         "`restore_selections` promises a two-second budget (`REPLAY_TOTAL`) and \
-         returned after {elapsed:?}, with the client's own five-second timeout as \
+         returned after {elapsed:?}, with the client's own ten-second timeout as \
          the only bound any of its calls could have had: `read_group`, \
          `select_within` and `confirm_selection` are the class this project has \
          fixed five times"

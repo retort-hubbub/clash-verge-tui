@@ -758,12 +758,10 @@ fn a_failed_index_write_reports_and_changes_nothing() {
 /// The replay's own bound. The commit message promises that "the whole wait is
 /// bounded so a core that is reloading cannot make an apply hang".
 ///
-/// The deadline is only consulted *between* requests: `wait_for_group` issues a
-/// request with the client's own timeout (five seconds by default) before it
-/// looks at the clock, so a core that accepts the connection and never answers
-/// costs a full request timeout past the 1.5 s budget.
+/// A request to a core that accepts the connection but never answers must be
+/// bounded by the replay's overall budget, not the client's ten-second timeout.
 #[tokio::test]
-async fn the_replay_outlives_its_deadline_by_a_request_timeout() {
+async fn the_replay_stays_within_its_deadline_when_the_controller_hangs() {
     use tokio::io::AsyncReadExt as _;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1426,7 +1424,7 @@ async fn defect_10_the_select_call_is_not_inside_any_budget() {
         elapsed < Duration::from_millis(2500),
         "the replay took {elapsed:?} ({applied} restored) against a core that \
          answers reads and not writes; the replay's whole budget is 2 s and the \
-         unbounded call costs the client's 5 s timeout"
+         unbounded call costs the client's ten-second timeout"
     );
 }
 

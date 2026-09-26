@@ -78,7 +78,7 @@ async fn replay_one(
 ///
 /// The reads were given a deadline and this was not, which is the same mistake
 /// one call further down: a core that answers `GET /group/…` and never answers
-/// the `PUT` costs the *client's* timeout — five seconds from the settings —
+/// the `PUT` costs the *client's* timeout — ten seconds by default —
 /// which is not the replay's budget and cannot be enforced from here.
 async fn select_within(
     client: &Client,
@@ -98,7 +98,7 @@ async fn select_within(
 
 /// Read a group, without letting one slow request outlive the budget.
 ///
-/// The client has its own timeout, which is the *settings'* and can be seconds;
+/// The client has its own ten-second timeout;
 /// a deadline this function cannot enforce is a deadline in name only.
 async fn read_group(
     client: &Client,
@@ -698,10 +698,7 @@ impl Service {
             uid: "-".to_owned(),
             field: "external-controller",
         })?;
-        Client::with_timeout(
-            endpoint,
-            std::time::Duration::from_millis(self.settings.ui.refresh_ms.max(1000) * 5),
-        )
+        Client::new(endpoint)
     }
 
     /// The deployed core's local HTTP-capable proxy listener, for subscription
@@ -1372,7 +1369,7 @@ impl Service {
     /// whole budget, so the groups after it are never asked about — the same
     /// starvation the replay had. And a deadline checked *between* calls is a
     /// deadline this function cannot enforce: `client.group` carries the
-    /// client's own timeout, which is at least five seconds from the settings,
+    /// client's own timeout, which is ten seconds by default,
     /// so a core that answers `/version` and hangs `/group` held an `apply`
     /// for twice the budget it was supposed to have.
     async fn wait_for_document(&self, config: &Config) {
@@ -1432,10 +1429,8 @@ impl Service {
         let mut last = String::from("no attempt made");
         while std::time::Instant::now() < deadline {
             // Bounded, not merely checked between calls. `client.version`
-            // carries the client's own timeout — `ui.refresh_ms * 5`, so at
-            // least five seconds — and a core that accepts the connection and
-            // answers nothing made a ten-second deadline take thirty. This is
-            // the fifth place the same shape appeared.
+            // carries the client's own timeout, so a core that accepts the
+            // connection and answers nothing could outlive this deadline.
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match tokio::time::timeout(left, client.version()).await {
                 Ok(Ok(v)) => {
@@ -1789,9 +1784,9 @@ rules:
     /// A core that answers nothing must not hold an apply for twice its budget.
     ///
     /// `wait_for_document` checked its deadline *between* `client.group()`
-    /// calls, and that call carries the client's own timeout — at least five
-    /// seconds from the settings. So a core that answered `/version` and hung
-    /// `/group` held `apply` for about ten: a deadline the function could not
+    /// calls, and that call carries the client's own ten-second timeout. So a
+    /// core that answered `/version` and hung `/group` held `apply` for about
+    /// ten: a deadline the function could not
     /// enforce, which is the same mistake the selection replay was fixed for
     /// three times over.
     #[tokio::test]

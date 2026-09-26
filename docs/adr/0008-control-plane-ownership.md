@@ -1,4 +1,4 @@
-# 0008 — The control plane belongs to the application, not to a profile
+# 0008 — Control-plane precedence across settings and profiles
 
 **Status:** accepted
 
@@ -6,9 +6,11 @@
 
 This program reaches the core over its REST API, and the address and secret for
 that API live *in the configuration the core is started with* — the same
-document the profiles produce. `external-controller`, `external-controller-tls`,
-`-unix`, `-pipe`, `-routing-mark`, `external-controller-cors` and `secret` are
-ordinary keys in it, indistinguishable from `mixed-port` or `mode`.
+document the profiles produce. `external-controller`,
+`external-controller-tls`, `external-controller-unix`,
+`external-controller-pipe`, `external-controller-routing-mark`,
+`external-controller-cors`, `external-ui`, `external-ui-url` and `secret`
+are ordinary keys in it, indistinguishable from `mixed-port` or `mode`.
 
 That is a problem with two faces.
 
@@ -50,15 +52,19 @@ says profiles may not set a value is only usable if there is somewhere to set it
 
 ## Consequences
 
-- A subscription cannot redirect this program's connection, and an imported
-  installation's controller keeps working.
-- The address survives a subscription update, which it did not before.
+- When `core.external_controller` or `core.secret` is set, a subscription
+  update cannot change that value. Without the setting, the base profile is
+  the source, so an update can change it; pin it in settings when stability is
+  required.
+- An imported installation's controller keeps working when it is declared in
+  the base profile.
 - An override that used to be able to set `external-controller` no longer can.
   It is removed with a warning naming `core.external_controller`, so the
   migration is one line in a settings file rather than a mystery.
-- `external-ui*` is deliberately *not* on the list. It decides what a browser
-  sees at `/ui`; it does not decide how this program reaches the core, and
-  removing it would be enforcing a rule about a door that is not this one.
+- `external-ui` and `external-ui-url` are also protected. They decide what
+  code the core serves at `/ui`, on the controller's origin, so an enhancement
+  cannot redirect them. A base profile may declare them; these two keys have
+  no application-setting override.
 - The check runs after enhancement rather than at parse time, because only then
   is the final document known. That is also why it can report the *key* rather
   than a line number.

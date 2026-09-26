@@ -15,7 +15,7 @@ reason remains visible.
 | [0005](0005-pure-state-machine-with-effects.md) | The interface is a pure state machine driven by an effect vocabulary |
 | [0006](0006-one-service-facade.md) | One `Service` facade behind both front ends |
 | [0007](0007-gitflow-and-conventional-commits.md) | GitFlow with Conventional Commits |
-| [0008](0008-control-plane-ownership.md) | The control plane belongs to the application, not to a profile |
+| [0008](0008-control-plane-ownership.md) | Control-plane precedence across settings and profiles |
 | [0009](0009-adversarial-review.md) | Adversarial review, and keeping its counterexamples |
 
 ## Adding a record

@@ -47,8 +47,9 @@ pub struct CoreSettings {
     /// The control plane has to be settable from somewhere that a subscription
     /// update cannot overwrite, and a profile is exactly the wrong place for
     /// it: the base document is replaced wholesale whenever the subscription is
-    /// refreshed. When this is set it wins over every profile, and profiles are
-    /// not allowed to declare a control plane at all — see
+    /// refreshed. When this is set it wins over every profile. A base profile
+    /// may supply an address when this setting is absent, while enhancement
+    /// profiles cannot change it — see
     /// [`crate::enhance::pipeline::CONTROL_PLANE`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_controller: Option<String>,

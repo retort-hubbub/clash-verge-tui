@@ -78,15 +78,14 @@ impl AppliedProfile {
 ///
 /// The endpoint is read out of the *generated* document, so a document that
 /// rewrites it does not break the connection — it redirects it. A subscription
-/// is somebody else's file, and `external-controller` or `secret` arriving from
-/// one is at best a mistake and at worst an attempt to point this program at a
-/// controller it does not own. `external-controller-cors` belongs on the list
-/// for the same reason: a profile that widens CORS to `*` is opening a door,
-/// and it is not the owner of the door.
+/// may be somebody else's file, and a later enhancement must not redirect the
+/// controller declared by the base or the application. `external-controller-cors`
+/// belongs on the list for the same reason: an enhancement that widens CORS to
+/// `*` is opening a door without the user's knowledge.
 ///
-/// `external-ui*` is deliberately absent. It decides what a *browser* sees at
-/// `/ui`, not how this program reaches the core, which is the connection being
-/// protected here.
+/// `external-ui` and `external-ui-url` are included because the core serves
+/// their content at `/ui` on the controller's origin. A base profile may
+/// declare them; later enhancements cannot redirect them.
 pub const CONTROL_PLANE: &[&str] = &[
     "external-controller",
     "external-controller-tls",
@@ -191,12 +190,13 @@ impl Pipeline {
         self
     }
 
-    /// Force a control plane over every profile.
+    /// Force the controller address and secret over every profile.
     ///
     /// The controller's address and secret belong to the application, not to a
     /// document a subscription replaces on every update. Everything here is
     /// written after the whole chain has been applied, so no profile can move
-    /// it, and profiles are not permitted to declare one at all.
+    /// it. A base profile may supply a value when the application setting is
+    /// absent; enhancement profiles cannot change or introduce these keys.
     #[must_use]
     pub fn with_control_plane(mut self, controller: Option<&str>, secret: Option<&str>) -> Self {
         self.control_plane.clear();

@@ -20,9 +20,9 @@
 //!    the worst outcome this program can produce, and the snapshot is already
 //!    on disk.
 //!
-//! Steps 2 to 4 are [`Service::apply_with`], and the whole sequence is
-//! exercisable in tests through a small injection point rather than a real
-//! core.
+//! [`Service::apply`] commits the generated document, then [`Service::reload`]
+//! performs steps 2 to 4. Tests cover the decision path with a fake controller
+//! and an optional real core.
 
 use std::path::{Path, PathBuf};
 
@@ -702,6 +702,19 @@ impl Service {
             endpoint,
             std::time::Duration::from_millis(self.settings.ui.refresh_ms.max(1000) * 5),
         )
+    }
+
+    /// The deployed core's local HTTP-capable proxy listener, for subscription
+    /// fallback. The controller port is a different service; a SOCKS-only port
+    /// cannot be passed to the HTTP proxy client.
+    #[must_use]
+    pub fn proxy_addr(&self) -> Option<String> {
+        let text = self.paths.read(&self.paths.runtime_config()).ok()?;
+        let config = Config::from_yaml(&text).ok()?;
+        config
+            .mixed_port()
+            .or_else(|| config.port())
+            .map(|port| format!("127.0.0.1:{port}"))
     }
 
     /// Generate a runtime configuration without writing anything.
@@ -1550,6 +1563,27 @@ rules:
         let endpoint = f.service.endpoint().unwrap().unwrap();
         assert_eq!(endpoint, Endpoint::tcp("127.0.0.1:9090", None));
         assert!(endpoint.is_loopback());
+    }
+
+    #[test]
+    fn subscription_fallback_uses_the_proxy_listener_not_the_controller() {
+        let f = fixture();
+        f.seed();
+        assert_eq!(f.service.proxy_addr(), None, "only deployed ports count");
+        let outcome = f.service.generate().unwrap();
+        f.service.pipeline().commit(&outcome, false).unwrap();
+        assert_eq!(f.service.proxy_addr().as_deref(), Some("127.0.0.1:7890"));
+        assert_eq!(
+            f.service.endpoint().unwrap().unwrap(),
+            Endpoint::tcp("127.0.0.1:9090", None)
+        );
+
+        std::fs::write(
+            f.service.paths().runtime_config(),
+            "socks-port: 7891\nexternal-controller: 127.0.0.1:9090\n",
+        )
+        .unwrap();
+        assert_eq!(f.service.proxy_addr(), None, "SOCKS is not an HTTP proxy");
     }
 
     #[test]

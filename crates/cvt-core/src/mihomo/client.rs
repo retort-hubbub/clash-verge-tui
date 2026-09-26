@@ -889,7 +889,8 @@ fn build_http(endpoint: &Endpoint, timeout: Duration) -> Result<reqwest::Client>
         .no_proxy();
 
     match &endpoint.transport {
-        crate::mihomo::endpoint::Transport::Tcp(_) => {}
+        crate::mihomo::endpoint::Transport::Tcp(_) | crate::mihomo::endpoint::Transport::Tls(_) => {
+        }
         crate::mihomo::endpoint::Transport::Unix(path) => {
             #[cfg(unix)]
             {

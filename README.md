@@ -26,10 +26,11 @@ that is inserted *before* the terminal `MATCH` rather than after it. Every
 generated document is validated before it is written, and the previous one is
 snapshotted, so a configuration that the core refuses can always be undone.
 
-**Subscriptions.** Three-tier fetching: direct, then through the core, then
-through the system proxy — so an update works on a machine whose only route to
-the internet is the proxy it is updating. `subscription-userinfo` is parsed so
-the interface can show what is left.
+**Subscriptions.** Three-tier fetching: direct, then through a running core's
+mixed or HTTP proxy port when configured, then through the system proxy — so an
+update works on a machine whose only route to the internet is the proxy it is
+updating. `subscription-userinfo` is parsed so the interface can show what is
+left.
 
 **The running core.** Select nodes, pin a selection, run latency and
 DNS tests, list and close connections, watch traffic and memory, follow the
@@ -39,6 +40,30 @@ restart, upgrade or garbage-collect the core itself.
 **Two front ends, one implementation.** The interactive interface and the
 command line are both thin shells over the same `Service` facade, so they
 cannot disagree about what a profile chain means or how an apply is sequenced.
+
+## Feature coverage and limits
+
+| Area | Terminal interface | Command line |
+|---|---|---|
+| Profiles and subscriptions | List, switch, edit, update one or all due, import | The same, plus editing a subscription URL |
+| Configuration | Preview, apply, edit profiles and overrides | Generate, validate, diff, apply, roll back |
+| Running core | Nodes, connections, logs, rules, latency and resource use | The same, plus DNS and named URL tests |
+| Diagnostics and maintenance | Core and Geo database updates | Doctor, media unlock (YouTube Premium, Netflix, ChatGPT, Disney+), exit IP/geolocation, local backup and restore |
+
+The TUI's **update all** action updates subscriptions that are due according to
+each profile's interval; `profiles update <uid>` explicitly updates one. The
+`core.auto_start` and `update.update_on_start` settings apply when the TUI
+launches. Neither setting installs a background system service.
+
+This project does not execute JavaScript enhancement scripts. It uses
+[declarative overrides](docs/OVERRIDE-FORMAT.md); a subscription that requires
+its own script cannot be reproduced automatically. It does not manage the
+system proxy, PAC, the system resolver, privileged TUN setup, or WebDAV backup.
+Those desktop and remote-sync operations need external tools. `dialer-proxy`
+chains can be inspected and validated, but are not rewritten automatically.
+TLS, Unix-socket and Windows-pipe controller addresses are recognised; the
+pipe transport depends on Windows. The command line's unlock checks cover four
+services, not every service offered by `clash-verge-rev`.
 
 ## Requirements
 
@@ -105,9 +130,6 @@ homes it found.
   together and why.
 - [`docs/adr/`](docs/adr/) — the decisions behind the design, with the
   alternatives that were rejected.
-- [`docs/FEATURE-COVERAGE.md`](docs/FEATURE-COVERAGE.md) — what this project
-  does about each feature of `clash-verge-rev`, including the ones it does not
-  implement and why.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — the GitFlow workflow, commit
   conventions, and the architecture rules that are not negotiable.
 

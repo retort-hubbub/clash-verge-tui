@@ -25,8 +25,10 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum Transport {
-    /// A TCP (optionally TLS) address such as `127.0.0.1:9090`.
+    /// A plain TCP address such as `127.0.0.1:9090`.
     Tcp(String),
+    /// A TLS listener address.
+    Tls(String),
     /// A unix domain socket path.
     #[serde(rename = "unix")]
     Unix(PathBuf),
@@ -51,6 +53,15 @@ impl Endpoint {
     pub fn tcp(addr: impl Into<String>, secret: Option<String>) -> Self {
         Self {
             transport: Transport::Tcp(addr.into()),
+            secret: normalise(secret),
+        }
+    }
+
+    /// A TLS controller endpoint.
+    #[must_use]
+    pub fn tls(addr: impl Into<String>, secret: Option<String>) -> Self {
+        Self {
+            transport: Transport::Tls(addr.into()),
             secret: normalise(secret),
         }
     }
@@ -91,7 +102,7 @@ impl Endpoint {
             .get_str("external-controller-tls")
             .filter(|s| !s.is_empty())
         {
-            return Some(Self::tcp(addr, secret));
+            return Some(Self::tls(addr, secret));
         }
         if let Some(path) = config
             .get_str("external-controller-unix")
@@ -112,10 +123,8 @@ impl Endpoint {
     #[must_use]
     pub fn base_url(&self) -> String {
         match &self.transport {
-            Transport::Tcp(addr) => {
-                let scheme = "http";
-                format!("{scheme}://{addr}")
-            }
+            Transport::Tcp(addr) => format!("http://{addr}"),
+            Transport::Tls(addr) => format!("https://{addr}"),
             Transport::Unix(_) | Transport::Pipe(_) => "http://localhost".to_owned(),
         }
     }
@@ -132,6 +141,7 @@ impl Endpoint {
         };
         match &self.transport {
             Transport::Tcp(addr) => format!("ws://{addr}{p}"),
+            Transport::Tls(addr) => format!("wss://{addr}{p}"),
             Transport::Unix(_) | Transport::Pipe(_) => format!("ws://localhost{p}"),
         }
     }
@@ -142,7 +152,7 @@ impl Endpoint {
     /// with an empty secret, so anything that can open the socket is trusted.
     #[must_use]
     pub fn is_authenticated(&self) -> bool {
-        matches!(self.transport, Transport::Tcp(_)) && self.secret.is_some()
+        matches!(self.transport, Transport::Tcp(_) | Transport::Tls(_)) && self.secret.is_some()
     }
 
     /// Human-readable description used in status bars and errors.
@@ -150,6 +160,7 @@ impl Endpoint {
     pub fn describe(&self) -> String {
         match &self.transport {
             Transport::Tcp(a) => format!("tcp://{a}"),
+            Transport::Tls(a) => format!("tls://{a}"),
             Transport::Unix(p) => format!("unix://{}", p.display()),
             Transport::Pipe(p) => format!("pipe://{p}"),
         }
@@ -163,7 +174,7 @@ impl Endpoint {
     pub fn is_loopback(&self) -> bool {
         match &self.transport {
             Transport::Unix(_) | Transport::Pipe(_) => true,
-            Transport::Tcp(addr) => {
+            Transport::Tcp(addr) | Transport::Tls(addr) => {
                 let host = addr.rsplit_once(':').map_or(addr.as_str(), |(h, _)| h);
                 let host = host.trim_matches(['[', ']']);
                 host == "localhost"
@@ -181,7 +192,7 @@ impl Endpoint {
     /// [`Error::InvalidValue`] for a malformed address or a missing socket.
     pub fn validate(&self) -> Result<()> {
         match &self.transport {
-            Transport::Tcp(addr) => {
+            Transport::Tcp(addr) | Transport::Tls(addr) => {
                 let (host, port) = addr.rsplit_once(':').ok_or_else(|| {
                     Error::invalid(
                         "external-controller",
@@ -240,6 +251,12 @@ mod tests {
         assert_eq!(t.ws_url("/logs"), "ws://127.0.0.1:9090/logs");
         assert_eq!(t.ws_url("traffic"), "ws://127.0.0.1:9090/traffic");
 
+        let tls = Endpoint::tls("localhost:9443", Some("s".into()));
+        assert_eq!(tls.base_url(), "https://localhost:9443");
+        assert_eq!(tls.ws_url("/logs"), "wss://localhost:9443/logs");
+        assert!(tls.is_authenticated());
+        assert!(tls.is_loopback());
+
         let u = Endpoint::unix("/run/mihomo.sock");
         assert_eq!(u.base_url(), "http://localhost");
         assert_eq!(u.ws_url("/logs"), "ws://localhost/logs");
@@ -268,6 +285,12 @@ mod tests {
         let c = Config::from_yaml("external-controller-unix: /run/m.sock\n").unwrap();
         let e = Endpoint::from_config(&c).unwrap();
         assert_eq!(e, Endpoint::unix("/run/m.sock"));
+
+        let c = Config::from_yaml("external-controller-tls: localhost:9443\nsecret: s\n").unwrap();
+        assert_eq!(
+            Endpoint::from_config(&c),
+            Some(Endpoint::tls("localhost:9443", Some("s".into())))
+        );
 
         let c = Config::from_yaml("mode: rule\n").unwrap();
         assert!(Endpoint::from_config(&c).is_none());

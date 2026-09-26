@@ -6,7 +6,7 @@
 //! * [`run`] takes the real terminal over — raw mode, the alternate screen, a
 //!   panic hook that gives both back — and does not return without restoring
 //!   it, whatever happened;
-//! * [`Session`] is the loop itself, drawing on a generic
+//! * `Session` is the loop itself, drawing on a generic
 //!   [`ratatui::backend::Backend`] and reading a stream of [`Event`]s, so the
 //!   tests below drive it with a `TestBackend`, a scripted input and a fake
 //!   effect executor: no terminal, no core, no clock.
@@ -340,6 +340,7 @@ where
             .size()
             .map_err(|e| RunError::Terminal(io::Error::other(e)))?;
         self.deliver(Event::Resize(size.width, size.height)).await?;
+        self.perform(vec![Effect::Startup]).await?;
         if let Some(key) = refresh_key(&self.app) {
             self.deliver(Event::Key(key)).await?;
         }
@@ -620,6 +621,7 @@ mod tests {
             .await
             .unwrap();
         assert!(app.is_quit(), "`q` has to end the loop");
+        assert!(fake.asked().contains(&Effect::Startup));
         assert!(
             fake.asked()
                 .contains(&Effect::Refresh(crate::action::Screen::Home)),

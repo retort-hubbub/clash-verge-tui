@@ -93,13 +93,13 @@ document exactly as it was. Getting that right took a read-only pass down the
 path before the first write, because a descent that has already materialised
 the keys it needs cannot report failure *and* leave nothing behind.
 
-Merging and applying an override are idempotent — re-running the pipeline with
-an unchanged subscription produces an unchanged configuration — with one
-documented exception. A removal by *position* (`proxies[1]`) cannot make that
-promise, because the position is not stable: the second application removes
-whatever has moved into the slot. It is supported anyway, because dropping the
-rule a subscription always puts first is a real thing to want, and the
-documentation says which case it is rather than promising uniformly.
+Re-running the pipeline against the same source documents produces the same
+configuration. Applying an overlay repeatedly to an already modified document
+is usually idempotent, but operations addressing list positions are not: both
+`remove: ["proxies[1]"]` and a `set` at a list index combined with a list edit
+can act on a different element on the next pass. These positional operations
+remain available for one-shot edits; see `enhance::overlay` for the precise
+contract.
 
 Appending a rule places it *before* the terminal `MATCH`, because a catch-all
 appended after a catch-all is dead code — and appending a rule that is itself
@@ -112,8 +112,8 @@ tree can be as aggressive as it is.
 
 ### Talking to the core
 
-`mihomo::endpoint` normalises the three ways to reach the API — TCP with an
-optional secret, a unix socket, a Windows named pipe — into one type.
+`mihomo::endpoint` normalises the four ways to reach the API — TCP, TLS, a Unix
+socket and a Windows named pipe — into one type.
 `mihomo::client` is one typed method per endpoint, against a contract observed
 from a real binary rather than the published documentation
 ([ADR 0004](adr/0004-hand-verified-api-contract.md)). `mihomo::stream` covers

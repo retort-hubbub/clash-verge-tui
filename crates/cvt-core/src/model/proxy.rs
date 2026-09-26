@@ -47,7 +47,7 @@ impl Proxy {
     /// Settled against the core: `dialer-proxy: <another proxy>` and
     /// `dialer-proxy: <a group>` are both accepted, `dialer-proxy: <itself>`
     /// and any cycle are refused with "has circular dialer-proxy dependency",
-    /// and a name that is neither is refused with "dialer-proxy [x] not found".
+    /// and a name that is neither is refused with `dialer-proxy [x] not found`.
     #[must_use]
     pub fn dialer_proxy(&self) -> Option<&str> {
         self.extra

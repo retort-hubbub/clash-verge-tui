@@ -498,7 +498,7 @@ async fn pump_ws(
     }
 
     let stream: BoxedStream = match &endpoint.transport {
-        Transport::Tcp(addr) => {
+        Transport::Tcp(addr) | Transport::Tls(addr) => {
             let socket = tokio::net::TcpStream::connect(addr)
                 .await
                 .map_err(|e| ConnectError::Transport(format!("connect to {addr}: {e}")))?;
@@ -525,7 +525,7 @@ async fn pump_ws(
         }
     };
 
-    let (mut ws, _response) = tokio_tungstenite::client_async(request, stream)
+    let (mut ws, _response) = tokio_tungstenite::client_async_tls(request, stream)
         .await
         .map_err(|e| ConnectError::Handshake(e.to_string()))?;
 

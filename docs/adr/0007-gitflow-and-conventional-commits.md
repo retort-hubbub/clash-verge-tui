@@ -12,9 +12,8 @@ was made by a stranger six months from now, without a ticket tracker to
 consult.
 
 There is also an unusual constraint in this codebase: several known defects
-are preserved deliberately, as `#[ignore]`d counterexample tests with the
-reasoning in the test body. The history is part of how that stays honest — a
-fix shows up as a commit that removes an `#[ignore]` and its note.
+are preserved deliberately as passing counterexample tests with their reasoning
+in the test body. The history records when each case was reproduced and fixed.
 
 ## Decision
 
@@ -64,5 +63,5 @@ that landed in `develop`, and that is a property worth having in a program
 that can break a user's network.
 
 **Free-form commit messages.** No cost, and no history. Rejected: the
-`#[ignore]`d counterexamples depend on the history being legible, and so does
+counterexamples depend on the history being legible, and so does
 reviewing a change to the reload decision tree.

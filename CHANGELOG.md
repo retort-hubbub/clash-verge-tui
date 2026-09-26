@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Starting Mihomo with a selected profile now generates the first runtime
+  configuration automatically. Reload still requires an existing configuration.
+- The status detail dialog receives the full error text, wraps long messages,
+  and supports keyboard and mouse wheel scrolling. Footer errors expire after
+  four seconds and Esc dismisses a footer notice without replacing it.
+- Dialog choices can be clicked with the mouse, including prompt and
+  confirmation buttons.
+- The TUI calls its managed core action “install core” and explains that it
+  downloads or updates the managed binary.
+
 ## [0.5.0] - 2026-09-26
 
 ### Added

@@ -213,7 +213,7 @@ pub enum Action {
     StopCore,
     /// Restart the core process.
     RestartCore,
-    /// Update the core binary from its release channel.
+    /// Download or update the managed core binary.
     UpgradeCore,
     /// Refresh the GeoIP and GeoSite databases.
     UpdateGeo,
@@ -286,7 +286,7 @@ impl Action {
             Self::StartCore => "start core",
             Self::StopCore => "stop core",
             Self::RestartCore => "restart core",
-            Self::UpgradeCore => "upgrade core",
+            Self::UpgradeCore => "install core",
             Self::UpdateGeo => "update geo",
             Self::FlushCaches => "flush caches",
             Self::EditRuntimeConfig => "edit config",
@@ -358,7 +358,7 @@ impl Action {
             Self::StartCore => "launch the core with the generated configuration",
             Self::StopCore => "stop the core process",
             Self::RestartCore => "stop and start the core",
-            Self::UpgradeCore => "download and install a newer core from its release channel",
+            Self::UpgradeCore => "download or update the managed mihomo core",
             Self::UpdateGeo => "download fresh GeoIP and GeoSite databases",
             Self::FlushCaches => "clear the fake-IP and DNS caches",
             Self::EditRuntimeConfig => "open the generated configuration in $EDITOR",

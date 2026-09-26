@@ -45,7 +45,7 @@ use crate::theme::Theme;
 /// How long a transient status message stays on screen.
 ///
 /// Long enough to read a sentence, short enough that it does not keep covering
-/// the footer. Errors ignore this and stay until something replaces them.
+/// the footer. The full latest message remains available through `m`.
 pub const STATUS_TTL: Duration = Duration::from_secs(4);
 
 /// How many ticks pass between background polls of the running core.
@@ -261,7 +261,7 @@ impl Effect {
             Self::StartCore => "start core",
             Self::StopCore => "stop core",
             Self::RestartCore => "restart core",
-            Self::UpgradeCore => "upgrade core",
+            Self::UpgradeCore => "install managed core",
             Self::UpdateGeo => "update geo databases",
             Self::FlushCaches => "flush caches",
             Self::SaveSettings { .. } => "save settings",
@@ -567,14 +567,6 @@ pub enum StatusKind {
     Error,
 }
 
-impl StatusKind {
-    /// Whether a message of this kind disappears on its own.
-    #[must_use]
-    pub fn expires(self) -> bool {
-        !matches!(self, Self::Error)
-    }
-}
-
 /// One line of feedback for the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
@@ -601,10 +593,10 @@ impl Status {
     ///
     /// Transient messages carry a timestamp so that a burst of them cannot
     /// pile up: the newest replaces the previous one and goes away by itself.
-    /// An error is not a passing note, so it stays until it is replaced.
+    /// The complete message is retained separately after the footer expires.
     #[must_use]
     pub fn is_expired_at(&self, now: Instant) -> bool {
-        self.kind.expires() && now.duration_since(self.at) >= STATUS_TTL
+        now.duration_since(self.at) >= STATUS_TTL
     }
 }
 
@@ -687,6 +679,8 @@ pub enum Overlay {
         text: String,
         /// Message severity.
         kind: StatusKind,
+        /// First rendered row on screen.
+        scroll: usize,
     },
 }
 
@@ -1223,7 +1217,7 @@ fn set_setting_text(settings: &mut Settings, key: &str, text: &str) -> Result<()
         Ok(()) => Ok(()),
         Err(error) => {
             *settings = before;
-            Err(error.short())
+            Err(error.to_string())
         }
     }
 }
@@ -1781,28 +1775,61 @@ impl App {
     }
 
     fn on_overlay_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            let Some(overlay) = self.overlay.clone() else {
+                return Vec::new();
+            };
+            match overlay {
+                Overlay::Prompt { .. } => {
+                    if let Some(accept) = crate::ui::prompt_choice_at(self, mouse.column, mouse.row)
+                    {
+                        let key = if accept { KeyCode::Enter } else { KeyCode::Esc };
+                        return self.on_overlay_key(KeyEvent::new(key, KeyModifiers::NONE));
+                    }
+                }
+                Overlay::Confirm { question, .. } => {
+                    if let Some(accept) =
+                        crate::ui::confirm_choice_at(self, &question, mouse.column, mouse.row)
+                    {
+                        let key = if accept { KeyCode::Enter } else { KeyCode::Esc };
+                        return self.on_overlay_key(KeyEvent::new(key, KeyModifiers::NONE));
+                    }
+                }
+                Overlay::Picker {
+                    title,
+                    items,
+                    selected,
+                } => {
+                    if let Some(index) = crate::ui::picker_item_at(
+                        self.viewport,
+                        items.len(),
+                        selected,
+                        mouse.column,
+                        mouse.row,
+                    ) {
+                        self.overlay = None;
+                        return self.choose(&title, &items, index);
+                    }
+                }
+                Overlay::Preview { .. } | Overlay::Message { .. } => {
+                    self.overlay = None;
+                }
+            }
+            return Vec::new();
+        }
         let Some(overlay) = self.overlay.as_mut() else {
             return Vec::new();
         };
         match (overlay, mouse.kind) {
-            (Overlay::Message { .. }, MouseEventKind::Down(MouseButton::Left)) => {
-                self.overlay = None;
-            }
             (
-                Overlay::Picker {
-                    items, selected, ..
-                },
-                MouseEventKind::Down(MouseButton::Left),
+                Overlay::Message { scroll, .. } | Overlay::Preview { scroll, .. },
+                MouseEventKind::ScrollUp,
             ) => {
-                if let Some(index) = crate::ui::picker_item_at(
-                    self.viewport,
-                    items.len(),
-                    *selected,
-                    mouse.column,
-                    mouse.row,
-                ) {
-                    *selected = index;
-                }
+                *scroll = scroll.saturating_sub(3);
+            }
+            (Overlay::Message { text, scroll, .. }, MouseEventKind::ScrollDown) => {
+                let last = crate::ui::message_scroll_limit(self.viewport, text);
+                *scroll = scroll.saturating_add(3).min(last);
             }
             (Overlay::Picker { selected, .. }, MouseEventKind::ScrollUp) => {
                 *selected = selected.saturating_sub(3);
@@ -1816,9 +1843,6 @@ impl App {
                 *selected = selected
                     .saturating_add(3)
                     .min(items.len().saturating_sub(1));
-            }
-            (Overlay::Preview { scroll, .. }, MouseEventKind::ScrollUp) => {
-                *scroll = scroll.saturating_sub(3);
             }
             (Overlay::Preview { lines, scroll, .. }, MouseEventKind::ScrollDown) => {
                 *scroll = scroll.saturating_add(3).min(lines.len().saturating_sub(1));
@@ -1933,7 +1957,31 @@ impl App {
                 }
                 Vec::new()
             }
-            Overlay::Message { .. } => Vec::new(),
+            Overlay::Message {
+                title,
+                text,
+                kind,
+                scroll,
+            } => {
+                let limit = crate::ui::message_scroll_limit(self.viewport, &text);
+                let next = match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => return Vec::new(),
+                    KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1).min(limit),
+                    KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
+                    KeyCode::PageDown => scroll.saturating_add(self.visible_rows()).min(limit),
+                    KeyCode::PageUp => scroll.saturating_sub(self.visible_rows()),
+                    KeyCode::Home => 0,
+                    KeyCode::End => limit,
+                    _ => scroll,
+                };
+                self.overlay = Some(Overlay::Message {
+                    title,
+                    text,
+                    kind,
+                    scroll: next,
+                });
+                Vec::new()
+            }
         }
     }
 
@@ -2150,7 +2198,7 @@ impl App {
             Action::RollbackConfig => {
                 "restore the previous generated configuration and restart the core?".to_owned()
             }
-            Action::UpgradeCore => "download and replace the core binary?".to_owned(),
+            Action::UpgradeCore => "download and install the latest managed core?".to_owned(),
             other => format!("{}?", other.label()),
         }
     }
@@ -2486,7 +2534,9 @@ impl App {
         if self.clear_filter() {
             self.set_status(StatusKind::Info, "filter cleared");
         } else {
-            self.set_status(StatusKind::Info, "nothing to cancel");
+            // Esc dismisses the footer immediately; the full text remains
+            // available with `m` through `last_status`.
+            self.status = None;
         }
     }
 
@@ -3437,12 +3487,14 @@ impl App {
                 title: self.tr("message").to_owned(),
                 text: formatted,
                 kind: status.kind,
+                scroll: 0,
             });
         } else {
             self.overlay = Some(Overlay::Message {
                 title: self.tr("message").to_owned(),
                 text: self.tr("no message to show").to_owned(),
                 kind: StatusKind::Info,
+                scroll: 0,
             });
         }
         Vec::new()
@@ -3825,31 +3877,26 @@ mod tests {
     }
 
     #[test]
-    fn escape_without_a_filter_says_so_rather_than_doing_nothing() {
+    fn escape_without_a_filter_dismisses_the_footer() {
         let mut a = loaded();
         goto(&mut a, Screen::Rules);
+        let _ = a.on_event(Event::Failed("a useful error".to_owned()));
         assert_eq!(press(&mut a, KeyCode::Esc), Vec::new());
-        assert_eq!(a.current_status().unwrap().text, "nothing to cancel");
+        assert!(a.current_status().is_none());
+        assert_eq!(a.last_status().unwrap().text, "a useful error");
     }
 
     // -- status -------------------------------------------------------------
 
     #[test]
-    fn transient_messages_expire_but_errors_persist() {
+    fn every_footer_message_expires() {
         let info = Status::new(StatusKind::Info, "done");
         assert!(!info.is_expired_at(info.at));
         assert!(!info.is_expired_at(info.at + STATUS_TTL.saturating_sub(Duration::from_millis(1))));
         assert!(info.is_expired_at(info.at + STATUS_TTL));
 
         let error = Status::new(StatusKind::Error, "boom");
-        assert!(
-            !error.is_expired_at(error.at + STATUS_TTL * 1_000),
-            "an error is not a passing note"
-        );
-        assert!(!StatusKind::Error.expires());
-        for kind in [StatusKind::Info, StatusKind::Success, StatusKind::Warning] {
-            assert!(kind.expires(), "{kind:?}");
-        }
+        assert!(error.is_expired_at(error.at + STATUS_TTL));
     }
 
     #[test]
@@ -3867,11 +3914,9 @@ mod tests {
         let failed = a.current_status().unwrap();
         assert_eq!(failed.kind, StatusKind::Error);
         assert!(failed.text.contains("refused"));
-        a.expire_status_at(failed.at + STATUS_TTL * 10);
-        assert!(
-            a.current_status().is_some(),
-            "an error waits to be replaced"
-        );
+        a.expire_status_at(failed.at + STATUS_TTL);
+        assert!(a.current_status().is_none());
+        assert_eq!(a.last_status().unwrap().text, "the controller refused");
     }
 
     #[test]
@@ -4868,8 +4913,8 @@ mod tests {
         assert_eq!(a.profiles.selected_index(), offset);
 
         a.overlay = Some(Overlay::Picker {
-            title: "choose".to_owned(),
-            items: vec!["first".to_owned(), "second".to_owned()],
+            title: "new profile".to_owned(),
+            items: vec!["from a URL".to_owned(), "a blank local profile".to_owned()],
             selected: 0,
         });
         let picker_row = crate::ui::picker_item_at(a.viewport, 2, 0, 0, 0);
@@ -4878,8 +4923,89 @@ mod tests {
         let _ = a.on_event(click(popup.x + 1, popup.y + 2));
         assert!(matches!(
             a.overlay,
-            Some(Overlay::Picker { selected: 1, .. })
+            Some(Overlay::Prompt {
+                kind: PromptKind::Name,
+                ..
+            })
         ));
+    }
+
+    #[test]
+    fn mouse_buttons_confirm_cancel_and_accept_modal_input() {
+        let mut a = app();
+        a.viewport = (80, 24);
+        let click = |column, row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+
+        a.overlay = Some(Overlay::Prompt {
+            label: "profile name".to_owned(),
+            kind: PromptKind::Name,
+            value: "sample".to_owned(),
+            cursor: 6,
+        });
+        assert_eq!(
+            a.on_event(click(6, 12)),
+            vec![Effect::NewProfile {
+                name: "sample".to_owned(),
+                url: None,
+            }]
+        );
+        a.overlay = Some(Overlay::Prompt {
+            label: "profile name".to_owned(),
+            kind: PromptKind::Name,
+            value: "discard".to_owned(),
+            cursor: 7,
+        });
+        assert!(a.on_event(click(30, 12)).is_empty());
+        assert!(a.overlay.is_none());
+
+        a.overlay = Some(Overlay::Confirm {
+            question: "quit?".to_owned(),
+            action: Action::Quit,
+        });
+        assert_eq!(
+            crate::ui::confirm_choice_at(&a, "quit?", 18, 13),
+            Some(false)
+        );
+        assert!(a.on_event(click(18, 13)).is_empty());
+        assert!(a.overlay.is_none());
+        assert!(!a.is_quit());
+        a.overlay = Some(Overlay::Confirm {
+            question: "quit?".to_owned(),
+            action: Action::Quit,
+        });
+        assert_eq!(a.on_event(click(6, 13)), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn full_error_message_survives_footer_expiry_and_scrolls_in_its_popup() {
+        let mut a = app();
+        a.viewport = (40, 10);
+        let message = format!("{}\n{}", "first ".repeat(30), "last detail");
+        let _ = a.on_event(Event::Failed(message.clone()));
+        let at = a.current_status().unwrap().at;
+        a.expire_status_at(at + STATUS_TTL);
+        assert!(a.current_status().is_none());
+        let _ = a.show_last_message();
+        assert!(matches!(&a.overlay, Some(Overlay::Message { text, .. }) if text == &message));
+        let _ = a.on_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(matches!(
+            a.overlay,
+            Some(Overlay::Message { scroll: 1.., .. })
+        ));
+        assert!(press(&mut a, KeyCode::Esc).is_empty());
+        assert!(a.overlay.is_none());
     }
 
     // -- navigation ---------------------------------------------------------
@@ -4954,6 +5080,13 @@ mod tests {
                     a.dispatch(action.clone(), true).is_empty(),
                     "{action:?} must move the cursor, not fire an effect"
                 );
+                continue;
+            }
+            if action == Action::Cancel {
+                let mut a = loaded();
+                a.set_status(StatusKind::Error, "dismiss me");
+                assert!(a.dispatch(action, true).is_empty());
+                assert!(a.current_status().is_none());
                 continue;
             }
             let mut a = loaded();

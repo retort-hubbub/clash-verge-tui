@@ -415,10 +415,11 @@ impl Service {
         })?;
         let config = self.paths.runtime_config();
         if !config.is_file() {
-            return Err(Error::invalid(
-                "runtime config",
-                "no configuration has been generated yet; apply a profile first",
-            ));
+            // Selecting a subscription makes it current but does not write a
+            // runtime document. Starting from a fresh home should complete
+            // that first apply, using the same validation as an explicit apply.
+            let outcome = self.generate()?;
+            self.pipeline().commit(&outcome, false)?;
         }
         let text = self.paths.read(&config)?;
         let parsed = Config::from_yaml(&text)?;
@@ -653,6 +654,15 @@ impl Service {
     /// reload whose cause cannot be undone reports *that* cause, never a
     /// failure of the rollback bookkeeping.
     pub async fn reload(&self, mode: ReloadMode) -> Result<ReloadOutcome> {
+        // Reload operates on an already deployed document. `start_core` may
+        // prepare a first document for the user, but doing that here would
+        // silently turn a reload of nothing into a new apply.
+        if !self.paths.runtime_config().is_file() {
+            return Err(Error::invalid(
+                "runtime config",
+                "no configuration has been generated yet; apply a profile first",
+            ));
+        }
         match mode {
             ReloadMode::Restart => return self.restart_with_rollback().await,
             ReloadMode::HotReload => {
@@ -665,7 +675,7 @@ impl Service {
         match self.hot_reload().await {
             Ok(()) => Ok(ReloadOutcome::HotReloaded),
             Err(reason) => {
-                let reason = reason.short();
+                let reason = reason.to_string();
                 match self.restart_with_rollback().await {
                     Ok(ReloadOutcome::Restarted { pid }) => Ok(ReloadOutcome::Restarted { pid }),
                     Ok(other) => Ok(other),
@@ -999,6 +1009,35 @@ rules:
         // The missing binary is detected first, which is the more useful
         // message when both are missing.
         assert!(matches!(err, Error::CoreUnavailable { .. }), "{err:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn starting_a_selected_profile_generates_the_first_runtime_configuration() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let f = fixture();
+        f.seed();
+        let binary = f.service.paths().core_dir().join("mihomo");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nif [ \"$1\" = \"-t\" ]; then exit 0; fi\nsleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!f.service.paths().runtime_config().exists());
+
+        let started = f.service.start_core();
+        assert!(started.is_ok(), "{started:?}");
+        assert!(f.service.paths().runtime_config().is_file());
+        assert!(
+            f.service
+                .paths()
+                .read(&f.service.paths().runtime_config())
+                .unwrap()
+                .contains("MATCH,PROXY")
+        );
+        f.service.stop_core().unwrap();
     }
 
     #[test]

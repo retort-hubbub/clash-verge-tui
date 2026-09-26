@@ -125,7 +125,7 @@ impl Executor {
         let client = match self.client() {
             Ok(client) => client,
             Err(error) => {
-                Self::emit(sink, Event::Failed(error.short()));
+                Self::emit(sink, Event::Failed(error.to_string()));
                 return;
             }
         };
@@ -137,7 +137,7 @@ impl Executor {
                 }
                 Err(error) => {
                     tracing::debug!(error = %error, "effect failed");
-                    let _ = sink.send(Event::Failed(error.short()));
+                    let _ = sink.send(Event::Failed(error.to_string()));
                 }
             }
         });
@@ -180,7 +180,9 @@ impl Executor {
                                     Self::emit(&sink, Event::Done(Done::CoreStarted { pid }));
                                 }
                                 Ok(Ok(None)) => {}
-                                Ok(Err(error)) => Self::emit(&sink, Event::Failed(error.short())),
+                                Ok(Err(error)) => {
+                                    Self::emit(&sink, Event::Failed(error.to_string()));
+                                }
                                 Err(error) => Self::emit(&sink, Event::Failed(error.to_string())),
                             }
                         }
@@ -224,13 +226,13 @@ impl Executor {
                             let note = match recorded {
                                 Ok(()) => format!("{group}: {member}"),
                                 Err(error) => {
-                                    format!("{group}: {member} (not recorded: {})", error.short())
+                                    format!("{group}: {member} (not recorded: {error})")
                                 }
                             };
                             let _ = sink.send(Event::Data(Data::Notice(note)));
                         }
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
                         }
                     }
                 });
@@ -260,16 +262,13 @@ impl Executor {
                             let note = match forgotten {
                                 Ok(()) => format!("{group}: automatic"),
                                 Err(error) => {
-                                    format!(
-                                        "{group}: automatic (still remembered: {})",
-                                        error.short()
-                                    )
+                                    format!("{group}: automatic (still remembered: {error})")
                                 }
                             };
                             let _ = sink.send(Event::Data(Data::Notice(note)));
                         }
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
                         }
                     }
                 });
@@ -365,7 +364,7 @@ impl Executor {
                             let _ = sink.send(Event::Done(Done::CoreUpgraded { version }));
                         }
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
                         }
                     }
                 });
@@ -415,14 +414,14 @@ impl Executor {
                     sink,
                     Event::Data(Data::Notice(format!("edited {}", path.display()))),
                 ),
-                Err(error) => Self::emit(sink, Event::Failed(error.short())),
+                Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
             },
             Effect::EditProfile { uid } => match self.profile_path(&uid) {
                 Ok(path) => match open_editor(&path) {
                     Ok(()) => Self::emit(sink, Event::Data(Data::Notice(format!("edited {uid}")))),
-                    Err(error) => Self::emit(sink, Event::Failed(error.short())),
+                    Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
                 },
-                Err(error) => Self::emit(sink, Event::Failed(error.short())),
+                Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
             },
 
             Effect::ExportLogs { path, contents } => match std::fs::write(&path, contents) {
@@ -430,7 +429,7 @@ impl Executor {
                     sink,
                     Event::Data(Data::Notice(format!("log written to {}", path.display()))),
                 ),
-                Err(error) => Self::emit(sink, Event::Failed(Error::io(&path, error).short())),
+                Err(error) => Self::emit(sink, Event::Failed(Error::io(&path, error).to_string())),
             },
 
             // ---- applying runs on a blocking thread, and reports once
@@ -445,13 +444,13 @@ impl Executor {
                     let outcome = match guard.generate() {
                         Ok(outcome) => outcome,
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
                             return;
                         }
                     };
                     let changed = outcome.diff.entries.len();
                     if let Err(error) = guard.pipeline().commit(&outcome, false) {
-                        let _ = sink.send(Event::Failed(error.short()));
+                        let _ = sink.send(Event::Failed(error.to_string()));
                         return;
                     }
                     // Waiting for the core to come back can take ten seconds.
@@ -464,7 +463,7 @@ impl Executor {
                             }));
                         }
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
                         }
                     }
                 });
@@ -474,7 +473,7 @@ impl Executor {
             other => {
                 let event = match self.local(other, sink) {
                     Ok(event) => event,
-                    Err(error) => Event::Failed(error.short()),
+                    Err(error) => Event::Failed(error.to_string()),
                 };
                 Self::emit(sink, event);
             }
@@ -613,7 +612,7 @@ impl Executor {
             Ok(Some(_)) => true,
             Ok(None) => false,
             Err(error) => {
-                Self::emit(sink, Event::Failed(error.short()));
+                Self::emit(sink, Event::Failed(error.to_string()));
                 false
             }
         }
@@ -638,7 +637,7 @@ impl Executor {
             Screen::Profiles => {
                 let event = self
                     .local(Effect::LoadProfiles, sink)
-                    .unwrap_or_else(|error| Event::Failed(error.short()));
+                    .unwrap_or_else(|error| Event::Failed(error.to_string()));
                 Self::emit(sink, event);
             }
             Screen::Settings => {
@@ -737,7 +736,7 @@ impl Executor {
             let mut stream = match Stream::spawn(endpoint, options) {
                 Ok(stream) => stream,
                 Err(error) => {
-                    let _ = sink.send(Event::Failed(error.short()));
+                    let _ = sink.send(Event::Failed(error.to_string()));
                     streaming.store(false, Ordering::SeqCst);
                     return;
                 }
@@ -887,7 +886,7 @@ async fn update_profiles(service: Arc<Mutex<Service>>, uids: Vec<String>, sink: 
     let fetcher = match SubscriptionFetcher::new(proxy) {
         Ok(fetcher) => fetcher,
         Err(error) => {
-            let _ = sink.send(Event::Failed(error.short()));
+            let _ = sink.send(Event::Failed(error.to_string()));
             return;
         }
     };
@@ -944,7 +943,7 @@ async fn run_one(
                 .await
             {
                 Ok(delay) => TestResult::Passed(format!("{delay} ms")),
-                Err(error) => TestResult::Failed(error.short()),
+                Err(error) => TestResult::Failed(error.to_string()),
             }
         }
         TestKind::GroupLatency => {
@@ -958,18 +957,18 @@ async fn run_one(
                     TestResult::Failed("no member of the group answered".to_owned())
                 }
                 Ok(delays) => TestResult::Passed(format!("{} members answered", delays.len())),
-                Err(error) => TestResult::Failed(error.short()),
+                Err(error) => TestResult::Failed(error.to_string()),
             }
         }
         TestKind::CoreHealth => match client.version().await {
             Ok(version) => TestResult::Passed(version.trimmed().to_owned()),
-            Err(error) => TestResult::Failed(error.short()),
+            Err(error) => TestResult::Failed(error.to_string()),
         },
         TestKind::DnsLookup => match client.dns_query(target, "A").await {
             Ok(answer) => {
                 TestResult::Passed(format!("answer of {} bytes", answer.to_string().len()))
             }
-            Err(error) => TestResult::Failed(error.short()),
+            Err(error) => TestResult::Failed(error.to_string()),
         },
     }
 }

@@ -187,7 +187,7 @@ fn attention(frame: &mut Frame<'_>, area: Rect, app: &App) {
         cvt_core::mihomo::supervisor::CoreStatus::NotInstalled => lines.push(Line::from(vec![
             Span::styled(app.tr("no mihomo binary "), app.theme.error()),
             Span::styled(
-                app.tr("— press U to download latest core, or set local path in Settings"),
+                app.tr("— press U to install a managed core, or set local path in Settings"),
                 app.theme.key_label(),
             ),
         ])),

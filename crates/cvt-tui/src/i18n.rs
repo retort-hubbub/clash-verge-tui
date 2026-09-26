@@ -337,7 +337,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::StartCore => "启动内核",
         Action::StopCore => "停止内核",
         Action::RestartCore => "重启内核",
-        Action::UpgradeCore => "升级内核",
+        Action::UpgradeCore => "下载/更新托管内核",
         Action::UpdateGeo => "更新地理数据",
         Action::FlushCaches => "清空缓存",
         Action::EditRuntimeConfig => "编辑配置",
@@ -712,10 +712,13 @@ pub fn text(language: Language, english: &str) -> &str {
         "message" => "消息详情",
         "no message to show" => "暂无历史消息",
         "Esc/Enter close" => "Esc/Enter 关闭",
+        " [Enter] accept " => " [Enter] 确认 ",
+        " [Esc] cancel " => " [Esc] 取消 ",
         "warning" => "警告",
         "error" => "错误",
         "download and replace the core binary?" => "是否下载并替换内核？",
         "download and install the latest managed core?" => "是否下载并安装最新的托管内核？",
+        "download or update the managed mihomo core" => "下载或更新托管的 mihomo 内核",
         "downloading latest mihomo core..." => "正在下载最新的 mihomo 内核...",
         "managed" => "托管",
         "local" => "本地",
@@ -726,8 +729,8 @@ pub fn text(language: Language, english: &str) -> &str {
         "— press U for core management, or configure in Settings" => {
             "— 按 U 进行内核管理，或在设置中配置"
         }
-        "— press U to download latest core, or set local path in Settings" => {
-            "— 按 U 下载最新内核，或在设置中配置本地内核路径"
+        "— press U to install a managed core, or set local path in Settings" => {
+            "— 按 U 安装托管内核，或在设置中配置本地内核路径"
         }
         "switched to local core; configure core.binary in Settings or install mihomo in PATH" => {
             "已切换为本地内核；请在设置中配置 core.binary 或将 mihomo 放入 PATH"

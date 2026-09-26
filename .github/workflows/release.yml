@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to attach release assets to (e.g. v0.5.0)'
+        required: true
+        default: 'v0.5.0'
+
+permissions:
+  contents: write
+
+jobs:
+  upload-assets:
+    name: build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            build_tool: cargo
+          - target: x86_64-unknown-linux-musl
+            build_tool: cross
+          - target: aarch64-unknown-linux-gnu
+            build_tool: cross
+          - target: aarch64-unknown-linux-musl
+            build_tool: cross
+          - target: armv7-unknown-linux-gnueabihf
+            build_tool: cross
+          - target: riscv64gc-unknown-linux-gnu
+            build_tool: cross
+          - target: i686-unknown-linux-gnu
+            build_tool: cross
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.build_tool == 'cross'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Build and upload release binary
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: clash-verge-tui
+          package: cvt
+          workspace: true
+          target: ${{ matrix.target }}
+          archive: $bin-$tag-$target
+          tar: unix
+          include: README.md,LICENSE
+          build-tool: ${{ matrix.build_tool }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}

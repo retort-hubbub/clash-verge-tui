@@ -721,6 +721,18 @@ pub struct SettingRow {
     pub label: &'static str,
     /// The current value, rendered for the value column.
     pub value: String,
+    /// The same value in the form the prompt should be seeded with.
+    ///
+    /// Separate from `value` because they are not the same string: a setting
+    /// that is unset shows `(none)`, and one that falls back to the base
+    /// profile shows `from the base profile`. Seeding the prompt with the
+    /// *rendering* turned the two keystrokes that open and close it — `s`, then
+    /// Enter — into a silent edit that wrote `from the base profile` into
+    /// `core.external_controller`, which the settings accepted and the
+    /// generator then refused every configuration for.
+    ///
+    /// Empty means "unset", and the setters read it that way.
+    pub editable: String,
     /// What changing it does.
     pub help: &'static str,
     /// How it changes.
@@ -766,6 +778,11 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
                 .binary
                 .as_ref()
                 .map_or_else(|| "discovered".to_owned(), |p| p.display().to_string()),
+            editable: settings
+                .core
+                .binary
+                .as_ref()
+                .map_or_else(String::new, |p| p.display().to_string()),
             help: "an explicit path to the mihomo binary; empty means search for one",
             kind: SettingKind::Text,
         },
@@ -777,6 +794,11 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
                 .external_controller
                 .clone()
                 .unwrap_or_else(|| "from the base profile".to_owned()),
+            editable: settings
+                .core
+                .external_controller
+                .clone()
+                .unwrap_or_default(),
             help: "where the core's API listens; this wins over every profile, and a \
                    profile is not allowed to set it",
             kind: SettingKind::Text,
@@ -789,6 +811,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
                 .secret
                 .as_ref()
                 .map_or_else(|| "none".to_owned(), |_| "set".to_owned()),
+            editable: settings.core.secret.clone().unwrap_or_default(),
             help: "the bearer token the core requires; stored in plain text, like the \
                    rest of this file",
             kind: SettingKind::Text,
@@ -797,6 +820,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "core.auto_start",
             label: "start the core on launch",
             value: yes_no(settings.core.auto_start),
+            editable: yes_no(settings.core.auto_start),
             help: "launch the core as soon as the application starts",
             kind: SettingKind::Bool,
         },
@@ -804,6 +828,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "core.rollback_on_failure",
             label: "roll back a bad configuration",
             value: yes_no(settings.core.rollback_on_failure),
+            editable: yes_no(settings.core.rollback_on_failure),
             help: "restore the last snapshot when the core refuses the new one",
             kind: SettingKind::Bool,
         },
@@ -811,6 +836,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "ui.refresh_ms",
             label: "refresh interval",
             value: format!("{} ms", settings.ui.refresh_ms),
+            editable: settings.ui.refresh_ms.to_string(),
             help: "how often the interface redraws",
             kind: SettingKind::Number {
                 presets: REFRESH_PRESETS,
@@ -820,6 +846,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "ui.log_level",
             label: "log level",
             value: settings.ui.log_level.as_str().to_owned(),
+            editable: settings.ui.log_level.as_str().to_owned(),
             help: "the minimum level shown, and requested from the core",
             kind: SettingKind::Choice {
                 options: LOG_LEVELS,
@@ -829,6 +856,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "ui.show_footer",
             label: "show the key hints",
             value: yes_no(settings.ui.show_footer),
+            editable: yes_no(settings.ui.show_footer),
             help: "the footer line naming the keys that apply here",
             kind: SettingKind::Bool,
         },
@@ -836,6 +864,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "ui.color",
             label: "colour",
             value: yes_no(settings.ui.color),
+            editable: yes_no(settings.ui.color),
             help: "turn colours off for a monochrome terminal",
             kind: SettingKind::Bool,
         },
@@ -843,6 +872,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "test.url",
             label: "latency test URL",
             value: settings.test.url.clone(),
+            editable: settings.test.url.clone(),
             help: "must answer 204 without a body, so setup time is measured",
             kind: SettingKind::Text,
         },
@@ -850,6 +880,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "test.timeout_ms",
             label: "test timeout",
             value: format!("{} ms", settings.test.timeout_ms),
+            editable: settings.test.timeout_ms.to_string(),
             help: "how long a single measurement may take",
             kind: SettingKind::Number {
                 presets: TIMEOUT_PRESETS,
@@ -859,6 +890,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "logs.max_size_bytes",
             label: "rotate a log after",
             value: crate::state::human_bytes(settings.logs.max_size_bytes),
+            editable: settings.logs.max_size_bytes.to_string(),
             help: "the core's log and this program's are rotated when the core is \
                    started; zero turns rotation off",
             kind: SettingKind::Number {
@@ -869,6 +901,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "logs.keep",
             label: "rotated copies kept",
             value: settings.logs.keep.to_string(),
+            editable: settings.logs.keep.to_string(),
             help: "how many older copies to keep per log, oldest dropped first",
             kind: SettingKind::Number {
                 presets: LOG_KEEP_PRESETS,
@@ -878,6 +911,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "logs.keep_days",
             label: "delete copies after",
             value: format!("{} days", settings.logs.keep_days),
+            editable: settings.logs.keep_days.to_string(),
             help: "rotated copies older than this are removed; zero keeps them all",
             kind: SettingKind::Number {
                 presets: LOG_DAYS_PRESETS,
@@ -887,6 +921,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "test.concurrency",
             label: "parallel tests",
             value: settings.test.concurrency.to_string(),
+            editable: settings.test.concurrency.to_string(),
             help: "how many nodes are measured at once",
             kind: SettingKind::Number {
                 presets: CONCURRENCY_PRESETS,
@@ -896,6 +931,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "test.expected_status",
             label: "expected status",
             value: settings.test.expected_status.clone(),
+            editable: settings.test.expected_status.clone(),
             help: "accept this status expression; `*` accepts anything",
             kind: SettingKind::Text,
         },
@@ -903,6 +939,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "stream.traffic",
             label: "subscribe to traffic",
             value: yes_no(settings.stream.traffic),
+            editable: yes_no(settings.stream.traffic),
             help: "the dashboard's throughput gauges",
             kind: SettingKind::Bool,
         },
@@ -910,6 +947,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "stream.memory",
             label: "subscribe to memory",
             value: yes_no(settings.stream.memory),
+            editable: yes_no(settings.stream.memory),
             help: "the core's resident memory reading",
             kind: SettingKind::Bool,
         },
@@ -917,6 +955,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "stream.logs",
             label: "subscribe to logs",
             value: yes_no(settings.stream.logs),
+            editable: yes_no(settings.stream.logs),
             help: "the live log stream",
             kind: SettingKind::Bool,
         },
@@ -924,6 +963,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "stream.connections",
             label: "subscribe to connections",
             value: yes_no(settings.stream.connections),
+            editable: yes_no(settings.stream.connections),
             help: "the live connection table",
             kind: SettingKind::Bool,
         },
@@ -931,6 +971,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "update.update_on_start",
             label: "update profiles on launch",
             value: yes_no(settings.update.update_on_start),
+            editable: yes_no(settings.update.update_on_start),
             help: "download every subscription that is due at start-up",
             kind: SettingKind::Bool,
         },
@@ -938,6 +979,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "update.close_connections_on_apply",
             label: "close connections when applying",
             value: yes_no(settings.update.close_connections_on_apply),
+            editable: yes_no(settings.update.close_connections_on_apply),
             help: "so nothing keeps using a node the new configuration dropped",
             kind: SettingKind::Bool,
         },
@@ -945,6 +987,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             key: "update.prefer_hot_reload",
             label: "prefer hot reload",
             value: yes_no(settings.update.prefer_hot_reload),
+            editable: yes_no(settings.update.prefer_hot_reload),
             help: "hand the configuration to the API instead of restarting",
             kind: SettingKind::Bool,
         },
@@ -1099,11 +1142,34 @@ fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
     }
 }
 
-/// Write a typed-in value into a setting.
+/// Write a typed-in value into a setting, and refuse one the settings refuse.
 ///
-/// Validating here rather than on save means a mistyped URL is refused while
-/// the prompt is still open, with the reason attached to it.
+/// The doc used to say "validating here rather than on save means a mistyped URL
+/// is refused while the prompt is still open" — true of the URL arms and not of
+/// the numeric ones, which took any parseable number. `test.timeout_ms: 99999`
+/// was accepted into memory, sat there until a save failed, and was read by
+/// everything that consults the settings in between.
+///
+/// The wrapper makes the sentence true for every arm: the value is written,
+/// checked against the same `validate` a save runs, and rolled back with the
+/// reason if it does not hold.
 fn set_setting_text(settings: &mut Settings, key: &str, text: &str) -> Result<(), String> {
+    let before = settings.clone();
+    let result = set_setting_text_inner(settings, key, text);
+    if let Err(reason) = result {
+        *settings = before;
+        return Err(reason);
+    }
+    match settings.validate() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            *settings = before;
+            Err(error.short())
+        }
+    }
+}
+
+fn set_setting_text_inner(settings: &mut Settings, key: &str, text: &str) -> Result<(), String> {
     let text = text.trim();
     match key {
         "core.binary" => {
@@ -2731,7 +2797,8 @@ impl App {
         };
         let key = row.key;
         if row.kind == SettingKind::Text {
-            let current = row.value.clone();
+            // The editable form, never the rendering.
+            let current = row.editable.clone();
             self.open_prompt(PromptKind::Text, current);
             return Vec::new();
         }
@@ -2985,6 +3052,23 @@ impl App {
     }
 
     fn set_settings(&mut self, settings: Settings) {
+        // The disk's copy — unless the user has edits it would throw away.
+        //
+        // Replacing them and clearing the dirty flag made the interface report
+        // a save that wrote nothing: the screen showed the edit, `s` said
+        // "settings saved", and what reached the file was the copy from disk.
+        // Nothing on the screen said the edit was gone, which is the part that
+        // makes it a defect rather than a policy.
+        //
+        // Keeping the user's copy is the priority: unsaved work is the thing
+        // that cannot be recovered by looking again.
+        if self.settings_dirty {
+            self.set_status(
+                StatusKind::Warning,
+                "the settings on disk changed; your edits are kept — `s` writes them",
+            );
+            return;
+        }
         self.log_level = settings.ui.log_level;
         self.theme = Theme::from_settings(settings.ui.color);
         self.settings = settings;
@@ -4174,6 +4258,42 @@ mod tests {
     }
 
     // -- settings -----------------------------------------------------------
+
+    /// A typed-in number is held to the same ceiling a save is.
+    ///
+    /// The class the ninth review found for the command line, one crate over:
+    /// `--timeout 32768` was refused by the settings and accepted by the flag.
+    /// Here the flag's equivalent is the prompt, and it accepted any parseable
+    /// number — which then sat in memory until a save failed.
+    #[test]
+    fn a_typed_in_number_the_settings_refuse_is_refused_at_the_prompt() {
+        let mut settings = Settings::default();
+        let before = settings.test.timeout_ms;
+
+        let refused = set_setting_text(&mut settings, "test.timeout_ms", "99999");
+        assert!(refused.is_err(), "the core parses this as an int16");
+        assert_eq!(
+            settings.test.timeout_ms, before,
+            "and the value is rolled back rather than kept"
+        );
+
+        // The ceiling itself is accepted, so the check is the settings' and not
+        // a second, stricter one written here.
+        assert!(
+            set_setting_text(
+                &mut settings,
+                "test.timeout_ms",
+                &cvt_core::settings::MAX_TEST_TIMEOUT_MS.to_string()
+            )
+            .is_ok()
+        );
+
+        // And the same for the other ceiling, and for a value that is not a
+        // number at all.
+        assert!(set_setting_text(&mut settings, "test.concurrency", "0").is_err());
+        assert!(set_setting_text(&mut settings, "logs.keep", "65").is_err());
+        assert!(set_setting_text(&mut settings, "test.timeout_ms", "soon").is_err());
+    }
 
     #[test]
     fn every_setting_row_can_be_cycled_from_the_keyboard() {

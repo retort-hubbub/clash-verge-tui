@@ -189,9 +189,17 @@ impl Backup {
 /// has never saved its settings or had an index still produces a backup, and a
 /// check demanding one particular file refuses the program's own output.
 fn looks_like_a_backup(dir: &Path) -> bool {
+    // `symlink_metadata`, not `exists`: that follows the link, so a directory
+    // whose entries are all links was admitted as a backup and then every
+    // copier skipped everything it held — a restore that did nothing at all and
+    // reported success. The admission test and the copiers have to agree about
+    // what a link means, and they now both say "not this program's".
     ["cvt.yaml", "profiles.yaml", "profiles", "overrides"]
         .iter()
-        .any(|name| dir.join(name).exists())
+        .any(|name| {
+            std::fs::symlink_metadata(dir.join(name))
+                .is_ok_and(|meta| !meta.file_type().is_symlink())
+        })
 }
 
 /// Copy the state a user would have to recreate by hand.
@@ -205,6 +213,17 @@ fn copy_state(from: &Path, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to).map_err(|e| Error::io(to, e))?;
     for name in ["cvt.yaml", "profiles.yaml"] {
         let source = from.join(name);
+        // A *link* where a scalar file goes is skipped, exactly as `copy_dir`
+        // skips a directory reached through one: reading it copies the
+        // contents of a file outside the home into the backup, which is the
+        // opposite of the omission the skip was written for and worse.
+        if std::fs::symlink_metadata(&source).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            tracing::warn!(
+                path = %source.display(),
+                "skipping a file reached through a symbolic link"
+            );
+            continue;
+        }
         if source.is_file() {
             let destination = to.join(name);
             copy_file(&source, &destination)?;
@@ -252,6 +271,15 @@ fn is_same_file(left: &Path, right: &Path) -> bool {
 fn check_copy(from: &Path, to: &Path) -> Result<()> {
     for name in ["cvt.yaml", "profiles.yaml"] {
         let source = from.join(name);
+        // A link *inside the backup* is refused rather than followed: the
+        // restore would copy the contents of a file outside the backup into the
+        // home, which is the escape `check_destination` refuses at the other
+        // end of the same copy.
+        if std::fs::symlink_metadata(&source).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            // Skipped, not refused, and the same way round as `copy_dir`: a
+            // restore from a backup holding a link puts back everything else.
+            continue;
+        }
         if source.is_file() {
             check_destination(&source, &to.join(name))?;
         }
@@ -856,7 +884,14 @@ impl Service {
         // other was still filling. `create_dir` fails when the name is taken,
         // and that failure is the lock.
         let destination = self.reserve_backup_path(Utc::now().timestamp())?;
-        copy_state(self.paths.home(), &destination)?;
+        if let Err(error) = copy_state(self.paths.home(), &destination) {
+            // The reservation *created* the directory, so a copy that fails
+            // leaves one behind that `backups()` lists, `looks_like_a_backup`
+            // admits and the keep-limit counts — the newest backup of a home it
+            // never finished copying, offered for restore by `restore`.
+            let _ = std::fs::remove_dir_all(&destination);
+            return Err(error);
+        }
         // Pruned around the new one, never through it. Ordering by timestamp is
         // right — the newest backups are the ones worth keeping — but it is the
         // *filesystem's* timestamps, and a directory holding five entries named
@@ -882,6 +917,18 @@ impl Service {
     /// [`Error::Io`] when a name cannot be created.
     fn reserve_backup_path(&self, stamp: i64) -> Result<PathBuf> {
         let dir = self.paths.backups_dir();
+        // The one directory that receives the whole state, and the only one of
+        // the three this program writes into that nothing checked.
+        if std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(Error::invalid(
+                "backup",
+                format!(
+                    "{} is a symbolic link; the backups would be written outside \
+                     the home",
+                    dir.display()
+                ),
+            ));
+        }
         std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
         let mut candidates = vec![dir.join(stamp.to_string())];
         for n in 2..1000 {
@@ -907,6 +954,17 @@ impl Service {
     /// [`Error::Io`] when the directory cannot be read.
     pub fn backups(&self) -> Result<Vec<Backup>> {
         let dir = self.paths.backups_dir();
+        // A link here is not this program's directory. Listing through it
+        // offers the user's own directories as backups — the name parse and
+        // nothing else — and pruning then deletes them, in a tree this program
+        // never created and cannot describe.
+        if std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            tracing::warn!(
+                path = %dir.display(),
+                "the backups directory is a symbolic link, so it is not listed"
+            );
+            return Ok(Vec::new());
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             return Ok(Vec::new());
         };
@@ -1063,7 +1121,13 @@ impl Service {
     /// Remove the symlinks in the backups directory, which are never backups.
     fn remove_links(&self) -> Result<usize> {
         let mut removed = 0;
-        let Ok(entries) = std::fs::read_dir(self.paths.backups_dir()) else {
+        let dir = self.paths.backups_dir();
+        // Not through a link: what is inside the target is the user's, and this
+        // function deletes what it finds.
+        if std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Ok(0);
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             return Ok(0);
         };
         for entry in entries.flatten() {

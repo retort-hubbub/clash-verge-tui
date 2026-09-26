@@ -184,6 +184,11 @@ warning: `R1` now points at …, but its document is still the one fetched from 
 A profile with no URL — a local, merge or override document — is refused with
 the reason, rather than being given one.
 
+*JSON:* `cvt.profiles.url.v1`, one shape for one command. It used to report
+through `cvt.profiles.added.v1` when it fetched and `cvt.profiles.changed.v1`
+when it did not, so a caller parsing the output had to handle two shapes for one
+operation — and the first of them says "added" about something that was not.
+
 ### `config`
 
 | Command | Effect |
@@ -211,6 +216,10 @@ changes belong in an `override` profile.
 *JSON:* `cvt.config.generate.v1` (includes `yaml`), `cvt.config.show.v1`,
 `cvt.config.validate.v1`, `cvt.config.diff.v1`, `cvt.config.rollback.v1`,
 `cvt.config.snapshots.v1`, `cvt.config.edit.v1`, `cvt.config.path.v1`.
+
+`path` lists everything this program owns — including `<home>/backups/` and the
+core's working directory, the two a user asking "where did my backups go" is
+looking for.
 
 ### `proxies`
 
@@ -406,6 +415,38 @@ report in half.
 
 *JSON:* `cvt.logs.tail.v1`; with `--follow`, one `cvt.logs.entry.v1` object per
 line.
+
+### `backup`
+
+| Command | Effect |
+|---|---|
+| `create` | copy the settings, the profile index, the profiles and the overrides into a timestamped directory |
+| `list` | every backup, newest first |
+| `restore [name]` | put one back, keeping a copy of what it replaces |
+
+A *backup* is what a person would have to recreate by hand. A *snapshot* — see
+`config snapshots` — is one generated document, kept so a bad apply can be
+undone in seconds. The two live in `<home>/backups/` and `<home>/snapshots/`,
+side by side at the top level, because neither is derived from anything else.
+
+A restore is **additive**: it writes back what the backup holds and deletes
+nothing, so a document created after the backup stays where it is. It also
+keeps the state it replaces, in a fresh backup, so restoring the wrong one is
+itself undoable.
+
+```console
+$ cvt backup create
+backup  /home/you/.config/clash-verge-tui/backups/1790370941
+$ cvt backup list
+name          taken     items  path
+1790370941    just now  3      /home/you/.config/clash-verge-tui/backups/1790370941
+$ cvt backup restore 1790370941
+backup  /home/you/.config/clash-verge-tui/backups/1790370941
+kept    /home/you/.config/clash-verge-tui/backups/1790370941-2
+```
+
+*JSON:* `cvt.backup.v1` for `create` and `restore`, `cvt.backup.list.v1` for
+`list`.
 
 ### `theme`
 

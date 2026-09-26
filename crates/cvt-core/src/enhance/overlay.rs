@@ -42,12 +42,23 @@
 //! applied any number of times: `prepend` and `append` never introduce a
 //! duplicate, comparing structurally for mappings and by `name` for the named
 //! lists, so re-running the pipeline with an unchanged subscription produces
-//! an unchanged configuration. A removal by *position* (`proxies[1]`) cannot
-//! make that promise, because the position is not stable: the second
-//! application removes whatever has moved into the slot. It is supported
-//! anyway — dropping a rule the subscription always puts first is a real
-//! thing to want — but an override that uses it is one-shot, and a
-//! subscription update can change what it means.
+//! an unchanged configuration. An edit that addresses a list by **position**
+//! cannot make that promise, because the position is not stable: the second
+//! application acts on whatever has moved into the slot.
+//!
+//! That is a class with two members, and the first draft named only one of
+//! them. A removal by position (`proxies[1]`) is the one it named. A `set` by
+//! position — `set: {rules[0]}` beside `append: {rules: [...]}`, where the
+//! append puts the new rule first and the `set` then rewrites it — is the
+//! other: the first application sets the rule the append just added, and the
+//! second sets whatever the *next* append moved into slot zero. Both are
+//! supported anyway, because acting on the first element of a list a
+//! subscription controls is a real thing to want, and both are one-shot: a
+//! subscription update can change what they mean.
+//!
+//! The ninth review found the second member by asking what the promise's class
+//! was rather than checking the example it gave — which is the same shape as
+//! the six guard defects this project has recorded, one level up.
 
 use std::collections::BTreeMap;
 
@@ -217,6 +228,14 @@ impl Overlay {
                         ),
                     ));
                 }
+                // A `set` that reaches *into* the list this edit grows is the
+                // second member of the non-idempotent class, and it is
+                // *accepted*: addressing an element of a list with an index is
+                // not a shape disagreement — that is what an index is for — and
+                // refusing it would break the arrangement the fourth review
+                // established as working. What the class costs is written down
+                // in the module documentation instead, which is where the first
+                // member's cost was written down too.
             }
         }
         Ok(())
@@ -471,6 +490,14 @@ fn append_items(
 /// promises. That it may not apply at all is a separate answer, and one only
 /// the document can give.
 fn shape_conflict(list: &Path, set: &Path, value: &Value) -> Option<String> {
+    // A `null` asserts no shape at all: it is the merge's deletion convention,
+    // meaning "this key should not be there". `set: {rules: null}` beside
+    // `append: {rules: [...]}` was refused as "a path cannot be a list and a
+    // mapping at once" — while the pair applies, and applies twice the same,
+    // because the deletion runs first and the append then makes the list.
+    if value.is_null() {
+        return None;
+    }
     let list = list.segments();
     let set = set.segments();
 

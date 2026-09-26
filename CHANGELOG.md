@@ -5,6 +5,70 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-26
+
+### Fixed
+
+- The interface's settings prompt is seeded with the *editable* value, not the
+  rendering. `core.external_controller` that is unset shows `from the base
+  profile`, and two keystrokes — `s`, Enter — wrote that string into the
+  setting: the settings accepted it and the generator then refused **every**
+  configuration with `E-CONTROLLER-FORMAT`, while the row went on displaying
+  the same words for both. `core.secret` lost the user's secret the same way.
+- A refresh of the settings screen no longer discards an unsaved edit; the
+  user's copy wins and the screen says so.
+- `Effect::SaveSettings` sends `Done::SettingsSaved`, which is the variant that
+  clears the interface's dirty flag. It sent a *notice*, so the flag stayed set
+  after a successful save and the guard above would never have stopped
+  guarding.
+- `Settings::validate` checks `core.external_controller`, which is forced over
+  every profile — a value the generator refuses meant every configuration was
+  refused, from a file the settings had accepted. Checked with the generator's
+  own rule, not a second one.
+- `--concurrency` above the ceiling is **refused** rather than clamped. The
+  clamp came first; two later reviews asked for the settings' answer instead,
+  and a settings file is hand-written, which makes silently capping what
+  somebody wrote worse than refusing it.
+- `profiles add` validates the address before recording it, with the fetcher's
+  own rule: a profile whose address its own fetcher refuses cannot be updated.
+- A failed `backup()` removes the directory it reserved. It was left behind,
+  listed, admitted by `looks_like_a_backup`, counted against the keep limit —
+  and offered for restore as the newest backup of a home it never finished
+  copying.
+
+### Ninth Audit Fixes & Key Protections
+
+### Fixed
+
+- `protect_dns` applies to the keys the base declared and to nothing else. The
+  doc said so and the code did not: a value supplied for a section the base had
+  never heard of still overwrote what an enhancement put there, while the
+  warning claimed the base was protecting it.
+- `external-ui` and `external-ui-url` are the control plane's. They decide what
+  the core serves at `/ui`, which is the controller's own origin — the same
+  door `external-controller-cors` opens, and the argument for excluding them
+  ("the list is about how this program reaches the core") is not the argument
+  that put CORS on it.
+- `protect_dns` does not invent a `dns` section. It restores a key the document
+  *has* and an enhancement changed, and a key the base declared that an
+  enhancement deleted; a key the document never had is left alone, which is
+  what the doc comment already promised.
+- The application's protection wins over the base's, key by key, as it does for
+  the control plane — and the warning names each key once rather than once per
+  entry.
+- A later base takes the protection over completely, as it takes the control
+  plane over; appending let the first base's `dns` outlive the base that asked
+  for it.
+- A `prepend-`/`append-` directive this build does not know is **refused** by
+  the merge profile rather than left in the document as a top-level key the
+  core ignores — a merge that silently does nothing, with nothing saying so.
+- A symbolic link is not read through anywhere in the backup path: not at
+  `backups/` itself, not at the scalar files a backup copies, and not at a link
+  *inside* a backup a restore is reading. The last two are the source side of
+  the same copy the destination guards were written for.
+- The diagnostic scan sees a code a `concat!` builds. `concat!("E-", "SPLIT")`
+  is in neither piece, so reading literals one at a time could not see it.
+
 ## [0.4.0] - 2026-09-26
 
 ### Added
@@ -625,6 +689,7 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
+[0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
 [0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0
 [0.3.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.1
 [0.3.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.3.0

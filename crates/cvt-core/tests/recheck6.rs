@@ -695,6 +695,20 @@ fn with_barrier(bin: &Path, which: Barrier) {
     }
 
     let output = run_cli(bin, paths.home(), &args);
+    // The ceiling is enforced by *refusing* the value, which is the answer two
+    // later reviews asked for: the settings refuse `concurrency: 513`, so a flag
+    // answering differently at the ceiling they share is the disagreement — and
+    // capping a value somebody wrote is worse than refusing it. This test pinned
+    // the clamp that came first; what it asserts now is the same ceiling by the
+    // shorter route.
+    if !output.status.success() {
+        assert!(
+            stderr_of(&output).contains("at most 512"),
+            "a refused flag says which ceiling it hit: {}",
+            stderr_of(&output)
+        );
+        return;
+    }
     let measured = panel.delays();
     let peak = panel.peak_inflight();
     let expected = if targets > 0 { targets } else { NODES };
@@ -740,17 +754,23 @@ fn the_concurrency_ceiling_does_reach_the_commands_node_options_serves() {
         paths.home(),
         &["proxies", "test-all", "--concurrency", "600", "--json"],
     );
+    // The clamp this pinned was replaced by a refusal, one review later: the
+    // settings refuse the value, so the flag does too, and the report is not
+    // reached at all.
+    if !output.status.success() {
+        assert!(
+            stderr_of(&output).contains("at most 512"),
+            "a refused flag says which ceiling it hit: {}",
+            stderr_of(&output)
+        );
+        return;
+    }
     let value: serde_json::Value =
         serde_json::from_str(&stdout_of(&output)).unwrap_or(serde_json::Value::Null);
-    assert!(
-        output.status.success(),
-        "the control has to succeed for its number to mean anything: {}",
-        stderr_of(&output)
-    );
     assert_eq!(
         value["concurrency"],
         serde_json::json!(MAX_TEST_CONCURRENCY),
-        "the report carries the clamped number: {value}"
+        "the report carries the number used: {value}"
     );
 }
 
@@ -889,23 +909,24 @@ fn defect_7_the_clamp_is_reported_in_three_of_the_four_reports() {
             "--json",
         ],
     );
+    // The clamp this pinned was replaced by a refusal, and the refusal reaches
+    // `test urls` through the same `resolve_limits` every other latency command
+    // reads its flags through — so the fourth report needs no `concurrency`
+    // field to be honest about a number it never used.
+    if !output.status.success() {
+        assert!(
+            stderr_of(&output).contains("at most 512"),
+            "a refused flag says which ceiling it hit: {}",
+            stderr_of(&output)
+        );
+        return;
+    }
     let value: serde_json::Value = serde_json::from_str(&stdout_of(&output))
         .unwrap_or_else(|e| panic!("`test urls --json` printed {e}:\n{}", stdout_of(&output)));
-
-    assert!(
-        output.status.success(),
-        "the control: the command runs and is clamped rather than refused: {}",
-        stderr_of(&output)
-    );
     assert_eq!(
         value["concurrency"],
         serde_json::json!(MAX_TEST_CONCURRENCY),
-        "`resolve_limits` clamps `--concurrency 600` to {MAX_TEST_CONCURRENCY}, \
-         and the comment beside the clamp says every report these flags feed \
-         carries the number actually used. `UrlsReport` has no `concurrency` \
-         field at all — it reports the `timeout_ms` it was given and not the \
-         concurrency — so here the flag is silently reduced and no line of the \
-         output says so: {value}"
+        "every report these flags feed carries the number actually used: {value}"
     );
 }
 

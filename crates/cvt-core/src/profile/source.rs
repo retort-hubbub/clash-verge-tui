@@ -635,6 +635,19 @@ fn normalise_proxy_addr(addr: &str) -> Option<String> {
 ///
 /// # Errors
 /// [`Error::InvalidValue`] with field `url`.
+/// Whether a URL is one the fetcher can use.
+///
+/// The same check [`validated_url`] makes, for the commands that *record* a URL
+/// before fetching it: a profile whose address its own fetcher refuses is a
+/// profile that cannot be updated, and the user finds out one step after the
+/// step that could have told them.
+///
+/// # Errors
+/// [`Error::InvalidValue`] naming the reason the fetcher would give.
+pub fn check_fetchable(url: &str) -> Result<()> {
+    validated_url(url).map(|_| ())
+}
+
 fn validated_url(url: &str) -> Result<reqwest::Url> {
     let trimmed = url.trim();
     let parsed = reqwest::Url::parse(trimmed)

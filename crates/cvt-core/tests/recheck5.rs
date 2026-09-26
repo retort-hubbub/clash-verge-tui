@@ -1363,24 +1363,38 @@ fn defect_11_the_concurrency_flag_is_not_bounded_by_the_settings_cap() {
         .filter(|request| request.contains("/delay"))
         .count();
 
-    // Without this the test could pass because the command failed before it
-    // measured anything — which is exactly what it did when the fake controller
-    // did not serve `GET /group`.
-    assert_eq!(
-        measured,
-        NODES,
-        "the panel has to have seen every node measured, or `peak` below says \
-         nothing (exit {}):\n{}",
-        output.status,
-        stderr_of(&output)
-    );
+    // This finding was about `--concurrency 600` reaching `buffer_unordered`
+    // while the same number in `cvt.yaml` is refused. The fix it originally
+    // got was a *clamp*: run with 512 and print the number used, which the two
+    // assertions below checked by measuring the peak.
+    //
+    // Two later reviews asked for the other answer — the settings refuse the
+    // value, so the flag should too, and a settings file is hand-written, which
+    // makes silently capping what somebody wrote worse than refusing it. That
+    // is the behaviour now, so what this asserts is the ceiling being enforced
+    // rather than a measurement under it: the command stops before it measures
+    // anything, which is the same outcome by a shorter route.
+    if output.status.success() {
+        assert_eq!(
+            measured,
+            NODES,
+            "the panel has to have seen every node measured, or `peak` below \
+             says nothing (exit {}):\n{}",
+            output.status,
+            stderr_of(&output)
+        );
+        assert!(
+            peak <= 512,
+            "{NODES} nodes were measured {peak} at a time (exit {}):\n{}",
+            output.status,
+            stderr_of(&output)
+        );
+        return;
+    }
+    assert_eq!(measured, 0, "a refused flag measures nothing");
     assert!(
-        peak <= 512,
-        "{NODES} nodes were measured {peak} at a time: `--concurrency 600` was \
-         passed straight to `buffer_unordered`, while the same number in \
-         `cvt.yaml` is refused with \"would exhaust file descriptors\" \
-         (exit {}):\n{}",
-        output.status,
+        stderr_of(&output).contains("at most 512"),
+        "and says which ceiling it hit: {}",
         stderr_of(&output)
     );
 }

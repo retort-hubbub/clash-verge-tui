@@ -173,6 +173,10 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     if url.is_empty() {
         return Err(Error::invalid("url", "the subscription URL is empty").into());
     }
+    // Before the profile exists, and with the fetcher's own rule: an address
+    // this program cannot fetch is one the index should never have held, and
+    // finding out afterwards leaves a profile pointing at nothing.
+    cvt_core::profile::source::check_fetchable(&url)?;
     let name = args.name.clone().unwrap_or_else(|| default_name(&url));
     let uid = ctx.edit_store(|store| Ok(store.add(PrfItem::remote("", name, url.clone()))))?;
     ctx.out()
@@ -316,6 +320,7 @@ async fn edit_url(ctx: &Ctx, uid: &str, url: &str, no_fetch: bool) -> Result<()>
 
     let result = fetch_one(ctx, uid).await;
     let ok = result.ok;
+    let mut reverted = false;
     if !ok {
         // Put back. The index is written before the fetch because the fetcher
         // reads the URL from it, and leaving the new one behind on a failure
@@ -324,20 +329,46 @@ async fn edit_url(ctx: &Ctx, uid: &str, url: &str, no_fetch: bool) -> Result<()>
         // this path made it the default.
         if let Some(previous) = previous.as_deref() {
             ctx.edit_store(|store| store.set_url(uid, previous))?;
+            reverted = true;
         }
     }
+    // What the profile points at *now*, which after a rollback is not what was
+    // asked for. Reporting the requested address made the failure say "points
+    // at the new URL" about a profile pointing at the old one, and advised a
+    // retry that would have retried the address it had just reverted.
+    let now = if reverted {
+        previous.clone().unwrap_or_default()
+    } else {
+        url.clone()
+    };
     ctx.out().emit(&UrlChangeReport {
         uid: uid.to_owned(),
-        url,
-        previous,
+        url: now.clone(),
+        // What it pointed at before this command, which after a rollback is
+        // the address it still points at. The pair reading the same is how a
+        // caller sees that the change was undone: a `previous` that differs
+        // from `url` describes a change this command made.
+        previous: if reverted {
+            Some(now.clone())
+        } else {
+            previous.clone()
+        },
         fetched: true,
         download: Some(result),
     })?;
     if !ok {
-        return Err(Exit::failure(format!(
-            "`{uid}` points at the new URL but could not be downloaded from it; retry with \
-             `clash-verge-tui profiles update {uid}`"
-        ))
+        return Err(Exit::failure(if reverted {
+            format!(
+                "`{uid}` could not be downloaded from the new address, so it still points at \
+                 `{now}`; fix the address and try again with \
+                 `clash-verge-tui profiles edit-url {uid} <url>`"
+            )
+        } else {
+            format!(
+                "`{uid}` points at the new URL but could not be downloaded from it; retry with \
+                 `clash-verge-tui profiles update {uid}`"
+            )
+        })
         .into());
     }
     Ok(())

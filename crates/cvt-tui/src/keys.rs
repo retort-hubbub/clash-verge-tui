@@ -335,6 +335,76 @@ impl Keymap {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    /// Every action in the enum is reachable from a key, and every key names an
+    /// action that exists.
+    ///
+    /// Textual, like the diagnostic-code scan in `cvt-core`, and for the same
+    /// reason: the two lists — the enum and the keymap — have to agree, nothing
+    /// in the type system makes them, and a key that does nothing is the
+    /// interface's version of a check that covers the members somebody named.
+    ///
+    /// The dispatch side is asserted in `app.rs`, where the handlers are.
+    #[test]
+    fn every_action_is_reachable_from_a_key() {
+        let actions = include_str!("action.rs");
+        let defined: Vec<&str> = actions
+            .split("pub enum Action {")
+            .nth(1)
+            .unwrap_or_default()
+            .split("\n}")
+            .next()
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let name = line
+                    .trim()
+                    .split(['(', '{', ','])
+                    .next()
+                    .unwrap_or_default()
+                    .trim();
+                (line.starts_with("    ")
+                    && !line.starts_with("     ")
+                    && name.chars().next().is_some_and(char::is_uppercase))
+                .then_some(name)
+            })
+            .collect();
+        assert!(
+            defined.len() > 40,
+            "the scan found only {} actions, so it is looking in the wrong place",
+            defined.len()
+        );
+
+        let bound: Vec<&str> = include_str!("keys.rs")
+            .match_indices("Action::")
+            .filter_map(|(at, _)| {
+                let rest = &include_str!("keys.rs")[at + "Action::".len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(char::is_ascii_alphanumeric)
+                    .collect();
+                (!name.is_empty()).then_some(name)
+            })
+            .map(|name| Box::leak(name.into_boxed_str()) as &str)
+            .collect();
+
+        let unreachable: Vec<&&str> = defined
+            .iter()
+            .filter(|name| !bound.contains(*name))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "these actions are defined and no key reaches them: {unreachable:?}"
+        );
+
+        let unknown: Vec<&&str> = bound
+            .iter()
+            .filter(|name| !defined.contains(*name))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "the keymap names actions that do not exist: {unknown:?}"
+        );
+    }
     use super::*;
 
     fn key(code: KeyCode) -> KeyEvent {

@@ -74,13 +74,20 @@ tree, so removing it removes every trace:
 ├── overrides/             your override and merge documents
 ├── runtime/
 │   ├── config.yaml        the generated configuration; the core is started with -f this
-│   ├── config.previous.yaml
-│   └── snapshots/         the last 20 generated documents
+│   └── config.previous.yaml
+├── snapshots/             the last 20 generated documents, newest first
+├── backups/               `backup create` output: settings, index, profiles, overrides
 ├── core/
 │   ├── mihomo             where a core binary is looked for
 │   └── work/              the core's own working directory, passed as -d
-└── logs/                  core.log and app.log
+└── logs/                  core.log and app.log, rotated on start
 ```
+
+A *snapshot* is one generated document, kept so a bad apply can be undone in
+seconds; a *backup* is everything a person would have to recreate by hand. The
+names are close enough to be worth the sentence, and the two live at the top
+level rather than inside `runtime/` because neither is derived — this tree is
+what `doctor` and `cvt config path` print.
 
 An existing `clash-verge-rev` installation can be imported from the interface
 or with `clash-verge-tui profiles import`, and `doctor` will point at the
@@ -126,9 +133,9 @@ $ CVT_LIVE_CONTROLLER='127.0.0.1:9090|your-secret' \
   cargo test -p cvt-core --test live_controller -- --test-threads=1 --nocapture
 ```
 
-The counterexamples the property suite has found are kept as `#[ignore]`d
-tests rather than deleted, so each known defect has a reproduction attached
-and unfixing it is a visible act.
+The counterexamples every adversarial review has found are kept as **passing
+tests** in `tests/recheck*.rs` rather than deleted, so each defect that was
+once real has a reproduction attached and regressing it is a visible act.
 
 ## Relationship to other projects
 

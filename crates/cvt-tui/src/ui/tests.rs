@@ -15,7 +15,7 @@ use crate::ui::widgets as w;
 
 /// Draw the tests screen.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (list_area, detail_area) = w::list_and_detail(area, 9);
+    let (list_area, detail_area) = w::list_and_detail(area, 11);
     let rows: Vec<Row<'static>> = w::visible(&app.tests)
         .into_iter()
         .map(|check| row(check, app))
@@ -61,6 +61,12 @@ fn row(check: &TestRow, app: &App) -> Row<'static> {
 /// What the highlighted check does, and how to run it.
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
+    rows.push(("test mode", app.probe_mode.label().to_owned()));
+    rows.push((
+        "method",
+        app.tr("v cycles CONNECT, TCP and ICMP; speed uses the current route")
+            .to_owned(),
+    ));
     match app.tests.selected_item() {
         Some(test) => {
             rows.push(("check", app.tr(test.kind.label()).to_owned()));

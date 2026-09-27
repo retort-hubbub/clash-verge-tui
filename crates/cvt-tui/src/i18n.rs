@@ -319,6 +319,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::TestGroup => "测试组",
         Action::TestNode => "测试节点",
         Action::TestAllNodes => "全部测试",
+        Action::CycleTestMode => "测试模式",
         Action::ClearNodeSelection => "取消固定",
         Action::CloseConnection => "关闭",
         Action::CloseAllConnections => "全部关闭",
@@ -607,15 +608,34 @@ pub fn text(language: Language, english: &str) -> &str {
         "node latency" => "节点延迟",
         "core health" => "内核状态",
         "dns lookup" => "DNS 查询",
-        "asks the core to test every member of a group through its own health-check URL" => {
-            "通过代理组的健康检查地址测试所有节点"
+        "download speed" => "下载速度",
+        "current route" => "当前路由",
+        "test mode" => "测试模式",
+        "change between proxy URL, direct TCP and direct ICMP probes" => {
+            "切换代理 URL、直连 TCP 和直连 ICMP 探测"
         }
-        "opens a connection to the node and measures how long it takes" => "连接节点并测量耗时",
+        "method" => "方式",
+        "CONNECT uses the named proxy; v cycles test methods" => {
+            "CONNECT 经指定代理测试；按 v 切换方式"
+        }
+        "TCP and ICMP probe the server directly; v cycles test methods" => {
+            "TCP 与 ICMP 直测服务器；按 v 切换方式"
+        }
+        "v cycles CONNECT, TCP and ICMP; speed uses the current route" => {
+            "按 v 切换 CONNECT、TCP、ICMP；速度测试走当前路由"
+        }
+        "tests each member with the selected probe method and updates results as they arrive" => {
+            "按当前测试方式逐个检测组内节点，并随结果更新"
+        }
+        "measures one node with the selected probe method" => "按当前测试方式测量单个节点",
         "reads the core's version and reports which optional routes exist" => {
             "读取内核版本并检查可用接口"
         }
         "resolves a name through the core's resolver, so fake-IP mode shows the synthetic address" => {
             "通过内核 DNS 解析域名；Fake-IP 模式会显示虚拟地址"
+        }
+        "downloads up to 4 MB through the current route; this does not measure an individual node" => {
+            "通过当前路由下载最多 4 MB；此项并非单节点测速"
         }
         " · unsaved changes" => " · 有未保存的修改",
         "d closes the highlighted connection; s changes the sort order" => {

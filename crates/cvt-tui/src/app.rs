@@ -24,7 +24,7 @@
 //! [`StatusKind::Warning`] instead of failing silently, because "the key did
 //! nothing" is the worst answer a keyboard-driven program can give.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -37,7 +37,7 @@ use cvt_core::settings::{Language, Settings};
 use crate::action::{Action, Screen};
 use crate::keys::Keymap;
 use crate::row::{
-    ConnectionRow, LogRow, NodeRow, ProfileRow, RuleRow, TestKind, TestResult, TestRow,
+    ConnectionRow, LogRow, NodeRow, ProbeMode, ProfileRow, RuleRow, TestKind, TestResult, TestRow,
 };
 use crate::state::{Filterable, LogBuffer, Metrics, SortOrder, Table, contains_ignore_case};
 use crate::theme::Theme;
@@ -146,20 +146,29 @@ pub enum Effect {
     TestNode {
         /// Node name.
         name: String,
+        /// Probe semantics.
+        mode: ProbeMode,
     },
     /// Measure every member of a group.
     TestGroup {
         /// Group name.
         group: String,
+        /// Probe semantics.
+        mode: ProbeMode,
     },
     /// Measure every node the core knows about.
-    TestAllNodes,
+    TestAllNodes {
+        /// Probe semantics.
+        mode: ProbeMode,
+    },
     /// Run one entry of the tests screen.
     RunTest {
         /// Which check to run.
         kind: TestKind,
         /// What to run it against.
         target: String,
+        /// Probe semantics for latency checks.
+        mode: ProbeMode,
     },
     /// Abandon the running test batch.
     CancelTests,
@@ -257,7 +266,7 @@ impl Effect {
             Self::ClearNodePin { .. } => "clear pin",
             Self::TestNode { .. } => "test node",
             Self::TestGroup { .. } => "test group",
-            Self::TestAllNodes => "test all nodes",
+            Self::TestAllNodes { .. } => "test all nodes",
             Self::RunTest { .. } => "run test",
             Self::CancelTests => "cancel tests",
             Self::ClearTestResults => "clear results",
@@ -402,12 +411,23 @@ pub enum Data {
     ImportSources(Vec<PathBuf>),
     /// One test finished, or started.
     TestResult {
+        /// Probe method in effect when this test started.
+        mode: ProbeMode,
         /// Which check it was.
         kind: TestKind,
         /// What it ran against.
         target: String,
         /// How it ended.
         result: TestResult,
+    },
+    /// A node probe completed; every visible occurrence of that node updates.
+    NodeDelay {
+        /// Probe semantics.
+        mode: ProbeMode,
+        /// Node name.
+        name: String,
+        /// Measured milliseconds, or no answer.
+        delay: Option<u16>,
     },
     /// A note from the binary that is worth showing but is not a failure.
     Notice(String),
@@ -1504,6 +1524,8 @@ pub struct App {
     /// How the proxies list is ordered; a finished measurement batch reorders
     /// it fastest-first, because that is what the user just asked to know.
     pub node_sort: SortOrder,
+    /// Latency method selected for both Proxies and Tests.
+    pub probe_mode: ProbeMode,
     /// Whether disabled rules are listed.
     pub show_disabled_rules: bool,
     status: Option<Status>,
@@ -1512,6 +1534,7 @@ pub struct App {
     quit: bool,
     chain: Vec<String>,
     all_nodes: Vec<NodeRow>,
+    node_delays: HashMap<(ProbeMode, String), Option<u16>>,
     expanded: Vec<String>,
     all_rules: Vec<RuleRow>,
     rule_providers: Vec<String>,
@@ -1519,6 +1542,38 @@ pub struct App {
     in_flight: Option<usize>,
     frozen: Option<usize>,
     loaded: Vec<Screen>,
+}
+
+/// Preserve the tree: only the contiguous children following a group may move.
+fn sort_group_members(rows: &mut [NodeRow], order: SortOrder) {
+    if !matches!(
+        order,
+        SortOrder::LatencyAscending | SortOrder::LatencyDescending
+    ) {
+        return;
+    }
+    let mut index = 0;
+    while index < rows.len() {
+        if !rows[index].is_group {
+            index += 1;
+            continue;
+        }
+        let group = rows[index].name.clone();
+        let start = index + 1;
+        let mut end = start;
+        while end < rows.len() && rows[end].group.as_deref() == Some(group.as_str()) {
+            end += 1;
+        }
+        rows[start..end].sort_by(|a, b| match order {
+            SortOrder::LatencyAscending => a
+                .delay
+                .unwrap_or(u16::MAX)
+                .cmp(&b.delay.unwrap_or(u16::MAX)),
+            SortOrder::LatencyDescending => b.delay.unwrap_or(0).cmp(&a.delay.unwrap_or(0)),
+            SortOrder::Natural | SortOrder::TrafficDescending => std::cmp::Ordering::Equal,
+        });
+        index = end;
+    }
 }
 
 impl App {
@@ -1580,6 +1635,7 @@ impl App {
             preview: None,
             connection_sort: ConnectionSort::Natural,
             node_sort: SortOrder::Natural,
+            probe_mode: ProbeMode::Connect,
             show_disabled_rules: false,
             status: None,
             last_status: None,
@@ -1587,6 +1643,7 @@ impl App {
             quit: false,
             chain: Vec::new(),
             all_nodes: Vec::new(),
+            node_delays: HashMap::new(),
             expanded: Vec::new(),
             all_rules: Vec::new(),
             rule_providers: Vec::new(),
@@ -2300,11 +2357,22 @@ impl App {
             Action::SelectNode => self.select_node(),
             Action::TestGroup => self.test_group(),
             Action::TestNode => self.test_node(),
+            Action::CycleTestMode => {
+                self.probe_mode = self.probe_mode.next();
+                self.clear_test_results();
+                self.set_status(
+                    StatusKind::Info,
+                    format!("{}: {}", self.tr("test mode"), self.probe_mode.label()),
+                );
+                vec![Effect::CancelTests, Effect::Refresh(Screen::Proxies)]
+            }
             Action::TestAllNodes => {
                 if !self.require_core("testing nodes") {
                     return Vec::new();
                 }
-                vec![Effect::TestAllNodes]
+                vec![Effect::TestAllNodes {
+                    mode: self.probe_mode,
+                }]
             }
             Action::ClearNodeSelection => self.clear_node_pin(),
             Action::CloseConnection => self.close_connection(),
@@ -2786,7 +2854,10 @@ impl App {
         if !self.require_core("testing a node") {
             return Vec::new();
         }
-        vec![Effect::TestNode { name: row.name }]
+        vec![Effect::TestNode {
+            name: row.name,
+            mode: self.probe_mode,
+        }]
     }
 
     fn test_group(&mut self) -> Vec<Effect> {
@@ -2801,7 +2872,10 @@ impl App {
         if !self.require_core("testing a group") {
             return Vec::new();
         }
-        vec![Effect::TestGroup { group }]
+        vec![Effect::TestGroup {
+            group,
+            mode: self.probe_mode,
+        }]
     }
 
     fn clear_node_pin(&mut self) -> Vec<Effect> {
@@ -2909,16 +2983,14 @@ impl App {
     /// screen must not wipe a measurement the user just waited for.
     fn rebuild_tests(&mut self) {
         let group = self
-            .nodes
-            .items()
+            .all_nodes
             .iter()
             .find(|row| row.is_group)
             .map_or_else(|| "-".to_owned(), |row| row.name.clone());
         let node = self
-            .nodes
-            .items()
+            .all_nodes
             .iter()
-            .find(|row| !row.is_group)
+            .find(|row| row.group.is_some() && row.is_proxy)
             .map_or_else(|| "-".to_owned(), |row| row.name.clone());
         let host = self
             .connections
@@ -2930,6 +3002,7 @@ impl App {
             (TestKind::NodeLatency, node),
             (TestKind::CoreHealth, "core".to_owned()),
             (TestKind::DnsLookup, host),
+            (TestKind::Bandwidth, "current route".to_owned()),
         ];
         let selected = self
             .tests
@@ -3002,6 +3075,7 @@ impl App {
         vec![Effect::RunTest {
             kind: row.kind,
             target: row.target,
+            mode: self.probe_mode,
         }]
     }
 
@@ -3029,6 +3103,9 @@ impl App {
         for index in 0..self.tests.items().len() {
             self.set_test_result(index, TestResult::Pending);
         }
+        self.node_delays.clear();
+        self.node_sort = SortOrder::Natural;
+        self.rebuild_nodes();
     }
 
     /// Set one test's result, keeping the cursor on the row it was on.
@@ -3073,7 +3150,11 @@ impl App {
             if let Some(row) = self.tests.items().get(next) {
                 let (kind, target) = (row.kind, row.target.clone());
                 self.in_flight = Some(next);
-                return vec![Effect::RunTest { kind, target }];
+                return vec![Effect::RunTest {
+                    kind,
+                    target,
+                    mode: self.probe_mode,
+                }];
             }
         }
         Vec::new()
@@ -3184,10 +3265,21 @@ impl App {
             }
             Data::ImportSources(sources) => return self.open_import_picker(&sources),
             Data::TestResult {
+                mode,
                 kind,
                 target,
                 result,
-            } => return self.on_test_result(kind, &target, result),
+            } => {
+                if mode == self.probe_mode {
+                    return self.on_test_result(kind, &target, result);
+                }
+            }
+            Data::NodeDelay { mode, name, delay } => {
+                self.node_delays.insert((mode, name), delay);
+                if mode == self.probe_mode {
+                    self.rebuild_nodes();
+                }
+            }
             Data::Notice(text) => self.set_status(StatusKind::Info, text),
         }
         Vec::new()
@@ -3246,6 +3338,7 @@ impl App {
 
     fn invalidate_controller_views(&mut self) {
         self.all_nodes.clear();
+        self.node_delays.clear();
         self.nodes.set_items(Vec::new());
         self.expanded.clear();
         self.connections.set_items(Vec::new());
@@ -3266,9 +3359,12 @@ impl App {
     /// hold hundreds of nodes, and a list that starts as a wall of them hides
     /// the group the user is looking for.
     fn rebuild_nodes(&mut self) {
-        let selected = self.nodes.selected_item().map(|row| row.name.clone());
+        let selected = self
+            .nodes
+            .selected_item()
+            .map(|row| (row.name.clone(), row.group.clone()));
         let expanded = self.expanded.clone();
-        let rows: Vec<NodeRow> = self
+        let mut rows: Vec<NodeRow> = self
             .all_nodes
             .iter()
             .filter(|row| {
@@ -3277,38 +3373,28 @@ impl App {
                     .is_none_or(|group| expanded.iter().any(|e| e == group))
             })
             .cloned()
+            .map(|mut row| {
+                if self.probe_mode != ProbeMode::Connect {
+                    row.delay = None;
+                }
+                if let Some(delay) = self.node_delays.get(&(self.probe_mode, row.name.clone())) {
+                    row.delay = *delay;
+                }
+                row
+            })
             .collect();
+        sort_group_members(&mut rows, self.node_sort);
         self.nodes.set_items(rows);
-        if let Some(name) = selected {
-            self.nodes.select_by_key(name, |row| row.name.clone());
-        }
-        let order = self.node_sort;
-        if order != SortOrder::Natural {
-            self.sort_nodes(order);
+        if let Some(key) = selected {
+            self.nodes
+                .select_by_key(key, |row| (row.name.clone(), row.group.clone()));
         }
     }
 
-    /// Order nodes by latency, keeping each group's members together.
+    /// Order members inside each group without moving a group heading.
     fn sort_nodes(&mut self, order: SortOrder) {
         self.node_sort = order;
-        if order == SortOrder::Natural {
-            return;
-        }
-        let selected = self.nodes.selected_item().map(|row| row.name.clone());
-        let mut rows = self.nodes.items().to_vec();
-        let compare = |a: &NodeRow, b: &NodeRow| match order {
-            SortOrder::LatencyDescending => b.delay.cmp(&a.delay),
-            _ => a.delay.cmp(&b.delay),
-        };
-        rows.sort_by(|a, b| {
-            let key_a = (a.group.clone(), a.is_group);
-            let key_b = (b.group.clone(), b.is_group);
-            key_a.cmp(&key_b).then_with(|| compare(a, b))
-        });
-        self.nodes.set_items(rows);
-        if let Some(name) = selected {
-            self.nodes.select_by_key(name, |row| row.name.clone());
-        }
+        self.rebuild_nodes();
     }
 
     fn set_connections(&mut self, rows: Vec<ConnectionRow>) {
@@ -3517,7 +3603,9 @@ impl App {
             }
             Done::NodeTestsFinished { tested } => {
                 self.set_status(StatusKind::Success, format!("measured {tested} node(s)"));
-                self.sort_nodes(SortOrder::LatencyAscending);
+                if tested > 0 {
+                    self.sort_nodes(SortOrder::LatencyAscending);
+                }
             }
             Done::ConnectionClosed => self.set_status(StatusKind::Success, "connection closed"),
             Done::ConnectionsClosed { count } => {
@@ -3740,6 +3828,7 @@ mod tests {
             alive: true,
             active: false,
             is_group,
+            is_proxy: !is_group && group.is_some(),
             members: if is_group { 2 } else { 0 },
             selectable: is_group,
         }
@@ -4499,7 +4588,8 @@ mod tests {
         assert_eq!(
             press(&mut a, KeyCode::Char('t')),
             vec![Effect::TestGroup {
-                group: "PROXY".to_owned()
+                group: "PROXY".to_owned(),
+                mode: ProbeMode::Connect,
             }]
         );
         press(&mut a, KeyCode::Enter);
@@ -4507,18 +4597,22 @@ mod tests {
         assert_eq!(
             press(&mut a, KeyCode::Char('t')),
             vec![Effect::TestNode {
-                name: "JP 01".to_owned()
+                name: "JP 01".to_owned(),
+                mode: ProbeMode::Connect,
             }]
         );
         assert_eq!(
             press(&mut a, KeyCode::Char('T')),
             vec![Effect::TestGroup {
-                group: "PROXY".to_owned()
+                group: "PROXY".to_owned(),
+                mode: ProbeMode::Connect,
             }]
         );
         assert_eq!(
             press(&mut a, KeyCode::Char('a')),
-            vec![Effect::TestAllNodes]
+            vec![Effect::TestAllNodes {
+                mode: ProbeMode::Connect
+            }]
         );
     }
 
@@ -4697,7 +4791,7 @@ mod tests {
     fn the_test_queue_runs_one_at_a_time_and_cancels_as_a_batch() {
         let mut a = loaded();
         goto(&mut a, Screen::Tests);
-        assert_eq!(a.tests.len(), 4, "one row per kind of check");
+        assert_eq!(a.tests.len(), 5, "one row per kind of check");
 
         let first = press(&mut a, KeyCode::Enter);
         assert_eq!(a.queued_tests(), 1);
@@ -4707,7 +4801,8 @@ mod tests {
             first,
             vec![Effect::RunTest {
                 kind: TestKind::GroupLatency,
-                target
+                target,
+                mode: ProbeMode::Connect,
             }]
         );
 
@@ -4719,6 +4814,7 @@ mod tests {
 
         // The answer to the first starts the second.
         let effects = a.on_event(Event::Data(Data::TestResult {
+            mode: ProbeMode::Connect,
             kind: TestKind::GroupLatency,
             target: a.tests.items()[0].target.clone(),
             result: TestResult::Passed("42 ms".to_owned()),
@@ -4737,6 +4833,7 @@ mod tests {
         goto(&mut a, Screen::Tests);
         let _ = press(&mut a, KeyCode::Enter);
         let _ = a.on_event(Event::Data(Data::TestResult {
+            mode: ProbeMode::Connect,
             kind: TestKind::GroupLatency,
             target: a.tests.items()[0].target.clone(),
             result: TestResult::Passed("12 ms".to_owned()),
@@ -4769,6 +4866,71 @@ mod tests {
             vec!["PROXY", "JP 01", "US 01"],
             "the group stays on top and its members are ordered fastest first"
         );
+    }
+
+    #[test]
+    fn live_probe_updates_only_members_and_survives_inventory_refresh() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Proxies);
+        let inventory = vec![
+            node("A", None, true, None),
+            node("a-slow", Some("A"), false, Some(90)),
+            node("a-fast", Some("A"), false, Some(20)),
+            node("B", None, true, None),
+            node("b-fast", Some("B"), false, Some(5)),
+            node("b-slow", Some("B"), false, Some(70)),
+        ];
+        let _ = a.on_event(Event::Data(Data::Nodes(inventory.clone())));
+        a.expanded = vec!["A".to_owned(), "B".to_owned()];
+        a.rebuild_nodes();
+        let _ = a.on_event(Event::Done(Done::NodeTestsFinished { tested: 4 }));
+        let names = |app: &App| {
+            app.nodes
+                .items()
+                .iter()
+                .map(|row| row.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&a),
+            ["A", "a-fast", "a-slow", "B", "b-fast", "b-slow"]
+        );
+        let _ = a.on_event(Event::Data(Data::NodeDelay {
+            mode: ProbeMode::Connect,
+            name: "a-slow".to_owned(),
+            delay: Some(1),
+        }));
+        assert_eq!(
+            names(&a),
+            ["A", "a-slow", "a-fast", "B", "b-fast", "b-slow"]
+        );
+        let _ = a.on_event(Event::Data(Data::Nodes(inventory)));
+        assert_eq!(
+            names(&a),
+            ["A", "a-slow", "a-fast", "B", "b-fast", "b-slow"]
+        );
+        assert_eq!(a.nodes.items()[1].delay, Some(1));
+        assert_eq!(
+            press(&mut a, KeyCode::Char('v')),
+            vec![Effect::CancelTests, Effect::Refresh(Screen::Proxies)]
+        );
+        assert_eq!(a.probe_mode, ProbeMode::Tcp);
+        assert_eq!(a.nodes.items()[1].delay, None);
+    }
+
+    #[test]
+    fn tests_choose_a_concrete_node_even_when_groups_are_collapsed() {
+        let mut a = loaded();
+        let mut nested = node("nested", Some("A"), false, None);
+        nested.kind = "Selector".to_owned();
+        nested.is_proxy = false;
+        let _ = a.on_event(Event::Data(Data::Nodes(vec![
+            node("A", None, true, None),
+            nested,
+            node("real", Some("A"), false, None),
+        ])));
+        goto(&mut a, Screen::Tests);
+        assert_eq!(a.tests.items()[1].target, "real");
     }
 
     // -- settings -----------------------------------------------------------

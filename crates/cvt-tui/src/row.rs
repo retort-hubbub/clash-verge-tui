@@ -228,6 +228,8 @@ pub struct NodeRow {
     pub active: bool,
     /// `true` for group rows.
     pub is_group: bool,
+    /// A concrete proxy rather than a nested policy or built-in adapter.
+    pub is_proxy: bool,
     /// Member count, for groups.
     pub members: usize,
     /// Whether a selection can be pinned here.
@@ -246,6 +248,7 @@ impl NodeRow {
             alive: view.alive,
             active: false,
             is_group: true,
+            is_proxy: false,
             members: view.members().len(),
             selectable: view.is_selectable(),
         }
@@ -262,6 +265,7 @@ impl NodeRow {
             alive: view.alive,
             active,
             is_group: false,
+            is_proxy: view.id.is_some() && !view.is_group(),
             members: 0,
             selectable: true,
         }
@@ -280,6 +284,7 @@ impl NodeRow {
             alive: false,
             active: false,
             is_group: false,
+            is_proxy: proxy.server.is_some() && proxy.port.is_some(),
             members: 0,
             selectable: false,
         }
@@ -503,6 +508,40 @@ pub struct TestRow {
     pub result: TestResult,
 }
 
+/// What a latency value measures. TCP and ICMP probe the server directly;
+/// CONNECT exercises the full proxy through Mihomo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProbeMode {
+    /// HTTP(S) request through the named Mihomo proxy.
+    Connect,
+    /// Direct TCP connection to the proxy server.
+    Tcp,
+    /// Direct ICMP echo to the proxy server.
+    Icmp,
+}
+
+impl ProbeMode {
+    /// The next selectable mode.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Connect => Self::Tcp,
+            Self::Tcp => Self::Icmp,
+            Self::Icmp => Self::Connect,
+        }
+    }
+
+    /// Short visible label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connect => "CONNECT",
+            Self::Tcp => "TCP",
+            Self::Icmp => "ICMP",
+        }
+    }
+}
+
 /// The kinds of check the tests screen offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestKind {
@@ -514,17 +553,20 @@ pub enum TestKind {
     CoreHealth,
     /// Resolve a name through the core's own resolver.
     DnsLookup,
+    /// Download a bounded sample through the currently selected route.
+    Bandwidth,
 }
 
 impl TestKind {
     /// Every kind, in the order the screen lists them.
     #[must_use]
-    pub fn all() -> [Self; 4] {
+    pub fn all() -> [Self; 5] {
         [
             Self::GroupLatency,
             Self::NodeLatency,
             Self::CoreHealth,
             Self::DnsLookup,
+            Self::Bandwidth,
         ]
     }
 
@@ -536,6 +578,7 @@ impl TestKind {
             Self::NodeLatency => "node latency",
             Self::CoreHealth => "core health",
             Self::DnsLookup => "dns lookup",
+            Self::Bandwidth => "download speed",
         }
     }
 
@@ -544,12 +587,15 @@ impl TestKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::GroupLatency => {
-                "asks the core to test every member of a group through its own health-check URL"
+                "tests each member with the selected probe method and updates results as they arrive"
             }
-            Self::NodeLatency => "opens a connection to the node and measures how long it takes",
+            Self::NodeLatency => "measures one node with the selected probe method",
             Self::CoreHealth => "reads the core's version and reports which optional routes exist",
             Self::DnsLookup => {
                 "resolves a name through the core's resolver, so fake-IP mode shows the synthetic address"
+            }
+            Self::Bandwidth => {
+                "downloads up to 4 MB through the current route; this does not measure an individual node"
             }
         }
     }
@@ -611,6 +657,7 @@ pub fn nodes_from_config(config: &Config) -> Vec<NodeRow> {
             alive: false,
             active: false,
             is_group: true,
+            is_proxy: false,
             members: group.proxies.len(),
             selectable: group.group_kind().is_selectable(),
         });
@@ -627,6 +674,9 @@ pub fn nodes_from_config(config: &Config) -> Vec<NodeRow> {
                 alive: false,
                 active: false,
                 is_group: false,
+                is_proxy: proxies
+                    .iter()
+                    .any(|p| p.name == *member && p.server.is_some() && p.port.is_some()),
                 members: 0,
                 selectable: false,
             });
@@ -667,6 +717,7 @@ pub fn nodes_from_core(groups: &[ProxyView], all: &[ProxyView]) -> Vec<NodeRow> 
                     alive: false,
                     active: false,
                     is_group: false,
+                    is_proxy: false,
                     members: 0,
                     selectable: false,
                 },
@@ -981,7 +1032,7 @@ rules: [MATCH,PROXY]
             assert!(!kind.label().is_empty());
             assert!(!kind.description().is_empty());
         }
-        assert_eq!(TestKind::all().len(), 4);
+        assert_eq!(TestKind::all().len(), 5);
     }
 
     #[test]

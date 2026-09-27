@@ -167,6 +167,8 @@ pub enum Action {
     TestNode,
     /// Latency-test every node.
     TestAllNodes,
+    /// Cycle CONNECT, TCP and ICMP probe methods.
+    CycleTestMode,
     /// Return a group to automatic selection.
     ClearNodeSelection,
 
@@ -270,6 +272,7 @@ impl Action {
             Self::TestGroup => "test group",
             Self::TestNode => "test node",
             Self::TestAllNodes => "test all",
+            Self::CycleTestMode => "test mode",
             Self::ClearNodeSelection => "unpin",
             Self::CloseConnection => "close",
             Self::CloseAllConnections => "close all",
@@ -343,6 +346,7 @@ impl Action {
             Self::TestGroup => "measure every member of this group",
             Self::TestNode => "measure this node",
             Self::TestAllNodes => "measure every node the core knows about",
+            Self::CycleTestMode => "change between proxy URL, direct TCP and direct ICMP probes",
             Self::ClearNodeSelection => "let an automatic group choose again",
             Self::CloseConnection => "drop this connection; the client will reconnect",
             Self::CloseAllConnections => "drop every connection",
@@ -419,6 +423,7 @@ impl Action {
             | Self::TestGroup
             | Self::TestNode
             | Self::TestAllNodes
+            | Self::CycleTestMode
             | Self::ClearNodeSelection => "Proxies",
             Self::CloseConnection | Self::CloseAllConnections | Self::CycleConnectionSort => {
                 "Connections"
@@ -549,6 +554,7 @@ mod tests {
             Action::TestGroup,
             Action::TestNode,
             Action::TestAllNodes,
+            Action::CycleTestMode,
             Action::ClearNodeSelection,
             Action::CloseConnection,
             Action::CloseAllConnections,

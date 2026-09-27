@@ -1,7 +1,7 @@
 # `clash-verge-tui` command line
 
-Everything the terminal interface can do, a script can do. This document is
-written for someone who has never seen the source: it lists every subcommand,
+This document describes the command line interface. It is written for someone
+who has never seen the source: it lists every subcommand,
 every flag, the JSON shape each command prints, and the exit codes a script
 should branch on.
 

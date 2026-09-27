@@ -57,6 +57,16 @@ DNS tests, list and close connections, watch traffic and memory, follow the
 log stream, toggle rules, update rule providers, switch mode, and start, stop,
 restart, upgrade or garbage-collect the core itself.
 
+On **Proxies** and **Tests**, press `v` to cycle latency methods. CONNECT uses
+Mihomo's named-proxy URL test and measures the working proxy path. TCP opens a
+direct connection to the node server and ICMP sends a direct echo to that
+server; these two measure server reachability, not proxy throughput. Nodes
+whose server address is unavailable in the deployed configuration can still
+use CONNECT. The Tests tab also offers a bounded download test (up to 4 MB,
+15 seconds) through the currently selected route; it does not measure an
+individual node or change the selected node. ICMP requires the system `ping`
+command and may be blocked by a server or network.
+
 **Two front ends, one implementation.** The interactive interface and the
 command line are both thin shells over the same `Service` facade, so they
 cannot disagree about what a profile chain means or how an apply is sequenced.
@@ -67,7 +77,7 @@ cannot disagree about what a profile chain means or how an apply is sequenced.
 |---|---|---|
 | Profiles and subscriptions | List, switch, edit, update one or all due, import | The same, plus editing a subscription URL |
 | Configuration | Preview, apply, edit profiles and overrides | Generate, validate, diff, apply, roll back |
-| Running core | Nodes, connections, logs, rules, latency and resource use | The same, plus DNS and named URL tests |
+| Running core | Nodes, connections, logs, rules, CONNECT/TCP/ICMP latency, current-route download speed and resource use | Node and group URL latency, DNS and named URL tests, plus core controls |
 | Diagnostics and maintenance | Core and Geo database updates | Doctor, media unlock (YouTube Premium, Netflix, ChatGPT, Disney+), exit IP/geolocation, local backup and restore |
 
 The TUI's **update all** action updates subscriptions that are due according to

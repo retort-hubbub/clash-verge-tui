@@ -16,7 +16,7 @@ use crate::ui::widgets as w;
 
 /// Draw the proxies screen.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (list_area, detail_area) = w::list_and_detail(area, 8);
+    let (list_area, detail_area) = w::list_and_detail(area, 10);
     let rows: Vec<Row<'static>> = w::visible(&app.nodes)
         .into_iter()
         .map(|node| row(node, app))
@@ -101,6 +101,16 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
 /// Everything the selection can do, and why it sometimes cannot.
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
+    rows.push(("test mode", app.probe_mode.label().to_owned()));
+    rows.push((
+        "method",
+        app.tr(if app.probe_mode == crate::row::ProbeMode::Connect {
+            "CONNECT uses the named proxy; v cycles test methods"
+        } else {
+            "TCP and ICMP probe the server directly; v cycles test methods"
+        })
+        .to_owned(),
+    ));
     match app.nodes.selected_item() {
         Some(node) if node.is_group => {
             rows.push(("group", node.name.clone()));

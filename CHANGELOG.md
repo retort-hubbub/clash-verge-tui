@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Proxies and Tests can cycle CONNECT, direct TCP and direct ICMP latency
+  probes with `v`. Tests also offers a bounded download speed measurement for
+  the current route.
+
 ### Fixed
 
+- Latency results update matching proxy rows as they arrive. Sorting now keeps
+  each group heading attached to its members, preserves the chosen row, and
+  survives inventory refreshes; clearing results restores the original order.
+- The Tests tab finds a node even when its group is collapsed.
 - Starting or restarting the core waits for its controller before refreshing
   live views, avoiding a transient connection error. The routing mode appears
   immediately from the live controller or deployed configuration.

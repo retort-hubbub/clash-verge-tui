@@ -194,6 +194,7 @@ impl Keymap {
             Binding::new(K::Char('t'), none, A::TestNode, C::Proxies, "t"),
             Binding::new(K::Char('T'), none, A::TestGroup, C::Proxies, "T"),
             Binding::new(K::Char('a'), none, A::TestAllNodes, C::Proxies, "a"),
+            Binding::new(K::Char('v'), none, A::CycleTestMode, C::Proxies, "v"),
             Binding::new(K::Char('x'), none, A::ClearNodeSelection, C::Proxies, "x"),
             Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Proxies, "M"),
             // -- connections -----------------------------------------------
@@ -227,6 +228,7 @@ impl Keymap {
             Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Rules, "M"),
             // -- tests -----------------------------------------------------
             Binding::new(K::Enter, none, A::RunTests, C::Tests, "Enter"),
+            Binding::new(K::Char('v'), none, A::CycleTestMode, C::Tests, "v"),
             Binding::new(K::Char('s'), none, A::CancelTests, C::Tests, "s"),
             Binding::new(K::Char('c'), none, A::ClearTestResults, C::Tests, "c"),
             // -- settings --------------------------------------------------
@@ -502,6 +504,7 @@ mod tests {
             Action::TestNode,
             Action::TestGroup,
             Action::TestAllNodes,
+            Action::CycleTestMode,
             Action::ClearNodeSelection,
             Action::CloseConnection,
             Action::CloseAllConnections,

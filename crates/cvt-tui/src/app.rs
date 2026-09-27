@@ -1521,8 +1521,8 @@ pub struct App {
     pub preview: Option<Preview>,
     /// How the connection table is ordered.
     pub connection_sort: ConnectionSort,
-    /// How the proxies list is ordered; a finished measurement batch reorders
-    /// it fastest-first, because that is what the user just asked to know.
+    /// How members within each proxy group are ordered. Group headings keep
+    /// their order from the generated configuration.
     pub node_sort: SortOrder,
     /// Latency method selected for both Proxies and Tests.
     pub probe_mode: ProbeMode,
@@ -2389,6 +2389,21 @@ impl App {
                 self.set_status(StatusKind::Info, format!("connections sorted by {label}"));
                 Vec::new()
             }
+            Action::CycleNodeSort => {
+                let next = match self.node_sort {
+                    SortOrder::Natural | SortOrder::TrafficDescending => {
+                        SortOrder::LatencyAscending
+                    }
+                    SortOrder::LatencyAscending => SortOrder::LatencyDescending,
+                    SortOrder::LatencyDescending => SortOrder::Natural,
+                };
+                self.sort_nodes(next);
+                self.set_status(
+                    StatusKind::Info,
+                    format!("members sorted by {}", next.label()),
+                );
+                Vec::new()
+            }
             Action::ToggleLogFollow => {
                 self.logs.follow = !self.logs.follow;
                 self.frozen = if self.logs.follow {
@@ -2587,6 +2602,10 @@ impl App {
     }
 
     fn move_cursor(&mut self, delta: isize) -> Vec<Effect> {
+        if self.screen == Screen::Logs {
+            self.scroll_logs(delta);
+            return Vec::new();
+        }
         if let Some(rows) = self.active_rows_mut() {
             rows.move_by(delta);
         }
@@ -2595,6 +2614,13 @@ impl App {
     }
 
     fn page_cursor(&mut self, direction: isize) -> Vec<Effect> {
+        if self.screen == Screen::Logs {
+            self.scroll_logs(
+                direction
+                    .saturating_mul(isize::try_from(self.visible_rows()).unwrap_or(isize::MAX)),
+            );
+            return Vec::new();
+        }
         let height = self.visible_rows();
         if let Some(rows) = self.active_rows_mut() {
             rows.page(direction, height);
@@ -2604,6 +2630,12 @@ impl App {
     }
 
     fn move_to_edge(&mut self, first: bool) -> Vec<Effect> {
+        if self.screen == Screen::Logs {
+            let end = if first { 1 } else { self.logs.filtered().len() };
+            self.logs.follow = !first;
+            self.frozen = if first { Some(end) } else { None };
+            return Vec::new();
+        }
         if let Some(rows) = self.active_rows_mut() {
             if first {
                 rows.select_first();
@@ -3603,9 +3635,6 @@ impl App {
             }
             Done::NodeTestsFinished { tested } => {
                 self.set_status(StatusKind::Success, format!("measured {tested} node(s)"));
-                if tested > 0 {
-                    self.sort_nodes(SortOrder::LatencyAscending);
-                }
             }
             Done::ConnectionClosed => self.set_status(StatusKind::Success, "connection closed"),
             Done::ConnectionsClosed { count } => {
@@ -4854,11 +4883,13 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_batch_orders_the_nodes_by_latency() {
+    fn a_finished_batch_preserves_source_order_until_the_user_changes_it() {
         let mut a = loaded();
         goto(&mut a, Screen::Proxies);
         press(&mut a, KeyCode::Enter);
         let _ = a.on_event(Event::Done(Done::NodeTestsFinished { tested: 2 }));
+        assert_eq!(a.node_sort, SortOrder::Natural);
+        assert_eq!(press(&mut a, KeyCode::Char('s')), Vec::new());
         assert_eq!(a.node_sort, SortOrder::LatencyAscending);
         let names: Vec<&str> = a.nodes.items().iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
@@ -4884,6 +4915,7 @@ mod tests {
         a.expanded = vec!["A".to_owned(), "B".to_owned()];
         a.rebuild_nodes();
         let _ = a.on_event(Event::Done(Done::NodeTestsFinished { tested: 4 }));
+        press(&mut a, KeyCode::Char('s'));
         let names = |app: &App| {
             app.nodes
                 .items()
@@ -5514,6 +5546,7 @@ mod tests {
             Action::TestGroup,
             Action::TestNode,
             Action::TestAllNodes,
+            Action::CycleNodeSort,
             Action::ClearNodeSelection,
             Action::CloseConnection,
             Action::CloseAllConnections,

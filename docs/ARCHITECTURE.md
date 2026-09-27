@@ -184,13 +184,27 @@ client setup and limits live in `commands/mod.rs`.
 | Unit and property tests | Module tests and `cvt-core/tests/invariants.rs` | Local behavior and generated-input invariants |
 | API contracts | `cvt-core/tests/client_contract.rs` | Controller request and response contracts |
 | State-machine tests | `cvt-tui/src/app.rs` | Interaction and effect sequencing without a terminal |
-| Rendering | `cvt-tui/src/ui/render_tests.rs` | Screens at different sizes and data states |
+| User-flow rendering | `cvt-tui/src/ui/render_tests.rs` | Profile metadata, page transitions, live refresh, sorting, logs and CJK text drawn into a terminal buffer |
+| Runtime ordering | `cvt/src/executor.rs` | Reconcile controller inventory with generated configuration order |
 | Live core checks | `cvt-core/tests/live_controller.rs` | Verify assumptions against a real, disposable core |
 | Regression tests | `regression_*.rs` in both libraries | Reproduce previously found failures |
 
 Live checks are environment-gated and do not run unless `CVT_LIVE_CONTROLLER`
 is set. Their setup and side effects are documented in the test file. A green
 default test run does not establish live-core compatibility.
+
+For each user-visible defect, add a regression at the boundary where it was
+observed: source metadata through its list cell, events through a rendered
+screen, or controller data through the executor. A state-only assertion cannot
+prove that the first frame is legible, and a rendering-only assertion cannot
+prove that a profile switch refreshes live data. The profile-to-proxy flow in
+`render_tests.rs` exercises both layers together. Before release, run an
+isolated TUI against a real Mihomo at both 80×24 and a larger terminal size:
+switch profile while stopped, start the core, revisit Proxies, expand a group,
+measure one node, change member sort, then follow and scroll Logs. Check source
+group order and names with emoji as well as the absence of spurious controller
+errors. Keep private subscription URLs and node names out of test fixtures and
+CI logs.
 
 ### Regression suite map
 

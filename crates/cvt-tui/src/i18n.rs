@@ -323,7 +323,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::ClearNodeSelection => "取消固定",
         Action::CloseConnection => "关闭",
         Action::CloseAllConnections => "全部关闭",
-        Action::CycleConnectionSort => "排序",
+        Action::CycleNodeSort | Action::CycleConnectionSort => "排序",
         Action::ToggleLogFollow => "跟随",
         Action::CycleLogLevel => "级别",
         Action::ClearLogs => "清空",
@@ -503,7 +503,7 @@ pub fn text(language: Language, english: &str) -> &str {
         "name" => "名称",
         "role" => "用途",
         "updated" => "更新于",
-        "quota" => "剩余额度",
+        "remaining" => "剩余额度",
         "node" => "节点",
         "group" => "组",
         "type" => "类型",
@@ -613,6 +613,9 @@ pub fn text(language: Language, english: &str) -> &str {
         "test mode" => "测试模式",
         "change between proxy URL, direct TCP and direct ICMP probes" => {
             "切换代理 URL、直连 TCP 和直连 ICMP 探测"
+        }
+        "order members within each group by source order or measured latency" => {
+            "按配置顺序或测速结果排列组内节点"
         }
         "method" => "方式",
         "CONNECT uses the named proxy; v cycles test methods" => {
@@ -851,6 +854,9 @@ pub fn format_status(language: Language, text: &str) -> String {
     }
     if let Some(rest) = text.strip_prefix("connections sorted by ") {
         return format!("连接已按 {} 排序", self::text(language, rest));
+    }
+    if let Some(rest) = text.strip_prefix("members sorted by ") {
+        return format!("组内节点排序：{}", self::text(language, rest));
     }
     if let Some(rest) = text.strip_prefix("filtering `")
         && let Some((pat, count_part)) = rest.split_once("` — ")

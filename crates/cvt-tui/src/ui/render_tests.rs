@@ -655,3 +655,162 @@ fn a_preview_overlay_scrolls_with_its_lines() {
     let scrolled = flat(&draw(&app, 200, 60));
     assert_ne!(first, scrolled, "scrolling should move the text");
 }
+
+#[test]
+fn following_logs_uses_the_available_rows_and_scrolling_reveals_older_entries() {
+    let mut app = empty(Screen::Logs);
+    for number in 0..40 {
+        let _ = app.on_event(Event::Data(Data::Log(crate::row::LogRow::new(
+            "info",
+            format!("entry-{number:02} connected through selected proxy with a short message"),
+        ))));
+    }
+    let current = draw(&app, 100, 30);
+    assert!(current.contains("entry-39"));
+    let shown = (0..40)
+        .filter(|number| current.contains(&format!("entry-{number:02}")))
+        .count();
+    assert!(
+        shown >= 10,
+        "only {shown} of 26 available log rows were used"
+    );
+    for _ in 0..20 {
+        let _ = app.on_event(Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    }
+    let older = draw(&app, 100, 30);
+    assert!(
+        older.contains("entry-10"),
+        "scrolling did not reach older log entries"
+    );
+    assert!(!older.contains("entry-39"));
+}
+
+#[test]
+fn chinese_group_names_survive_the_first_frame_and_tab_reentry() {
+    let mut app = empty(Screen::Proxies);
+    let groups = ["🚀 节点选择", "♻️ 自动选择", "🌍 国外媒体"];
+    let rows = groups
+        .into_iter()
+        .map(|name| NodeRow {
+            name: name.to_owned(),
+            kind: "Selector".to_owned(),
+            group: None,
+            delay: None,
+            alive: true,
+            active: false,
+            is_group: true,
+            is_proxy: false,
+            members: 3,
+            selectable: true,
+        })
+        .collect();
+    let _ = app.on_event(Event::Data(Data::Nodes(rows)));
+    let first = draw(&app, 100, 30).replace(' ', "");
+    for group in groups {
+        let expected = group.replace([' ', '\u{fe0f}'], "");
+        assert!(
+            first.contains(&expected),
+            "missing {expected} in initial frame:\n{first}"
+        );
+    }
+    app.screen = Screen::Home;
+    let _ = draw(&app, 100, 30);
+    app.screen = Screen::Proxies;
+    let again = draw(&app, 100, 30).replace(' ', "");
+    for group in groups {
+        let expected = group.replace([' ', '\u{fe0f}'], "");
+        assert!(
+            again.contains(&expected),
+            "missing {expected} after tab reentry"
+        );
+    }
+}
+
+#[test]
+fn profile_to_live_proxy_flow_keeps_groups_fixed_and_sorts_only_on_request() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = empty(Screen::Profiles);
+    let mut profile = cvt_core::profile::item::PrfItem::remote(
+        "sub",
+        "Subscription",
+        "https://example.invalid/sub",
+    );
+    profile.extra = cvt_core::profile::item::UserInfo {
+        upload: 10,
+        download: 15,
+        total: 100,
+        expire: 0,
+    };
+    let _ = app.on_event(Event::Data(Data::Profiles(vec![ProfileRow::from_item(
+        &profile, true, false,
+    )])));
+    assert!(draw(&app, 100, 32).contains("75%"));
+
+    let group = |name: &str| NodeRow {
+        name: name.to_owned(),
+        kind: "Selector".to_owned(),
+        group: None,
+        delay: None,
+        alive: true,
+        active: false,
+        is_group: true,
+        is_proxy: false,
+        members: 2,
+        selectable: true,
+    };
+    let member = |name: &str, group_name: &str, delay| NodeRow {
+        name: name.to_owned(),
+        kind: "Vless".to_owned(),
+        group: Some(group_name.to_owned()),
+        delay,
+        alive: true,
+        active: false,
+        is_group: false,
+        is_proxy: true,
+        members: 0,
+        selectable: true,
+    };
+    let rows = vec![
+        group("Zulu"),
+        member("slow", "Zulu", Some(90)),
+        member("fast", "Zulu", Some(20)),
+        group("Alpha"),
+        member("second", "Alpha", Some(15)),
+    ];
+    app.screen = Screen::Proxies;
+    let _ = app.on_event(Event::Data(Data::Nodes(rows.clone())));
+    let _ = app.on_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    let offline = draw(&app, 100, 32);
+    assert!(offline.find("Zulu").unwrap() < offline.find("Alpha").unwrap());
+
+    let _ = app.on_event(Event::Data(Data::Core(
+        cvt_core::mihomo::supervisor::CoreStatus::Running { pid: 42, since: 0 },
+    )));
+    let _ = app.on_event(Event::Data(Data::Nodes(rows)));
+    let _ = app.on_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    let _ = app.on_event(Event::Data(Data::NodeDelay {
+        mode: crate::row::ProbeMode::Connect,
+        name: "fast".to_owned(),
+        delay: Some(5),
+    }));
+    let natural = draw(&app, 100, 32);
+    assert!(natural.find("Zulu").unwrap() < natural.find("Alpha").unwrap());
+    assert!(natural.find("slow").unwrap() < natural.find("fast").unwrap());
+    let _ = app.on_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('s'),
+        KeyModifiers::NONE,
+    )));
+    let sorted = draw(&app, 100, 32);
+    assert!(sorted.find("Zulu").unwrap() < sorted.find("Alpha").unwrap());
+    assert!(sorted.find("fast").unwrap() < sorted.find("slow").unwrap());
+}

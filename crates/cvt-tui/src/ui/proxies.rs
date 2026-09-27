@@ -60,6 +60,10 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
     } else {
         theme.key_label()
     };
+    // Some terminals count emoji variation selectors as an extra cell while
+    // Ratatui counts the grapheme as one. Strip the selector for display only:
+    // the original name remains the key used for selection and API calls.
+    let display_name = node.name.replace('\u{fe0f}', "");
     let name = if node.is_group {
         Cell::from(format!(
             "{} {}",
@@ -68,11 +72,11 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
             } else {
                 "▸"
             },
-            node.name
+            display_name
         ))
         .style(name_style)
     } else {
-        Cell::from(format!("   {}", node.name)).style(name_style)
+        Cell::from(format!("   {display_name}")).style(name_style)
     };
     let group = node.group.clone().unwrap_or_else(|| "-".to_owned());
     let kind = if node.is_group {
@@ -171,8 +175,6 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .to_owned(),
         )),
     }
-    if app.node_sort != crate::state::SortOrder::Natural {
-        rows.push(("order", app.tr(app.node_sort.label()).to_owned()));
-    }
+    rows.push(("order", app.tr(app.node_sort.label()).to_owned()));
     w::details(frame, area, app, " selection ", &rows);
 }

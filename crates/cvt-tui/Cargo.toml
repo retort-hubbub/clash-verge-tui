@@ -10,7 +10,7 @@ cvt-core = { path = "../cvt-core", version = "0.5.0" }
 anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-ratatui = "0.30.2"
+ratatui = { workspace = true }
 crossterm = { workspace = true }
 futures-util = "0.3.34"
 unicode-width = "0.2.2"

@@ -24,21 +24,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let height = usize::from(inner.height);
     let width = usize::from(inner.width).max(1);
-    // The window is in *rows*, not lines. A line that wraps takes more than one
-    // row, so asking for `height` lines and letting the `Paragraph` wrap them
-    // made the pane taller than its area — and the `Paragraph` clips the
-    // bottom, so the newest lines were the ones lost. Following a log is the
-    // one thing this pane is for, so the window is taken generously and then
-    // trimmed from the front until it fits.
+    // The window is in terminal rows. Count wrapped rows with the same
+    // Paragraph implementation that draws them; a conservative estimate that
+    // charged every space as a new row hid most of the buffer.
     let (candidates, _) = app.log_window(height.saturating_mul(4).max(height));
     let mut used = 0;
     let mut first = candidates.len();
     for line in candidates.iter().rev() {
-        // What is measured is what is *drawn*: `render_line` pads the level to
-        // seven columns, so measuring the unpadded form under-counted every row
-        // and the pane kept the wrong end of the window.
-        let full = format!("{} {:<7} {}", line.at, line.level, line.message);
-        let rows = super::wrapped_rows(&full, width);
+        // Measure the styled line that will actually be drawn.
+        let rows = Paragraph::new(render_line(line, app))
+            .wrap(Wrap { trim: false })
+            .line_count(u16::try_from(width).unwrap_or(u16::MAX));
         // At least the newest line, always. A single line taller than the pane
         // is clipped by the `Paragraph`, which shows its beginning — better
         // than the empty state, which is where the over-estimate below sent it

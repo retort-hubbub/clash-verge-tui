@@ -62,8 +62,13 @@ Mihomo's named-proxy URL test and measures the working proxy path. TCP opens a
 direct connection to the node server and ICMP sends a direct echo to that
 server; these two measure server reachability, not proxy throughput. Nodes
 whose server address is unavailable in the deployed configuration can still
-use CONNECT. The Tests tab also offers a bounded download test (up to 4 MB,
-15 seconds) through the currently selected route; it does not measure an
+use CONNECT. CONNECT makes a warm-up request before reporting a reading; a
+local TUN may intercept direct TCP connections, in which case the TCP test
+reports that interception instead of a misleading local handshake time.
+On **Proxies**, press `s` to cycle source, fastest and slowest member order;
+group headings always keep their source order. The Tests tab also offers a
+bounded download test (up to 4 MB, 15 seconds) through the currently selected
+route; it does not measure an
 individual node or change the selected node. ICMP requires the system `ping`
 command and may be blocked by a server or network.
 

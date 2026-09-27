@@ -762,15 +762,37 @@ impl Executor {
             }
             Screen::Proxies => {
                 if self.has_controller_endpoint(sink) {
+                    let group_order = self.with_service(|service| -> Result<Vec<String>, Error> {
+                        let text = service.paths().read(&service.paths().runtime_config())?;
+                        let config = cvt_core::model::config::Config::from_yaml(&text)?;
+                        Ok(config
+                            .proxy_groups()
+                            .into_iter()
+                            .map(|group| group.name)
+                            .collect())
+                    });
+                    let group_order = match group_order {
+                        Ok(order) => order,
+                        Err(error) => {
+                            Self::emit(
+                                sink,
+                                Event::Failed(format!(
+                                    "cannot read generated proxy group order: {error}"
+                                )),
+                            );
+                            return;
+                        }
+                    };
                     self.spawn_net(
                         sink,
                         |client| async move {
                             tokio::try_join!(client.proxies(), client.configs())
                         },
-                        |(inventory, config)| {
+                        move |(inventory, config)| {
                             Event::Data(Data::Nodes(node_rows(
                                 &inventory.proxies,
                                 config.mode.as_deref(),
+                                &group_order,
                             )))
                         },
                     );
@@ -1161,10 +1183,18 @@ impl ProbeRun<'_> {
             ProbeMode::Connect => {
                 let expected = (!self.settings.expected_status.trim().is_empty())
                     .then_some(self.settings.expected_status.as_str());
-                self.client
+                let first = self
+                    .client
                     .proxy_delay(name, &self.settings.url, self.settings.timeout_ms, expected)
-                    .await
-                    .map_err(|error| error.to_string())
+                    .await;
+                // The first request often pays for DNS, TLS and a cold proxy
+                // connection. Report a warmed request so a batch and a later
+                // single-node retest describe the same steady-state path.
+                let second = self
+                    .client
+                    .proxy_delay(name, &self.settings.url, self.settings.timeout_ms, expected)
+                    .await;
+                second.or(first).map_err(|error| error.to_string())
             }
             ProbeMode::Tcp => {
                 let (host, port) = self.endpoints.get(name).ok_or_else(|| {
@@ -1184,16 +1214,36 @@ impl ProbeRun<'_> {
 
 async fn tcp_connect_ms(host: &str, port: u16, timeout_ms: u32) -> Result<u16, String> {
     let began = Instant::now();
-    tokio::time::timeout(
+    let stream = tokio::time::timeout(
         Duration::from_millis(u64::from(timeout_ms)),
         tokio::net::TcpStream::connect((host, port)),
     )
     .await
     .map_err(|_| "TCP connection timed out".to_owned())?
     .map_err(|error| error.to_string())?;
+    if stream
+        .local_addr()
+        .ok()
+        .is_some_and(|address| is_benchmark_address(address.ip()))
+        || stream
+            .peer_addr()
+            .ok()
+            .is_some_and(|address| is_benchmark_address(address.ip()))
+    {
+        return Err(
+            "TCP path uses a local TUN/fake-IP range; use CONNECT for proxy latency".to_owned(),
+        );
+    }
     Ok(u16::try_from(began.elapsed().as_millis())
         .unwrap_or(u16::MAX)
         .max(1))
+}
+
+fn is_benchmark_address(address: std::net::IpAddr) -> bool {
+    matches!(address, std::net::IpAddr::V4(ip) if {
+        let octets = ip.octets();
+        octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
+    })
 }
 
 async fn icmp_echo(host: &str, timeout_ms: u32) -> Result<u16, String> {
@@ -1392,12 +1442,23 @@ async fn ready_mode(launch: (u32, String, Option<Client>)) -> Result<(u32, Strin
 /// The core also reports internal adapters and an always-present GLOBAL group.
 /// They have no useful action in rule/direct mode and standalone adapters
 /// cannot be selected, so neither belongs in the interactive list.
-fn node_rows(proxies: &BTreeMap<String, ProxyView>, mode: Option<&str>) -> Vec<NodeRow> {
+fn node_rows(
+    proxies: &BTreeMap<String, ProxyView>,
+    mode: Option<&str>,
+    group_order: &[String],
+) -> Vec<NodeRow> {
     let mut rows = Vec::new();
-    for view in proxies
+    let rank: HashMap<&str, usize> = group_order
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect();
+    let mut groups: Vec<_> = proxies
         .values()
         .filter(|view| view.is_group() && (view.name != "GLOBAL" || mode == Some("global")))
-    {
+        .collect();
+    groups.sort_by_key(|view| rank.get(view.name.as_str()).copied().unwrap_or(usize::MAX));
+    for view in groups {
         rows.push(NodeRow::from_group(view));
         for name in view.members() {
             if let Some(member) = proxies.get(name) {
@@ -1558,6 +1619,14 @@ mod tests {
     }
 
     #[test]
+    fn benchmark_addresses_cannot_be_reported_as_direct_server_latency() {
+        use std::net::IpAddr;
+        assert!(is_benchmark_address(IpAddr::from([198, 18, 0, 1])));
+        assert!(is_benchmark_address(IpAddr::from([198, 19, 255, 255])));
+        assert!(!is_benchmark_address(IpAddr::from([198, 20, 0, 1])));
+    }
+
+    #[test]
     fn live_inventory_places_each_member_under_its_group() {
         let inventory: cvt_core::mihomo::types::ProxiesResponse = serde_json::from_value(
             serde_json::json!({"proxies": {
@@ -1567,7 +1636,7 @@ mod tests {
             }}),
         )
         .unwrap();
-        let rows = node_rows(&inventory.proxies, Some("rule"));
+        let rows = node_rows(&inventory.proxies, Some("rule"), &[]);
         assert_eq!(rows.len(), 3);
         assert!(rows[0].is_group);
         assert_eq!(rows[0].members, 2);
@@ -1589,16 +1658,36 @@ mod tests {
                 "REJECT-DROP": {"name":"REJECT-DROP", "type":"RejectDrop"}
             }}))
             .unwrap();
-        let rule = node_rows(&inventory.proxies, Some("rule"));
+        let rule = node_rows(&inventory.proxies, Some("rule"), &[]);
         assert_eq!(rule.iter().filter(|row| row.is_group).count(), 1);
         assert!(
             rule.iter()
                 .all(|row| row.name != "GLOBAL" && row.name != "PASS")
         );
-        let global = node_rows(&inventory.proxies, Some("global"));
+        let global = node_rows(&inventory.proxies, Some("global"), &[]);
         assert_eq!(global.iter().filter(|row| row.is_group).count(), 2);
         assert!(global.iter().any(|row| row.name == "GLOBAL"));
         assert!(global.iter().all(|row| row.name != "COMPATIBLE"));
+    }
+
+    #[test]
+    fn live_group_order_matches_generated_configuration() {
+        let inventory: cvt_core::mihomo::types::ProxiesResponse =
+            serde_json::from_value(serde_json::json!({"proxies": {
+                "Alpha": {"name":"Alpha", "type":"Selector", "all":["node-a"]},
+                "Zulu": {"name":"Zulu", "type":"Selector", "all":["node-a"]},
+                "node-a": {"name":"node-a", "type":"Vless"}
+            }}))
+            .unwrap();
+        let order = vec!["Zulu".to_owned(), "Alpha".to_owned()];
+        let rows = node_rows(&inventory.proxies, Some("rule"), &order);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.is_group)
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Zulu", "Alpha"]
+        );
     }
 
     #[test]

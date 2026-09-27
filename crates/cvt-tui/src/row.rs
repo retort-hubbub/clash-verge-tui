@@ -172,10 +172,10 @@ impl ProfileRow {
         }
     }
 
-    /// Quota usage as a percentage, when the provider reported a total.
+    /// Remaining quota as a percentage, when the provider reported a total.
     #[must_use]
     pub fn quota_label(&self) -> Option<String> {
-        let fraction = self.quota.used_fraction()?;
+        let fraction = 1.0 - self.quota.used_fraction()?;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         Some(format!("{:.0}%", fraction * 100.0))
     }
@@ -244,7 +244,9 @@ impl NodeRow {
             name: view.name.clone(),
             kind: view.kind.clone(),
             group: None,
-            delay: view.latest_delay(),
+            // A group is a policy, not a server. Its API history does not
+            // describe the latency of every member in this list.
+            delay: None,
             alive: view.alive,
             active: false,
             is_group: true,
@@ -261,7 +263,11 @@ impl NodeRow {
             name: view.name.clone(),
             kind: view.kind.clone(),
             group: Some(group.to_owned()),
-            delay: view.latest_delay(),
+            delay: if view.is_group() {
+                None
+            } else {
+                view.latest_delay()
+            },
             alive: view.alive,
             active,
             is_group: false,
@@ -752,11 +758,13 @@ mod tests {
     #[test]
     fn a_group_row_reports_its_member_count_and_selectability() {
         let row = NodeRow::from_group(&view(json!({
-            "name": "PROXY", "type": "Selector", "all": ["a", "b", "c"], "now": "a"
+            "name": "PROXY", "type": "Selector", "all": ["a", "b", "c"], "now": "a",
+            "history": [{"time": "2026-01-01T00:00:00Z", "delay": 42}]
         })));
         assert!(row.is_group);
         assert_eq!(row.members, 3);
         assert!(row.selectable);
+        assert_eq!(row.delay, None, "a policy has no single node latency");
         assert_eq!(row.group_kind_label(), "select");
     }
 
@@ -978,13 +986,17 @@ rules: [MATCH,PROXY]
     fn quota_is_only_reported_when_the_provider_gave_a_total() {
         let mut item = PrfItem::remote("R1", "a", "https://x");
         item.extra = cvt_core::profile::item::UserInfo {
-            upload: 1,
+            upload: 0,
             download: 1,
             total: 4,
             expire: 0,
         };
         let row = ProfileRow::from_item(&item, false, false);
-        assert_eq!(row.quota_label().as_deref(), Some("50%"));
+        assert_eq!(row.quota_label().as_deref(), Some("75%"));
+
+        item.extra.download = 150;
+        let exhausted = ProfileRow::from_item(&item, false, false);
+        assert_eq!(exhausted.quota_label().as_deref(), Some("0%"));
 
         let unlimited =
             ProfileRow::from_item(&PrfItem::remote("R2", "b", "https://y"), false, false);

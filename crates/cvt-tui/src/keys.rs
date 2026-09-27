@@ -195,6 +195,7 @@ impl Keymap {
             Binding::new(K::Char('T'), none, A::TestGroup, C::Proxies, "T"),
             Binding::new(K::Char('a'), none, A::TestAllNodes, C::Proxies, "a"),
             Binding::new(K::Char('v'), none, A::CycleTestMode, C::Proxies, "v"),
+            Binding::new(K::Char('s'), none, A::CycleNodeSort, C::Proxies, "s"),
             Binding::new(K::Char('x'), none, A::ClearNodeSelection, C::Proxies, "x"),
             Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Proxies, "M"),
             // -- connections -----------------------------------------------
@@ -216,6 +217,14 @@ impl Keymap {
             Binding::new(K::Char('c'), none, A::CloseConnection, C::Connections, "c"),
             // -- logs ------------------------------------------------------
             Binding::new(K::Char('f'), none, A::ToggleLogFollow, C::Logs, "f"),
+            Binding::new(K::Up, none, A::Up, C::Logs, "k/↑"),
+            Binding::new(K::Char('k'), none, A::Up, C::Logs, "k/↑"),
+            Binding::new(K::Down, none, A::Down, C::Logs, "j/↓"),
+            Binding::new(K::Char('j'), none, A::Down, C::Logs, "j/↓"),
+            Binding::new(K::PageUp, none, A::PageUp, C::Logs, "PgUp"),
+            Binding::new(K::PageDown, none, A::PageDown, C::Logs, "PgDn"),
+            Binding::new(K::Home, none, A::Top, C::Logs, "Home"),
+            Binding::new(K::End, none, A::Bottom, C::Logs, "End"),
             Binding::new(K::Char('l'), none, A::CycleLogLevel, C::Logs, "l"),
             Binding::new(K::Char('c'), none, A::ClearLogs, C::Logs, "c"),
             Binding::new(K::Char('x'), none, A::ExportLogs, C::Logs, "x"),
@@ -509,6 +518,7 @@ mod tests {
             Action::CloseConnection,
             Action::CloseAllConnections,
             Action::CycleConnectionSort,
+            Action::CycleNodeSort,
             Action::ToggleLogFollow,
             Action::CycleLogLevel,
             Action::ClearLogs,
@@ -570,7 +580,10 @@ mod tests {
                 "{screen}"
             );
         }
-        assert_eq!(map.resolve(Screen::Logs, key(KeyCode::Down)), None);
+        assert_eq!(
+            map.resolve(Screen::Logs, key(KeyCode::Down)),
+            Some(Action::Down)
+        );
         assert_eq!(map.resolve(Screen::Home, key(KeyCode::Down)), None);
     }
 

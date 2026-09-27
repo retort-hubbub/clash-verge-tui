@@ -1369,7 +1369,10 @@ fn observed_8_geo_spends_the_timeout_once_per_source() {
 /// Round 8 found 24 threads being handed one directory and pruning each other
 /// away, fixed it by reserving the name with `create_dir` and pruning only
 /// strictly-older entries — and the fix was never run against the race it was
-/// written for. This is that run, harder: four rounds of the same burst, and
+/// written for. The guarantee is for backups in the *same second*: a newer
+/// second is allowed to prune an older one. Retry a burst that straddles a
+/// clock boundary instead of treating the documented retention policy as a
+/// concurrency failure. This runs four same-second bursts, and
 /// the second half of the invariant the first version left out — a returned
 /// path must *hold* the backup, every item the home has, not merely exist.
 #[test]
@@ -1383,61 +1386,74 @@ fn confirmed_9_backups_taken_at_once_are_each_their_own_and_complete() {
     let mut problems: Vec<String> = Vec::new();
 
     for round in 0..rounds {
-        for backup in service.backups().unwrap() {
-            let _ = std::fs::remove_dir_all(&backup.path);
-        }
-        let barrier = Arc::new(std::sync::Barrier::new(threads));
-        let mut handles = Vec::new();
-        for _ in 0..threads {
-            let service = service.clone();
-            let barrier = Arc::clone(&barrier);
-            handles.push(std::thread::spawn(move || {
-                barrier.wait();
-                service.backup()
-            }));
-        }
-        let mut returned: Vec<PathBuf> = Vec::new();
-        for handle in handles {
-            match handle.join().unwrap() {
-                Ok(path) => returned.push(path),
-                Err(error) => problems.push(format!("round {round}: backup() failed: {error}")),
+        let mut attempts = 0;
+        loop {
+            for backup in service.backups().unwrap() {
+                let _ = std::fs::remove_dir_all(&backup.path);
             }
-        }
+            let started_second = chrono::Utc::now().timestamp();
+            let barrier = Arc::new(std::sync::Barrier::new(threads));
+            let mut handles = Vec::new();
+            for _ in 0..threads {
+                let service = service.clone();
+                let barrier = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    service.backup()
+                }));
+            }
+            let mut returned: Vec<PathBuf> = Vec::new();
+            for handle in handles {
+                match handle.join().unwrap() {
+                    Ok(path) => returned.push(path),
+                    Err(error) => problems.push(format!("round {round}: backup() failed: {error}")),
+                }
+            }
+            if chrono::Utc::now().timestamp() != started_second {
+                attempts += 1;
+                assert!(
+                    attempts < 10,
+                    "could not complete a same-second backup burst"
+                );
+                continue;
+            }
 
-        let unique: BTreeSet<&PathBuf> = returned.iter().collect();
-        if unique.len() != returned.len() {
-            problems.push(format!(
-                "round {round}: {} of {} threads were handed a directory another \
+            let unique: BTreeSet<&PathBuf> = returned.iter().collect();
+            if unique.len() != returned.len() {
+                problems.push(format!(
+                    "round {round}: {} of {} threads were handed a directory another \
                  thread was handed as well",
-                returned.len() - unique.len(),
-                returned.len()
-            ));
-        }
-        for path in &returned {
-            let missing = missing_items(&home, path);
-            if !missing.is_empty() {
-                problems.push(format!(
-                    "round {round}: {} was returned and is missing {missing:?}",
-                    path.display()
+                    returned.len() - unique.len(),
+                    returned.len()
                 ));
             }
-        }
-        // Everything a thread was handed must still be listed: a prune is not
-        // allowed to delete the backup that just returned it.
-        let listed: BTreeSet<PathBuf> = service
-            .backups()
-            .unwrap()
-            .into_iter()
-            .map(|backup| backup.path)
-            .collect();
-        for path in &returned {
-            if !listed.contains(path) {
-                problems.push(format!(
-                    "round {round}: {} was returned and is not among the backups \
+            for path in &returned {
+                let missing = missing_items(&home, path);
+                if !missing.is_empty() {
+                    problems.push(format!(
+                        "round {round}: {} was returned and is missing {missing:?}",
+                        path.display()
+                    ));
+                }
+            }
+            // Everything a thread was handed must still be listed: a prune is not
+            // allowed to delete the backup that just returned it.
+            let listed: BTreeSet<PathBuf> = service
+                .backups()
+                .unwrap()
+                .into_iter()
+                .map(|backup| backup.path)
+                .collect();
+            for path in &returned {
+                if !listed.contains(path) {
+                    problems.push(format!(
+                        "round {round}: {} was returned and is not among the backups \
                      any more",
-                    path.display()
-                ));
+                        path.display()
+                    ));
+                }
             }
+            break;
         }
     }
 

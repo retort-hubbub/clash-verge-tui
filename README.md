@@ -13,9 +13,20 @@ $ clash-verge-tui doctor       # what is installed, what is missing, what the co
 
 In the TUI, each tab shows its direct key in brackets: `[1]` through `[9]`.
 Press that number to open the tab, or use Tab / Shift+Tab to move between tabs.
-With a mouse, click a tab or a table row to select it; scroll the wheel to move
+With a mouse, click a tab, table row or dialog choice; scroll the wheel to move
 through tables, logs and scrollable dialogs. Keyboard shortcuts remain available
-for actions such as activating a profile or confirming a change.
+for actions such as activating a profile or confirming a change. Press `m` to
+read the complete latest status message, including after its footer notice has
+disappeared; press Esc to dismiss a footer notice immediately.
+On Home, press `U` to download or update the managed Mihomo core. Once a profile
+is selected, `s` starts the core and generates the first runtime configuration
+automatically.
+Press `M` on Home, Proxies or Rules to cycle the running core through rule, global and
+direct routing modes. The current live mode appears in the core summary. Mode
+changes made this way last until the next core restart or profile apply.
+The Proxies tab also shows the selected profile's groups and declared members
+while the core is stopped; live health and provider membership appear after it
+starts.
 Press `?` for the full key reference. The interface supports English and
 Simplified Chinese; change **language** on the Settings tab (key `8`) and press
 `s` to save it. The preference is stored as `ui.language: zh-CN` in `cvt.yaml`.
@@ -46,6 +57,29 @@ DNS tests, list and close connections, watch traffic and memory, follow the
 log stream, toggle rules, update rule providers, switch mode, and start, stop,
 restart, upgrade or garbage-collect the core itself.
 
+On **Proxies**, press `v` to cycle latency methods. CONNECT uses
+Mihomo's named-proxy URL test and measures the working proxy path. TCP opens a
+direct connection to the node server and ICMP sends a direct echo to that
+server; these two measure server reachability, not proxy throughput. Nodes
+whose server address is unavailable in the deployed configuration can still
+use CONNECT. CONNECT makes a warm-up request before reporting a reading; a
+local TUN may intercept direct TCP connections, in which case the TCP test
+reports that interception instead of a misleading local handshake time.
+Press `s` to cycle source, fastest and slowest member order; group headings
+always keep their source order. Press `b` to choose a current-route bandwidth
+test: a 4 MB, 20 MB or 100 MB download sample, or `speedtest-go`. The latter
+uses Mihomo with saving mode and upload disabled. If it is missing, the TUI
+asks before downloading a verified release into the application directory;
+`B` offers the same installation command directly. The result
+measures the current routing policy, not necessarily the highlighted node.
+ICMP requires the system `ping` command and may be blocked by a network.
+
+The **Tests** tab runs 12 streaming and AI availability checks, including
+Netflix, Disney+, YouTube Premium, ChatGPT, Claude and Gemini. Requests use the
+local Mihomo proxy and the current route; Enter runs one check, `a` runs all
+checks in sequence, `s` cancels a batch, and `c` clears all results. The checks use service responses and regional
+hints, which can change when providers update their sites.
+
 **Two front ends, one implementation.** The interactive interface and the
 command line are both thin shells over the same `Service` facade, so they
 cannot disagree about what a profile chain means or how an apply is sequenced.
@@ -56,7 +90,7 @@ cannot disagree about what a profile chain means or how an apply is sequenced.
 |---|---|---|
 | Profiles and subscriptions | List, switch, edit, update one or all due, import | The same, plus editing a subscription URL |
 | Configuration | Preview, apply, edit profiles and overrides | Generate, validate, diff, apply, roll back |
-| Running core | Nodes, connections, logs, rules, latency and resource use | The same, plus DNS and named URL tests |
+| Running core | Nodes, connections, logs, rules, CONNECT/TCP/ICMP latency, current-route download speed, unlock checks and resource use | Node and group URL latency, DNS and named URL tests, plus core controls |
 | Diagnostics and maintenance | Core and Geo database updates | Doctor, media unlock (YouTube Premium, Netflix, ChatGPT, Disney+), exit IP/geolocation, local backup and restore |
 
 The TUI's **update all** action updates subscriptions that are due according to
@@ -71,8 +105,7 @@ system proxy, PAC, the system resolver, privileged TUN setup, or WebDAV backup.
 Those desktop and remote-sync operations need external tools. `dialer-proxy`
 chains can be inspected and validated, but are not rewritten automatically.
 TLS, Unix-socket and Windows-pipe controller addresses are recognised; the
-pipe transport depends on Windows. The command line's unlock checks cover four
-services, not every service offered by `clash-verge-rev`.
+pipe transport depends on Windows. The command line's unlock checks cover four services; the TUI presents 12.
 
 ## Requirements
 
@@ -171,6 +204,12 @@ shows which area each file covers.
 
 ## Relationship to other projects
 
+The TUI's 12 unlock probes in `crates/cvt/src/media_unlock/` adapt the
+`clash-verge-media-unlock` crate from
+[clash-verge-rev at `897a117dc5fc`](https://github.com/clash-verge-rev/clash-verge-rev/tree/897a117dc5fc), licensed
+GPL-3.0-or-later like this project. The adaptation replaces its logging and
+country-code registry integrations and connects individual probes to the TUI.
+
 [clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev) is a
 Tauri desktop application for the same core, and this project borrows its
 profile model and file layout on purpose — being able to point at an existing
@@ -179,8 +218,8 @@ profile model and file layout on purpose — being able to point at an existing
 same problem; its existence is why this one is written as a library with a
 thin TUI over it rather than as a TUI with logic inside it.
 
-This is an **independent implementation**, not a fork of either, and it shares
-no code with them.
+This is an **independent implementation**, not a fork. The unlock probe
+module is the code adaptation described above.
 
 ## Licence
 

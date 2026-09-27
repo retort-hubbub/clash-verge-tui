@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-27
+
+### Added
+
+- Proxies can cycle CONNECT, direct TCP and direct ICMP latency probes with
+  `v`, and run a current-route download speed test with `b` using optional
+  `speedtest-go` or a bounded download sample.
+- Tests now offers 12 streaming and AI availability checks through Mihomo.
+- Home shows separate download and upload trends, exit IP, core and system
+  information, and selected proxy group members.
+- Tests can run every unlock check in sequence with `a`, or clear the batch
+  with `c`. Proxies offers 4, 20 and 100 MB download samples or speedtest-go;
+  missing speedtest-go can be installed after confirmation.
+
+### Fixed
+
+- Latency results update matching proxy rows as they arrive. Sorting now keeps
+  each group heading attached to its members, preserves the chosen row, and
+  survives inventory refreshes; changing probe methods restores source order.
+- Successful CONNECT probes update a node's availability immediately, even if
+  the next controller inventory still reports the previous health value.
+- Home shows IP lookup progress, last update age and retry state. `r` bypasses
+  the lookup cache; changing the selected route also refreshes the IP.
+- Batch unlock checks wait for each result before starting the next check.
+- The controller readiness regression test reserves its own silent port, so a
+  real controller on port 9090 cannot make the test pass or fail by chance.
+- Starting or restarting the core waits for its controller before refreshing
+  live views, avoiding a transient connection error. The routing mode appears
+  immediately from the live controller or deployed configuration.
+- Live Proxies hides internal standalone adapters and shows `GLOBAL` only in
+  global mode. Selecting or clearing a group member updates the visible choice
+  immediately and then refreshes it from Mihomo.
+- Stopped cores no longer trigger recurring controller requests and error
+  notices. The Proxies tab shows declared groups and members offline.
+- Live proxy inventories now place members under each group, so expanding a
+  group reveals its nodes. Switching or deleting a profile clears stale proxy
+  data; switching prepares or applies the new configuration, and deleting the
+  active profile stops its core.
+- Home and Proxies can cycle the live routing mode between rule, global and
+  direct with `M`, and the active mode is shown in the interface.
+- Starting Mihomo with a selected profile now generates the first runtime
+  configuration automatically. Reload still requires an existing configuration.
+- The status detail dialog receives the full error text, wraps long messages,
+  and supports keyboard and mouse wheel scrolling. Footer errors expire after
+  four seconds and Esc dismisses a footer notice without replacing it.
+- Dialog choices can be clicked with the mouse, including prompt and
+  confirmation buttons.
+- The TUI calls its managed core action “install core” and explains that it
+  downloads or updates the managed binary.
+
 ## [0.5.0] - 2026-09-26
 
 ### Added
@@ -731,7 +781,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.5.0...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.6.0...develop
+[0.6.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.5.0
 [0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
 [0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0

@@ -52,6 +52,32 @@ pub struct Client {
 }
 
 impl Client {
+    /// Wait for a newly launched controller without holding its owner's lock.
+    ///
+    /// # Errors
+    /// [`Error::ControllerUnreachable`] when the controller does not answer
+    /// within ten seconds.
+    pub async fn wait_until_ready(&self) -> Result<()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut last = String::from("no attempt made");
+        while std::time::Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(left, self.version()).await {
+                Ok(Ok(version)) => {
+                    tracing::info!(version = %version.trimmed(), "core is up");
+                    return Ok(());
+                }
+                Ok(Err(error)) => last = error.short(),
+                Err(_) => break,
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Err(Error::ControllerUnreachable {
+            endpoint: self.endpoint.describe(),
+            source: format!("the core did not become ready: {last}").into(),
+        })
+    }
+
     /// Build a client for an endpoint.
     ///
     /// # Errors

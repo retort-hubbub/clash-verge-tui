@@ -16,7 +16,7 @@ use crate::ui::widgets as w;
 
 /// Draw the proxies screen.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (list_area, detail_area) = w::list_and_detail(area, 8);
+    let (list_area, detail_area) = w::list_and_detail(area, 10);
     let rows: Vec<Row<'static>> = w::visible(&app.nodes)
         .into_iter()
         .map(|node| row(node, app))
@@ -60,6 +60,10 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
     } else {
         theme.key_label()
     };
+    // Some terminals count emoji variation selectors as an extra cell while
+    // Ratatui counts the grapheme as one. Strip the selector for display only:
+    // the original name remains the key used for selection and API calls.
+    let display_name = node.name.replace('\u{fe0f}', "");
     let name = if node.is_group {
         Cell::from(format!(
             "{} {}",
@@ -68,11 +72,11 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
             } else {
                 "▸"
             },
-            node.name
+            display_name
         ))
         .style(name_style)
     } else {
-        Cell::from(format!("   {}", node.name)).style(name_style)
+        Cell::from(format!("   {display_name}")).style(name_style)
     };
     let group = node.group.clone().unwrap_or_else(|| "-".to_owned());
     let kind = if node.is_group {
@@ -80,7 +84,9 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
     } else {
         node.kind.clone()
     };
-    let state = if node.active {
+    let state = if !app.core.is_running() {
+        Cell::from(app.tr("offline")).style(theme.dim())
+    } else if node.active {
         Cell::from(app.tr("active")).style(theme.ok())
     } else if !node.alive {
         Cell::from(app.tr_key(crate::i18n::TextKey::ProxyUnavailable)).style(theme.error())
@@ -99,6 +105,23 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
 /// Everything the selection can do, and why it sometimes cannot.
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
+    rows.push(("test mode", app.probe_mode.label().to_owned()));
+    rows.push(("bandwidth mode", app.tr(app.speed_mode.label()).to_owned()));
+    rows.push((
+        "route speed (b)",
+        app.route_speed
+            .clone()
+            .unwrap_or_else(|| app.tr("not tested").to_owned()),
+    ));
+    rows.push((
+        "method",
+        app.tr(if app.probe_mode == crate::row::ProbeMode::Connect {
+            "CONNECT uses the named proxy; v cycles test methods"
+        } else {
+            "TCP and ICMP probe the server directly; v cycles test methods"
+        })
+        .to_owned(),
+    ));
     match app.nodes.selected_item() {
         Some(node) if node.is_group => {
             rows.push(("group", node.name.clone()));
@@ -115,7 +138,9 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ));
             rows.push((
                 "pinning",
-                if node.selectable {
+                if !app.core.is_running() {
+                    app.tr("start the core to choose a member").to_owned()
+                } else if node.selectable {
                     app.tr("Enter on a member pins it; x clears the choice")
                         .to_owned()
                 } else {
@@ -134,8 +159,14 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             rows.push(("delay", node.delay_label()));
             rows.push((
                 "health",
-                app.tr(if node.alive { "alive" } else { "not answering" })
-                    .to_owned(),
+                app.tr(if !app.core.is_running() {
+                    "offline"
+                } else if node.alive {
+                    "alive"
+                } else {
+                    "not answering"
+                })
+                .to_owned(),
             ));
             rows.push((
                 "hint",
@@ -151,8 +182,6 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .to_owned(),
         )),
     }
-    if app.node_sort != crate::state::SortOrder::Natural {
-        rows.push(("order", app.tr(app.node_sort.label()).to_owned()));
-    }
+    rows.push(("order", app.tr(app.node_sort.label()).to_owned()));
     w::details(frame, area, app, " selection ", &rows);
 }

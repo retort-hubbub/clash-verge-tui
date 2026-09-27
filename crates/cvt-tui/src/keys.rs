@@ -151,6 +151,7 @@ impl Keymap {
             Binding::new(K::BackTab, none, A::PreviousScreen, C::Global, "S-Tab"),
             Binding::new(K::Esc, none, A::Cancel, C::Global, "Esc"),
             Binding::new(K::Char('r'), none, A::Refresh, C::Global, "r"),
+            Binding::new(K::Char('m'), none, A::ShowLastMessage, C::Global, "m"),
             // -- list movement --------------------------------------------
             Binding::new(K::Up, none, A::Up, C::List, "k/↑"),
             Binding::new(K::Char('k'), none, A::Up, C::List, "k/↑"),
@@ -170,6 +171,7 @@ impl Keymap {
             Binding::new(K::Char('s'), none, A::StartCore, C::Home, "s"),
             Binding::new(K::Char('S'), none, A::StopCore, C::Home, "S"),
             Binding::new(K::Char('R'), none, A::RestartCore, C::Home, "R"),
+            Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Home, "M"),
             Binding::new(K::Char('U'), none, A::UpgradeCore, C::Home, "U"),
             Binding::new(K::Char('g'), none, A::UpdateGeo, C::Home, "g"),
             Binding::new(K::Char('F'), none, A::FlushCaches, C::Home, "F"),
@@ -192,7 +194,12 @@ impl Keymap {
             Binding::new(K::Char('t'), none, A::TestNode, C::Proxies, "t"),
             Binding::new(K::Char('T'), none, A::TestGroup, C::Proxies, "T"),
             Binding::new(K::Char('a'), none, A::TestAllNodes, C::Proxies, "a"),
+            Binding::new(K::Char('b'), none, A::TestRouteSpeed, C::Proxies, "b"),
+            Binding::new(K::Char('B'), none, A::InstallSpeedtestGo, C::Proxies, "B"),
+            Binding::new(K::Char('v'), none, A::CycleTestMode, C::Proxies, "v"),
+            Binding::new(K::Char('s'), none, A::CycleNodeSort, C::Proxies, "s"),
             Binding::new(K::Char('x'), none, A::ClearNodeSelection, C::Proxies, "x"),
+            Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Proxies, "M"),
             // -- connections -----------------------------------------------
             Binding::new(K::Char('d'), none, A::CloseConnection, C::Connections, "d"),
             Binding::new(
@@ -212,6 +219,14 @@ impl Keymap {
             Binding::new(K::Char('c'), none, A::CloseConnection, C::Connections, "c"),
             // -- logs ------------------------------------------------------
             Binding::new(K::Char('f'), none, A::ToggleLogFollow, C::Logs, "f"),
+            Binding::new(K::Up, none, A::Up, C::Logs, "k/↑"),
+            Binding::new(K::Char('k'), none, A::Up, C::Logs, "k/↑"),
+            Binding::new(K::Down, none, A::Down, C::Logs, "j/↓"),
+            Binding::new(K::Char('j'), none, A::Down, C::Logs, "j/↓"),
+            Binding::new(K::PageUp, none, A::PageUp, C::Logs, "PgUp"),
+            Binding::new(K::PageDown, none, A::PageDown, C::Logs, "PgDn"),
+            Binding::new(K::Home, none, A::Top, C::Logs, "Home"),
+            Binding::new(K::End, none, A::Bottom, C::Logs, "End"),
             Binding::new(K::Char('l'), none, A::CycleLogLevel, C::Logs, "l"),
             Binding::new(K::Char('c'), none, A::ClearLogs, C::Logs, "c"),
             Binding::new(K::Char('x'), none, A::ExportLogs, C::Logs, "x"),
@@ -221,8 +236,10 @@ impl Keymap {
             Binding::new(K::Char('u'), none, A::UpdateRuleProvider, C::Rules, "u"),
             Binding::new(K::Char('U'), none, A::UpdateAllRuleProviders, C::Rules, "U"),
             Binding::new(K::Char('h'), none, A::ToggleDisabledRules, C::Rules, "h"),
+            Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Rules, "M"),
             // -- tests -----------------------------------------------------
             Binding::new(K::Enter, none, A::RunTests, C::Tests, "Enter"),
+            Binding::new(K::Char('a'), none, A::RunAllTests, C::Tests, "a"),
             Binding::new(K::Char('s'), none, A::CancelTests, C::Tests, "s"),
             Binding::new(K::Char('c'), none, A::ClearTestResults, C::Tests, "c"),
             // -- settings --------------------------------------------------
@@ -473,9 +490,11 @@ mod tests {
             Action::Bottom,
             Action::NextScreen,
             Action::PreviousScreen,
+            Action::ShowLastMessage,
             Action::StartCore,
             Action::StopCore,
             Action::RestartCore,
+            Action::CycleCoreMode,
             Action::UpgradeCore,
             Action::UpdateGeo,
             Action::FlushCaches,
@@ -496,10 +515,14 @@ mod tests {
             Action::TestNode,
             Action::TestGroup,
             Action::TestAllNodes,
+            Action::TestRouteSpeed,
+            Action::InstallSpeedtestGo,
+            Action::CycleTestMode,
             Action::ClearNodeSelection,
             Action::CloseConnection,
             Action::CloseAllConnections,
             Action::CycleConnectionSort,
+            Action::CycleNodeSort,
             Action::ToggleLogFollow,
             Action::CycleLogLevel,
             Action::ClearLogs,
@@ -509,6 +532,7 @@ mod tests {
             Action::UpdateAllRuleProviders,
             Action::ToggleDisabledRules,
             Action::RunTests,
+            Action::RunAllTests,
             Action::CancelTests,
             Action::ClearTestResults,
             Action::SaveSettings,
@@ -561,7 +585,10 @@ mod tests {
                 "{screen}"
             );
         }
-        assert_eq!(map.resolve(Screen::Logs, key(KeyCode::Down)), None);
+        assert_eq!(
+            map.resolve(Screen::Logs, key(KeyCode::Down)),
+            Some(Action::Down)
+        );
         assert_eq!(map.resolve(Screen::Home, key(KeyCode::Down)), None);
     }
 

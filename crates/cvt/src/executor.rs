@@ -21,10 +21,11 @@
 //!   spawned task is handed what it needs — usually a `Client` — and the lock
 //!   is released before the spawn.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use cvt_core::enhance::pipeline::Outcome;
 use cvt_core::mihomo::client::Client;
@@ -35,19 +36,28 @@ use cvt_core::profile::source::{SubscriptionFetcher, is_due};
 use cvt_core::settings::TestSettings;
 use cvt_core::validate::Severity;
 use cvt_core::{AppPaths, Error, Service};
-use cvt_tui::app::{Preview, PreviewChange, PreviewFinding};
-use cvt_tui::row::{ConnectionRow, LogRow, NodeRow, ProfileRow, RuleRow, TestKind, TestResult};
+use cvt_tui::app::{IpInfo, Preview, PreviewChange, PreviewFinding, SpeedMode};
+use cvt_tui::row::{
+    ConnectionRow, LogRow, NodeRow, ProbeMode, ProfileRow, RuleRow, TestKind, TestResult,
+};
 use cvt_tui::{Data, Done, Effect, Event, EventSink, Screen};
+use futures_util::stream::{self, StreamExt as _};
 
 /// Performs effects against a service.
 pub struct Executor {
     service: Arc<Mutex<Service>>,
+    /// Suppress controller reads between process launch and API readiness.
+    starting: Arc<AtomicBool>,
     /// Bumped when the user cancels; a batch notices at the next node instead
     /// of running to the end of a list they no longer want.
     test_epoch: Arc<AtomicU64>,
     /// Whether the live stream has been started, so it starts once rather than
     /// once per refresh.
     streaming: Arc<AtomicBool>,
+    /// Last public-IP request, to avoid polling an external service each UI tick.
+    ip_last_fetch: Arc<Mutex<Option<Instant>>>,
+    /// Discard IP lookups started before a routing change.
+    ip_epoch: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for Executor {
@@ -62,8 +72,11 @@ impl Executor {
     pub fn new(service: Service) -> Self {
         Self {
             service: Arc::new(Mutex::new(service)),
+            starting: Arc::new(AtomicBool::new(false)),
             test_epoch: Arc::new(AtomicU64::new(0)),
             streaming: Arc::new(AtomicBool::new(false)),
+            ip_last_fetch: Arc::new(Mutex::new(None)),
+            ip_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -125,7 +138,7 @@ impl Executor {
         let client = match self.client() {
             Ok(client) => client,
             Err(error) => {
-                Self::emit(sink, Event::Failed(error.short()));
+                Self::emit(sink, Event::Failed(error.to_string()));
                 return;
             }
         };
@@ -137,7 +150,7 @@ impl Executor {
                 }
                 Err(error) => {
                     tracing::debug!(error = %error, "effect failed");
-                    let _ = sink.send(Event::Failed(error.short()));
+                    let _ = sink.send(Event::Failed(error.to_string()));
                 }
             }
         });
@@ -160,10 +173,12 @@ impl Executor {
                 });
                 if auto_start || update_on_start {
                     let service = Arc::clone(&self.service);
+                    let starting = Arc::clone(&self.starting);
                     let sink = sink.clone();
                     tokio::spawn(async move {
                         if auto_start {
                             let start_service = Arc::clone(&service);
+                            starting.store(true, Ordering::SeqCst);
                             let started = tokio::task::spawn_blocking(move || {
                                 let guard = start_service
                                     .lock()
@@ -171,17 +186,26 @@ impl Executor {
                                 if guard.core_status().is_running() {
                                     Ok(None)
                                 } else {
-                                    guard.start_core().map(Some)
+                                    launch_core(&guard, false).map(Some)
                                 }
                             })
                             .await;
+                            let started = match started {
+                                Ok(Ok(Some(launch))) => ready_mode(launch).await.map(Some),
+                                Ok(Ok(None)) => Ok(None),
+                                Ok(Err(error)) => Err(error),
+                                Err(error) => Err(Error::Unsupported(error.to_string())),
+                            };
+                            starting.store(false, Ordering::SeqCst);
                             match started {
-                                Ok(Ok(Some(pid))) => {
+                                Ok(Some((pid, mode))) => {
+                                    Self::emit(&sink, Event::Data(Data::CoreMode(mode)));
                                     Self::emit(&sink, Event::Done(Done::CoreStarted { pid }));
                                 }
-                                Ok(Ok(None)) => {}
-                                Ok(Err(error)) => Self::emit(&sink, Event::Failed(error.short())),
-                                Err(error) => Self::emit(&sink, Event::Failed(error.to_string())),
+                                Ok(None) => {}
+                                Err(error) => {
+                                    Self::emit(&sink, Event::Failed(error.to_string()));
+                                }
                             }
                         }
                         if update_on_start {
@@ -193,6 +217,55 @@ impl Executor {
 
             // ---- refresh, which fans out per screen
             Effect::Refresh(screen) => self.refresh(screen, sink),
+            Effect::RefreshIp => {
+                self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                *self
+                    .ip_last_fetch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                self.refresh(Screen::Home, sink);
+            }
+            Effect::StartCore | Effect::RestartCore => {
+                self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                *self
+                    .ip_last_fetch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                let service = Arc::clone(&self.service);
+                let starting = Arc::clone(&self.starting);
+                let sink = sink.clone();
+                let restart = matches!(effect, Effect::RestartCore);
+                starting.store(true, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        let guard = service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        launch_core(&guard, restart)
+                    })
+                    .await;
+                    let result = match result {
+                        Ok(Ok(launch)) => ready_mode(launch).await,
+                        Ok(Err(error)) => Err(error),
+                        Err(error) => Err(Error::Unsupported(error.to_string())),
+                    };
+                    starting.store(false, Ordering::SeqCst);
+                    match result {
+                        Ok((pid, mode)) => {
+                            Self::emit(&sink, Event::Data(Data::CoreMode(mode)));
+                            Self::emit(
+                                &sink,
+                                Event::Done(if restart {
+                                    Done::CoreRestarted { pid }
+                                } else {
+                                    Done::CoreStarted { pid }
+                                }),
+                            );
+                        }
+                        Err(error) => Self::emit(&sink, Event::Failed(error.to_string())),
+                    }
+                });
+            }
 
             // ---- everything that talks to the core is spawned
             // The two selection effects are hand-written rather than going
@@ -221,16 +294,18 @@ impl Executor {
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 guard.remember_selection(&group, &member)
                             };
-                            let note = match recorded {
-                                Ok(()) => format!("{group}: {member}"),
-                                Err(error) => {
-                                    format!("{group}: {member} (not recorded: {})", error.short())
-                                }
-                            };
-                            let _ = sink.send(Event::Data(Data::Notice(note)));
+                            let _ = sink.send(Event::Done(Done::NodeSelected {
+                                group: group.clone(),
+                                member: member.clone(),
+                            }));
+                            if let Err(error) = recorded {
+                                let _ = sink.send(Event::Data(Data::Notice(format!(
+                                    "{group}: {member} (selection was not saved: {error})"
+                                ))));
+                            }
                         }
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
                         }
                     }
                 });
@@ -257,19 +332,17 @@ impl Executor {
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 guard.forget_selection(&group)
                             };
-                            let note = match forgotten {
-                                Ok(()) => format!("{group}: automatic"),
-                                Err(error) => {
-                                    format!(
-                                        "{group}: automatic (still remembered: {})",
-                                        error.short()
-                                    )
-                                }
-                            };
-                            let _ = sink.send(Event::Data(Data::Notice(note)));
+                            let _ = sink.send(Event::Done(Done::NodeCleared {
+                                group: group.clone(),
+                            }));
+                            if let Err(error) = forgotten {
+                                let _ = sink.send(Event::Data(Data::Notice(format!(
+                                    "{group}: automatic (choice was not forgotten: {error})"
+                                ))));
+                            }
                         }
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
                         }
                     }
                 });
@@ -329,11 +402,68 @@ impl Executor {
                     )))
                 },
             ),
-            Effect::UpgradeCore => self.spawn_net(
-                sink,
-                |client| async move { client.upgrade_core(None, false).await },
-                |()| Event::Done(Done::CoreUpgraded),
-            ),
+            Effect::SetCoreMode { mode } => {
+                self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                *self
+                    .ip_last_fetch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                self.spawn_net(
+                    sink,
+                    {
+                        let mode = mode.clone();
+                        move |client| async move {
+                            let patch = ConfigPatch {
+                                mode: Some(mode),
+                                ..ConfigPatch::default()
+                            };
+                            client.patch_configs(&patch).await
+                        }
+                    },
+                    move |()| Event::Done(Done::CoreModeChanged { mode }),
+                );
+            }
+            Effect::UpgradeCore => {
+                let service = Arc::clone(&self.service);
+                let sink = sink.clone();
+                tokio::spawn(async move {
+                    let (paths, was_running) = {
+                        let guard = service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        (guard.paths().clone(), guard.core_status().is_running())
+                    };
+                    let _ = sink.send(Event::Data(Data::Notice(
+                        "downloading latest mihomo core...".to_owned(),
+                    )));
+                    let outcome = cvt_core::mihomo::download::install_latest_core(&paths).await;
+                    match outcome {
+                        Ok(version) => {
+                            if was_running {
+                                let restart_service = Arc::clone(&service);
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    let guard = restart_service
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    let _ = guard.restart_core();
+                                })
+                                .await;
+                            }
+                            let status = {
+                                let guard = service
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                guard.core_status()
+                            };
+                            let _ = sink.send(Event::Data(Data::Core(status)));
+                            let _ = sink.send(Event::Done(Done::CoreUpgraded { version }));
+                        }
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error.to_string()));
+                        }
+                    }
+                });
+            }
             Effect::UpdateGeo => self.spawn_net(
                 sink,
                 |client| async move { client.upgrade_geo().await },
@@ -351,19 +481,31 @@ impl Executor {
             ),
 
             // ---- latency tests, which serialise themselves
-            Effect::TestNode { name } => self.spawn_test(TestKind::NodeLatency, name, sink),
-            Effect::TestGroup { group } => self.spawn_test(TestKind::GroupLatency, group, sink),
-            Effect::RunTest { kind, target } => self.spawn_test(kind, target, sink),
-            Effect::TestAllNodes => self.spawn_all_tests(sink),
-            Effect::CancelTests => {
-                self.test_epoch.fetch_add(1, Ordering::SeqCst);
-                Self::emit(
-                    sink,
-                    Event::Data(Data::Notice("test batch cancelled".to_owned())),
-                );
+            Effect::TestNode { name, mode } => {
+                self.spawn_test(TestKind::NodeLatency, name, mode, sink);
             }
-            Effect::ClearTestResults => {
-                Self::emit(sink, Event::Done(Done::NodeTestsFinished { tested: 0 }));
+            Effect::TestGroup { group, mode } => {
+                self.spawn_test(TestKind::GroupLatency, group, mode, sink);
+            }
+            Effect::RunTest { kind, target, mode } => self.spawn_test(kind, target, mode, sink),
+            Effect::TestRouteSpeed { mode } => self.spawn_route_speed(mode, sink),
+            Effect::InstallSpeedtestGo => {
+                let home = self.with_service(|service| service.paths().home().to_path_buf());
+                let sink = sink.clone();
+                tokio::spawn(async move {
+                    match crate::speedtest::install(&home).await {
+                        Ok(version) => {
+                            let _ = sink.send(Event::Done(Done::SpeedtestInstalled { version }));
+                        }
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error));
+                        }
+                    }
+                });
+            }
+            Effect::TestAllNodes { mode } => self.spawn_all_tests(mode, sink),
+            Effect::CancelTests | Effect::ClearTestResults => {
+                self.test_epoch.fetch_add(1, Ordering::SeqCst);
             }
 
             // ---- updating subscriptions owns its own task
@@ -379,14 +521,14 @@ impl Executor {
                     sink,
                     Event::Data(Data::Notice(format!("edited {}", path.display()))),
                 ),
-                Err(error) => Self::emit(sink, Event::Failed(error.short())),
+                Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
             },
             Effect::EditProfile { uid } => match self.profile_path(&uid) {
                 Ok(path) => match open_editor(&path) {
                     Ok(()) => Self::emit(sink, Event::Data(Data::Notice(format!("edited {uid}")))),
-                    Err(error) => Self::emit(sink, Event::Failed(error.short())),
+                    Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
                 },
-                Err(error) => Self::emit(sink, Event::Failed(error.short())),
+                Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
             },
 
             Effect::ExportLogs { path, contents } => match std::fs::write(&path, contents) {
@@ -394,11 +536,16 @@ impl Executor {
                     sink,
                     Event::Data(Data::Notice(format!("log written to {}", path.display()))),
                 ),
-                Err(error) => Self::emit(sink, Event::Failed(Error::io(&path, error).short())),
+                Err(error) => Self::emit(sink, Event::Failed(Error::io(&path, error).to_string())),
             },
 
             // ---- applying runs on a blocking thread, and reports once
             Effect::ApplyConfig { mode } => {
+                self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                *self
+                    .ip_last_fetch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 let service = Arc::clone(&self.service);
                 let sink = sink.clone();
                 tokio::task::spawn_blocking(move || {
@@ -409,13 +556,13 @@ impl Executor {
                     let outcome = match guard.generate() {
                         Ok(outcome) => outcome,
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
                             return;
                         }
                     };
                     let changed = outcome.diff.entries.len();
                     if let Err(error) = guard.pipeline().commit(&outcome, false) {
-                        let _ = sink.send(Event::Failed(error.short()));
+                        let _ = sink.send(Event::Failed(error.to_string()));
                         return;
                     }
                     // Waiting for the core to come back can take ten seconds.
@@ -428,7 +575,35 @@ impl Executor {
                             }));
                         }
                         Err(error) => {
-                            let _ = sink.send(Event::Failed(error.short()));
+                            let _ = sink.send(Event::Failed(error.to_string()));
+                        }
+                    }
+                });
+            }
+            Effect::PrepareConfig => {
+                let service = Arc::clone(&self.service);
+                let sink = sink.clone();
+                tokio::task::spawn_blocking(move || {
+                    let guard = service
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let outcome = match guard.generate() {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error.to_string()));
+                            return;
+                        }
+                    };
+                    let changed = outcome.diff.entries.len();
+                    match guard.pipeline().commit(&outcome, false) {
+                        Ok(()) => {
+                            let _ = sink.send(Event::Done(Done::ConfigApplied {
+                                reload: None,
+                                changed,
+                            }));
+                        }
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error.to_string()));
                         }
                     }
                 });
@@ -436,9 +611,12 @@ impl Executor {
 
             // ---- everything else is local and answers immediately
             other => {
+                if matches!(other, Effect::StopCore) {
+                    self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                }
                 let event = match self.local(other, sink) {
                     Ok(event) => event,
-                    Err(error) => Event::Failed(error.short()),
+                    Err(error) => Event::Failed(error.to_string()),
                 };
                 Self::emit(sink, event);
             }
@@ -471,6 +649,12 @@ impl Executor {
                     .ok_or_else(|| Error::ProfileNotFound { uid: uid.clone() })?;
                 store.set_current(&uid)?;
                 store.save()?;
+                if !service.core_status().is_running() {
+                    let path = service.paths().runtime_config();
+                    if path.exists() {
+                        std::fs::remove_file(&path).map_err(|error| Error::io(&path, error))?;
+                    }
+                }
                 Ok(Event::Done(Done::ProfileSwitched { name }))
             }),
             Effect::SetChain { uids } => self.with_service(|service| {
@@ -481,10 +665,17 @@ impl Executor {
             }),
             Effect::DeleteProfile { uid } => self.with_service(|service| {
                 let mut store = service.store()?;
+                let was_current = store.current_uid() == Some(uid.as_str());
                 let removed = store.remove(&uid)?;
                 store.save()?;
+                if was_current {
+                    let path = service.paths().runtime_config();
+                    if path.exists() {
+                        std::fs::remove_file(&path).map_err(|error| Error::io(&path, error))?;
+                    }
+                }
                 let name = removed.map_or_else(|| uid.clone(), |item| item.name);
-                Ok(Event::Done(Done::ProfileDeleted { name }))
+                Ok(Event::Done(Done::ProfileDeleted { name, was_current }))
             }),
             Effect::RenameProfile { uid, name } => self.with_service(|service| {
                 let mut store = service.store()?;
@@ -515,7 +706,11 @@ impl Executor {
                     store.write_document(&item, "mode: rule\nrules:\n  - MATCH,DIRECT\n")?;
                 }
                 store.save()?;
-                Ok(Event::Done(Done::ProfileCreated { name }))
+                Ok(Event::Done(Done::ProfileCreated {
+                    name,
+                    uid: Some(uid),
+                    is_remote: remote,
+                }))
             }),
             Effect::DetectImportSources => Ok(Event::Data(Data::ImportSources(
                 AppPaths::detect_verge_homes(),
@@ -536,17 +731,9 @@ impl Executor {
                 let snapshot = service.pipeline().rollback()?;
                 Ok(Event::Done(Done::ConfigRolledBack { snapshot }))
             }),
-            Effect::StartCore => self.with_service(|service| {
-                let pid = service.start_core()?;
-                Ok(Event::Done(Done::CoreStarted { pid }))
-            }),
             Effect::StopCore => self.with_service(|service| {
                 service.stop_core()?;
                 Ok(Event::Done(Done::CoreStopped))
-            }),
-            Effect::RestartCore => self.with_service(|service| {
-                let pid = service.restart_core()?;
-                Ok(Event::Done(Done::CoreRestarted { pid }))
             }),
             Effect::SaveSettings { settings } => self.with_service(|service| {
                 service.set_settings(settings);
@@ -566,14 +753,22 @@ impl Executor {
 
     // -------------------------------------------------------------- refresh
 
-    /// A background read has no controller to ask until one is configured.
-    /// Keep an absent endpoint quiet; malformed configuration is still shown.
+    /// A background read only reaches a controller while the core is running.
+    /// Keep a configured but stopped controller quiet.
     fn has_controller_endpoint(&self, sink: &EventSink) -> bool {
-        match self.with_service(|service| service.endpoint()) {
+        if self.starting.load(Ordering::SeqCst) {
+            return false;
+        }
+        match self.with_service(|service| {
+            if !service.core_status().is_running() {
+                return Ok(None);
+            }
+            service.endpoint()
+        }) {
             Ok(Some(_)) => true,
             Ok(None) => false,
             Err(error) => {
-                Self::emit(sink, Event::Failed(error.short()));
+                Self::emit(sink, Event::Failed(error.to_string()));
                 false
             }
         }
@@ -587,10 +782,50 @@ impl Executor {
                 let status = self.with_service(|service| service.core_status());
                 Self::emit(sink, Event::Data(Data::Core(status)));
                 if self.has_controller_endpoint(sink) {
+                    if let Some(address) = self.with_service(|service| service.proxy_addr()) {
+                        let should_fetch = {
+                            let mut last = self
+                                .ip_last_fetch
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if last.is_none_or(|time| time.elapsed() >= Duration::from_secs(60)) {
+                                *last = Some(Instant::now());
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if should_fetch {
+                            Self::emit(sink, Event::Data(Data::IpLookupStarted));
+                            let sink = sink.clone();
+                            let current = Arc::clone(&self.ip_epoch);
+                            let epoch = current.load(Ordering::SeqCst);
+                            tokio::spawn(async move {
+                                match fetch_exit_ip(&address).await {
+                                    Ok(info) if current.load(Ordering::SeqCst) == epoch => {
+                                        let _ = sink.send(Event::Data(Data::IpInfo(info)));
+                                    }
+                                    Err(error) if current.load(Ordering::SeqCst) == epoch => {
+                                        let _ = sink.send(Event::Data(Data::IpLookupFailed(error)));
+                                    }
+                                    Ok(_) | Err(_) => {}
+                                }
+                            });
+                        }
+                    }
                     self.spawn_net(
                         sink,
                         |client| async move { client.version().await },
                         |version| Event::Data(Data::Version(version.trimmed().to_owned())),
+                    );
+                    self.spawn_net(
+                        sink,
+                        |client| async move { client.configs().await },
+                        |config| {
+                            Event::Data(Data::CoreMode(
+                                config.mode.unwrap_or_else(|| "rule".to_owned()),
+                            ))
+                        },
                     );
                 }
             }
@@ -598,7 +833,7 @@ impl Executor {
             Screen::Profiles => {
                 let event = self
                     .local(Effect::LoadProfiles, sink)
-                    .unwrap_or_else(|error| Event::Failed(error.short()));
+                    .unwrap_or_else(|error| Event::Failed(error.to_string()));
                 Self::emit(sink, event);
             }
             Screen::Settings => {
@@ -607,13 +842,48 @@ impl Executor {
             }
             Screen::Proxies => {
                 if self.has_controller_endpoint(sink) {
+                    let group_order = self.with_service(|service| -> Result<Vec<String>, Error> {
+                        let text = service.paths().read(&service.paths().runtime_config())?;
+                        let config = cvt_core::model::config::Config::from_yaml(&text)?;
+                        Ok(config
+                            .proxy_groups()
+                            .into_iter()
+                            .map(|group| group.name)
+                            .collect())
+                    });
+                    let group_order = match group_order {
+                        Ok(order) => order,
+                        Err(error) => {
+                            Self::emit(
+                                sink,
+                                Event::Failed(format!(
+                                    "cannot read generated proxy group order: {error}"
+                                )),
+                            );
+                            return;
+                        }
+                    };
                     self.spawn_net(
                         sink,
-                        |client| async move { client.proxies().await },
-                        |inventory| Event::Data(Data::Nodes(node_rows(&inventory.proxies))),
+                        |client| async move {
+                            tokio::try_join!(client.proxies(), client.configs())
+                        },
+                        move |(inventory, config)| {
+                            Event::Data(Data::Nodes(node_rows(
+                                &inventory.proxies,
+                                config.mode.as_deref(),
+                                &group_order,
+                            )))
+                        },
                     );
                 } else {
-                    Self::emit(sink, Event::Data(Data::Nodes(Vec::new())));
+                    let rows = self.with_service(|service| {
+                        service
+                            .generate()
+                            .ok()
+                            .map_or_else(Vec::new, |outcome| config_node_rows(&outcome.config))
+                    });
+                    Self::emit(sink, Event::Data(Data::Nodes(rows)));
                 }
             }
             Screen::Connections => {
@@ -671,8 +941,19 @@ impl Executor {
     /// this starts on the first refresh and is then left alone: starting it
     /// again on every tick would open a new WebSocket every refresh interval.
     fn start_streaming(&self, sink: &EventSink) {
-        let level = self.with_service(|service| service.settings().ui.log_level);
-        let endpoint = self.with_service(|service| service.endpoint().ok().flatten());
+        if self.starting.load(Ordering::SeqCst) {
+            return;
+        }
+        let (level, endpoint) = self.with_service(|service| {
+            (
+                service.settings().ui.log_level,
+                service
+                    .core_status()
+                    .is_running()
+                    .then(|| service.endpoint().ok().flatten())
+                    .flatten(),
+            )
+        });
         let Some(endpoint) = endpoint else {
             // Not worth a status line: the interface works without a running
             // core, it simply has nothing live to show.
@@ -697,7 +978,7 @@ impl Executor {
             let mut stream = match Stream::spawn(endpoint, options) {
                 Ok(stream) => stream,
                 Err(error) => {
-                    let _ = sink.send(Event::Failed(error.short()));
+                    let _ = sink.send(Event::Failed(error.to_string()));
                     streaming.store(false, Ordering::SeqCst);
                     return;
                 }
@@ -734,35 +1015,86 @@ impl Executor {
     // -------------------------------------------------------------- testing
 
     /// Measure one target and report it.
-    fn spawn_test(&self, kind: TestKind, target: String, sink: &EventSink) {
+    fn spawn_test(&self, kind: TestKind, target: String, mode: ProbeMode, sink: &EventSink) {
         let Ok(client) = self.client() else {
             Self::emit(sink, Event::Failed("the core is not reachable".to_owned()));
             return;
         };
         let settings = self.with_service(|service| service.settings().test.clone());
+        let proxy_addr = self.with_service(|service| service.proxy_addr());
+        let endpoints = if mode == ProbeMode::Connect
+            || !matches!(kind, TestKind::NodeLatency | TestKind::GroupLatency)
+        {
+            HashMap::new()
+        } else {
+            match self.with_service(|service| node_endpoints(service)) {
+                Ok(endpoints) => endpoints,
+                Err(error) => {
+                    Self::emit(sink, Event::Failed(error.to_string()));
+                    return;
+                }
+            }
+        };
         let sink = sink.clone();
         let epoch = self.test_epoch.load(Ordering::SeqCst);
         let current = Arc::clone(&self.test_epoch);
 
         // Report as running first, so a slow test is visible while it runs.
         let _ = sink.send(Event::Data(Data::TestResult {
+            mode,
             kind,
             target: target.clone(),
             result: TestResult::Running,
         }));
 
         tokio::spawn(async move {
-            let result = run_one(&client, &settings, kind, &target).await;
+            let probe = ProbeRun {
+                client: &client,
+                settings: &settings,
+                mode,
+                endpoints: &endpoints,
+                proxy_addr: proxy_addr.as_deref(),
+                sink: &sink,
+                epoch,
+                current: &current,
+            };
+            let (result, tested) = run_one(&probe, kind, &target).await;
             if current.load(Ordering::SeqCst) != epoch {
                 // Superseded by a cancel: nobody wants this result any more.
                 return;
             }
             let _ = sink.send(Event::Data(Data::TestResult {
+                mode,
                 kind,
                 target,
                 result,
             }));
-            let _ = sink.send(Event::Done(Done::NodeTestsFinished { tested: 1 }));
+            if !matches!(kind, TestKind::Unlock(_)) {
+                let _ = sink.send(Event::Done(Done::NodeTestsFinished { tested }));
+            }
+        });
+    }
+
+    /// Run the selected route throughput backend.
+    fn spawn_route_speed(&self, mode: SpeedMode, sink: &EventSink) {
+        let Some(address) = self.with_service(|service| service.proxy_addr()) else {
+            Self::emit(
+                sink,
+                Event::Data(Data::RouteSpeed(Err(
+                    "no HTTP or mixed proxy listener is deployed".to_owned(),
+                ))),
+            );
+            return;
+        };
+        let home = self.with_service(|service| service.paths().home().to_path_buf());
+        if mode == SpeedMode::Speedtest && crate::speedtest::find_binary(&home).is_none() {
+            Self::emit(sink, Event::Data(Data::SpeedtestMissing));
+            return;
+        }
+        let sink = sink.clone();
+        tokio::spawn(async move {
+            let result = measure_route_speed(&address, mode, &home).await;
+            let _ = sink.send(Event::Data(Data::RouteSpeed(result)));
         });
     }
 
@@ -771,12 +1103,24 @@ impl Executor {
     /// Serial on purpose: a proxy provider can hold hundreds of nodes, and a
     /// burst of parallel requests to the core is how a latency sweep becomes a
     /// timeout sweep.
-    fn spawn_all_tests(&self, sink: &EventSink) {
+    fn spawn_all_tests(&self, mode: ProbeMode, sink: &EventSink) {
         let Ok(client) = self.client() else {
             Self::emit(sink, Event::Failed("the core is not reachable".to_owned()));
             return;
         };
         let settings = self.with_service(|service| service.settings().test.clone());
+        let proxy_addr = self.with_service(|service| service.proxy_addr());
+        let endpoints = if mode == ProbeMode::Connect {
+            HashMap::new()
+        } else {
+            match self.with_service(|service| node_endpoints(service)) {
+                Ok(endpoints) => endpoints,
+                Err(error) => {
+                    Self::emit(sink, Event::Failed(error.to_string()));
+                    return;
+                }
+            }
+        };
         let sink = sink.clone();
         let epoch = self.test_epoch.load(Ordering::SeqCst);
         let current = Arc::clone(&self.test_epoch);
@@ -786,28 +1130,49 @@ impl Executor {
                 let _ = sink.send(Event::Failed("could not read the proxy list".to_owned()));
                 return;
             };
-            let mut targets: Vec<(TestKind, String)> = Vec::new();
+            let mut targets = BTreeSet::new();
             for view in inventory.proxies.values() {
-                if view.is_group() {
-                    targets.push((TestKind::GroupLatency, view.name.clone()));
-                } else if view.id.is_some() {
-                    targets.push((TestKind::NodeLatency, view.name.clone()));
+                if view.is_group() && view.name != "GLOBAL" {
+                    for member in view.members() {
+                        if inventory
+                            .proxies
+                            .get(member)
+                            .is_some_and(|node| node.id.is_some() && !node.is_group())
+                        {
+                            targets.insert(member.clone());
+                        }
+                    }
                 }
             }
 
             let mut tested = 0;
-            for (kind, target) in targets {
+            for target in targets {
                 if current.load(Ordering::SeqCst) != epoch {
                     return;
                 }
                 let _ = sink.send(Event::Data(Data::TestResult {
-                    kind,
+                    mode,
+                    kind: TestKind::NodeLatency,
                     target: target.clone(),
                     result: TestResult::Running,
                 }));
-                let result = run_one(&client, &settings, kind, &target).await;
+                let probe = ProbeRun {
+                    client: &client,
+                    settings: &settings,
+                    mode,
+                    endpoints: &endpoints,
+                    proxy_addr: proxy_addr.as_deref(),
+                    sink: &sink,
+                    epoch,
+                    current: &current,
+                };
+                let (result, _) = run_one(&probe, TestKind::NodeLatency, &target).await;
+                if current.load(Ordering::SeqCst) != epoch {
+                    return;
+                }
                 let _ = sink.send(Event::Data(Data::TestResult {
-                    kind,
+                    mode,
+                    kind: TestKind::NodeLatency,
                     target,
                     result,
                 }));
@@ -847,7 +1212,7 @@ async fn update_profiles(service: Arc<Mutex<Service>>, uids: Vec<String>, sink: 
     let fetcher = match SubscriptionFetcher::new(proxy) {
         Ok(fetcher) => fetcher,
         Err(error) => {
-            let _ = sink.send(Event::Failed(error.short()));
+            let _ = sink.send(Event::Failed(error.to_string()));
             return;
         }
     };
@@ -884,67 +1249,525 @@ fn due_remote_uids(items: &[PrfItem], now: i64) -> Vec<String> {
         .collect()
 }
 
-/// Measure one target.
-async fn run_one(
-    client: &Client,
-    settings: &TestSettings,
-    kind: TestKind,
-    target: &str,
-) -> TestResult {
-    let expected = if settings.expected_status.trim().is_empty() {
-        None
-    } else {
-        Some(settings.expected_status.as_str())
-    };
+type NodeEndpoints = HashMap<String, (String, u16)>;
 
-    match kind {
-        TestKind::NodeLatency => {
-            match client
-                .proxy_delay(target, &settings.url, settings.timeout_ms, expected)
-                .await
-            {
-                Ok(delay) => TestResult::Passed(format!("{delay} ms")),
-                Err(error) => TestResult::Failed(error.short()),
+fn node_endpoints(service: &Service) -> Result<NodeEndpoints, Error> {
+    let text = service.paths().read(&service.paths().runtime_config())?;
+    let config = cvt_core::model::config::Config::from_yaml(&text)?;
+    Ok(config
+        .proxies()
+        .into_iter()
+        .filter_map(|proxy| Some((proxy.name, (proxy.server?, proxy.port?))))
+        .collect())
+}
+
+struct ProbeRun<'a> {
+    client: &'a Client,
+    settings: &'a TestSettings,
+    mode: ProbeMode,
+    endpoints: &'a NodeEndpoints,
+    proxy_addr: Option<&'a str>,
+    sink: &'a EventSink,
+    epoch: u64,
+    current: &'a AtomicU64,
+}
+
+impl ProbeRun<'_> {
+    fn report(&self, name: String, delay: Option<u16>) {
+        if self.current.load(Ordering::SeqCst) == self.epoch {
+            let _ = self.sink.send(Event::Data(Data::NodeDelay {
+                mode: self.mode,
+                name,
+                delay,
+            }));
+        }
+    }
+
+    async fn node(&self, name: &str) -> Result<u16, String> {
+        match self.mode {
+            ProbeMode::Connect => {
+                let expected = (!self.settings.expected_status.trim().is_empty())
+                    .then_some(self.settings.expected_status.as_str());
+                let first = self
+                    .client
+                    .proxy_delay(name, &self.settings.url, self.settings.timeout_ms, expected)
+                    .await;
+                // The first request often pays for DNS, TLS and a cold proxy
+                // connection. Report a warmed request so a batch and a later
+                // single-node retest describe the same steady-state path.
+                let second = self
+                    .client
+                    .proxy_delay(name, &self.settings.url, self.settings.timeout_ms, expected)
+                    .await;
+                second.or(first).map_err(|error| error.to_string())
+            }
+            ProbeMode::Tcp => {
+                let (host, port) = self.endpoints.get(name).ok_or_else(|| {
+                    format!("{name} has no server endpoint in the deployed configuration")
+                })?;
+                tcp_connect_ms(host, *port, self.settings.timeout_ms).await
+            }
+            ProbeMode::Icmp => {
+                let (host, _) = self.endpoints.get(name).ok_or_else(|| {
+                    format!("{name} has no server endpoint in the deployed configuration")
+                })?;
+                icmp_echo(host, self.settings.timeout_ms).await
             }
         }
-        TestKind::GroupLatency => {
-            match client
-                .group_delay(target, &settings.url, settings.timeout_ms, expected)
-                .await
-            {
-                // A group answers with one delay per member that replied; a
-                // member that did not is simply absent, which is not an error.
-                Ok(delays) if delays.is_empty() => {
-                    TestResult::Failed("no member of the group answered".to_owned())
-                }
-                Ok(delays) => TestResult::Passed(format!("{} members answered", delays.len())),
-                Err(error) => TestResult::Failed(error.short()),
-            }
-        }
-        TestKind::CoreHealth => match client.version().await {
-            Ok(version) => TestResult::Passed(version.trimmed().to_owned()),
-            Err(error) => TestResult::Failed(error.short()),
-        },
-        TestKind::DnsLookup => match client.dns_query(target, "A").await {
-            Ok(answer) => {
-                TestResult::Passed(format!("answer of {} bytes", answer.to_string().len()))
-            }
-            Err(error) => TestResult::Failed(error.short()),
-        },
     }
 }
 
-/// Flatten the proxy inventory into rows: the groups first, then the nodes.
-///
-/// Groups come first because they are what a user chooses between; the nodes
-/// are what is inside them.
-fn node_rows(proxies: &BTreeMap<String, ProxyView>) -> Vec<NodeRow> {
-    let mut rows = Vec::new();
-    for view in proxies.values().filter(|view| view.is_group()) {
-        rows.push(NodeRow::from_group(view));
+async fn tcp_connect_ms(host: &str, port: u16, timeout_ms: u32) -> Result<u16, String> {
+    let began = Instant::now();
+    let stream = tokio::time::timeout(
+        Duration::from_millis(u64::from(timeout_ms)),
+        tokio::net::TcpStream::connect((host, port)),
+    )
+    .await
+    .map_err(|_| "TCP connection timed out".to_owned())?
+    .map_err(|error| error.to_string())?;
+    if stream
+        .local_addr()
+        .ok()
+        .is_some_and(|address| is_benchmark_address(address.ip()))
+        || stream
+            .peer_addr()
+            .ok()
+            .is_some_and(|address| is_benchmark_address(address.ip()))
+    {
+        return Err(
+            "TCP path uses a local TUN/fake-IP range; use CONNECT for proxy latency".to_owned(),
+        );
     }
-    for view in proxies.values().filter(|view| !view.is_group()) {
-        rows.push(NodeRow::from_member(view, "", false));
+    Ok(u16::try_from(began.elapsed().as_millis())
+        .unwrap_or(u16::MAX)
+        .max(1))
+}
+
+fn is_benchmark_address(address: std::net::IpAddr) -> bool {
+    matches!(address, std::net::IpAddr::V4(ip) if {
+        let octets = ip.octets();
+        octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
+    })
+}
+
+async fn icmp_echo(host: &str, timeout_ms: u32) -> Result<u16, String> {
+    if host.starts_with('-') {
+        return Err("invalid ICMP target".to_owned());
+    }
+    let mut command = tokio::process::Command::new("ping");
+    command.kill_on_drop(true);
+    #[cfg(windows)]
+    command.args(["-n", "1", "-w", &timeout_ms.to_string(), host]);
+    #[cfg(not(windows))]
+    command.args(["-n", "-c", "1", host]).env("LC_ALL", "C");
+    let output = tokio::time::timeout(
+        Duration::from_millis(u64::from(timeout_ms)),
+        command.output(),
+    )
+    .await
+    .map_err(|_| "ICMP echo timed out".to_owned())?
+    .map_err(|error| format!("could not run ping: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail: String = detail
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(160)
+            .collect();
+        return Err(if detail.is_empty() {
+            "ICMP echo did not answer".to_owned()
+        } else {
+            format!("ICMP echo failed: {detail}")
+        });
+    }
+    parse_ping_ms(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| "ping did not report a round-trip time".to_owned())
+}
+
+fn parse_ping_ms(output: &str) -> Option<u16> {
+    if output.contains("time<1ms") {
+        return Some(1);
+    }
+    let value = output
+        .split("time=")
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .trim_end_matches("ms")
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()?;
+    if !value.is_finite() || value.is_sign_negative() {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some((value.ceil().min(f64::from(u16::MAX)) as u16).max(1))
+}
+
+/// Measure one test-screen target and publish node results as they arrive.
+async fn run_one(probe: &ProbeRun<'_>, kind: TestKind, target: &str) -> (TestResult, usize) {
+    match kind {
+        TestKind::NodeLatency => {
+            let result = probe.node(target).await;
+            probe.report(target.to_owned(), result.as_ref().ok().copied());
+            (
+                match result {
+                    Ok(delay) => TestResult::Passed(format!("{delay} ms")),
+                    Err(error) => TestResult::Failed(error),
+                },
+                1,
+            )
+        }
+        TestKind::GroupLatency => {
+            let group = match probe.client.group(target).await {
+                Ok(group) => group,
+                Err(error) => return (TestResult::Failed(error.to_string()), 0),
+            };
+            let members = group.members().to_vec();
+            let count = members.len();
+            let mut results = stream::iter(members)
+                .map(|name| async move {
+                    let result = probe.node(&name).await;
+                    (name, result)
+                })
+                .buffer_unordered(probe.settings.concurrency.clamp(1, 16));
+            let mut answered = 0;
+            while let Some((name, result)) = results.next().await {
+                if probe.current.load(Ordering::SeqCst) != probe.epoch {
+                    return (TestResult::Failed("test cancelled".to_owned()), 0);
+                }
+                if result.is_ok() {
+                    answered += 1;
+                }
+                probe.report(name, result.ok());
+            }
+            (
+                if answered == 0 {
+                    TestResult::Failed("no member of the group answered".to_owned())
+                } else {
+                    TestResult::Passed(format!("{answered} members answered"))
+                },
+                count,
+            )
+        }
+        TestKind::Unlock(name) => {
+            let Some(address) = probe.proxy_addr else {
+                return (
+                    TestResult::Failed("no HTTP or mixed proxy listener is deployed".to_owned()),
+                    1,
+                );
+            };
+            let result = async {
+                let proxy = reqwest::Proxy::all(format!("http://{address}"))
+                    .map_err(|error| error.to_string())?;
+                let client = reqwest::Client::builder()
+                    .proxy(proxy)
+                    .timeout(Duration::from_secs(15))
+                    .build()
+                    .map_err(|error| error.to_string())?;
+                let item = crate::media_unlock::check_media_unlock_item(&client, name).await?;
+                let detail = match item.region {
+                    Some(region) => format!("{} · {region}", item.status),
+                    None => item.status,
+                };
+                if detail.starts_with("Yes") {
+                    Ok(detail)
+                } else {
+                    Err(detail)
+                }
+            }
+            .await;
+            (
+                match result {
+                    Ok(detail) => TestResult::Passed(detail),
+                    Err(error) => TestResult::Failed(error),
+                },
+                1,
+            )
+        }
+    }
+}
+
+/// Query the public exit from the same local proxy used by unlock checks.
+async fn fetch_exit_ip(address: &str) -> Result<IpInfo, String> {
+    let proxy =
+        reqwest::Proxy::all(format!("http://{address}")).map_err(|error| error.to_string())?;
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(Duration::from_secs(8))
+        .user_agent("clash-verge-tui/0.5")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut errors = Vec::new();
+    for (name, url) in [
+        ("ipapi.co", "https://ipapi.co/json/"),
+        ("ip.sb", "https://api.ip.sb/geoip"),
+    ] {
+        let result = async {
+            let response = client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .error_for_status()
+                .map_err(|e| e.to_string())?
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|e| e.to_string())?;
+            parse_exit_ip(&response)
+        }
+        .await;
+        match result {
+            Ok(info) => return Ok(info),
+            Err(error) => errors.push(format!("{name}: {error}")),
+        }
+    }
+    Err(errors.join("; "))
+}
+
+fn parse_exit_ip(response: &serde_json::Value) -> Result<IpInfo, String> {
+    let ip = response["ip"]
+        .as_str()
+        .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+        .ok_or_else(|| "IP lookup did not return an address".to_owned())?;
+    Ok(IpInfo {
+        ip: ip.to_owned(),
+        country: response["country_name"]
+            .as_str()
+            .or_else(|| response["country"].as_str())
+            .unwrap_or("-")
+            .to_owned(),
+        organization: response["org"]
+            .as_str()
+            .or_else(|| response["organization"].as_str())
+            .unwrap_or("-")
+            .to_owned(),
+    })
+}
+
+/// The chosen backend always uses the active Mihomo route.
+async fn measure_route_speed(
+    address: &str,
+    mode: SpeedMode,
+    home: &std::path::Path,
+) -> Result<String, String> {
+    if let Some(bytes) = mode.sample_bytes() {
+        return download_speed(Some(address), bytes)
+            .await
+            .map(|rate| format!("{rate:.1} Mbit/s ({} MB sample)", bytes / 1_000_000));
+    }
+    let binary = crate::speedtest::find_binary(home)
+        .ok_or_else(|| "speedtest-go is not installed".to_owned())?;
+    let output = tokio::time::timeout(
+        Duration::from_secs(45),
+        tokio::process::Command::new(binary)
+            .arg("--proxy")
+            .arg(format!("http://{address}"))
+            .arg("--saving-mode")
+            .arg("--no-upload")
+            .arg("--json")
+            .arg("--thread")
+            .arg("2")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let output = output
+        .map_err(|_| "speedtest-go timed out".to_owned())?
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            format!("speedtest-go exited with {}", output.status)
+        } else {
+            detail
+        });
+    }
+    let rate = speedtest_download_mbps(&output.stdout)
+        .ok_or_else(|| "speedtest-go returned no download rate".to_owned())?;
+    Ok(format!("{rate:.1} Mbit/s (speedtest-go)"))
+}
+
+/// `speedtest-go` JSON stores `dl_speed` as bytes per second.
+fn speedtest_download_mbps(stdout: &[u8]) -> Option<f64> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    let bytes_per_second = value["servers"][0]["dl_speed"].as_f64()?;
+    (bytes_per_second.is_finite() && bytes_per_second > 0.0)
+        .then_some(bytes_per_second * 8.0 / 1_000_000.0)
+}
+
+/// A bounded download through the deployed HTTP/mixed listener. The current
+/// routing mode and selected policy determine the exit; no group is mutated.
+async fn download_speed(proxy_addr: Option<&str>, sample_bytes: usize) -> Result<f64, String> {
+    let address =
+        proxy_addr.ok_or_else(|| "no HTTP or mixed proxy listener is deployed".to_owned())?;
+    let proxy =
+        reqwest::Proxy::all(format!("http://{address}")).map_err(|error| error.to_string())?;
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(Duration::from_secs(match sample_bytes {
+            0..=4_000_000 => 20,
+            4_000_001..=20_000_000 => 60,
+            _ => 180,
+        }))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let began = Instant::now();
+    let response = client
+        .get(format!(
+            "https://speed.cloudflare.com/__down?bytes={sample_bytes}"
+        ))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    let mut stream = response.bytes_stream();
+    let mut bytes = 0_usize;
+    while let Some(chunk) = stream.next().await {
+        bytes += chunk.map_err(|error| error.to_string())?.len();
+        if bytes >= sample_bytes {
+            break;
+        }
+    }
+    if bytes < sample_bytes / 2 {
+        return Err(format!("speed test returned only {bytes} bytes"));
+    }
+    Ok((bytes as f64 * 8.0) / began.elapsed().as_secs_f64() / 1_000_000.0)
+}
+
+/// Start or restart, keeping the service lock only for the local operation.
+fn launch_core(service: &Service, restart: bool) -> Result<(u32, String, Option<Client>), Error> {
+    let pid = if restart {
+        service.restart_core()?
+    } else {
+        service.start_core()?
+    };
+    let text = service.paths().read(&service.paths().runtime_config())?;
+    let configured_mode = cvt_core::model::config::Config::from_yaml(&text)?.mode();
+    let client = service.endpoint()?.map(Client::new).transpose()?;
+    Ok((pid, configured_mode, client))
+}
+
+/// Probe the listener after releasing the service lock.
+async fn ready_mode(launch: (u32, String, Option<Client>)) -> Result<(u32, String), Error> {
+    let (pid, configured_mode, client) = launch;
+    let Some(client) = client else {
+        return Ok((pid, configured_mode));
+    };
+    client.wait_until_ready().await?;
+    let mode = client
+        .configs()
+        .await
+        .ok()
+        .and_then(|config| config.mode)
+        .unwrap_or(configured_mode);
+    Ok((pid, mode))
+}
+
+/// Flatten selectable groups and their members into rows.
+///
+/// The core also reports internal adapters and an always-present GLOBAL group.
+/// They have no useful action in rule/direct mode and standalone adapters
+/// cannot be selected, so neither belongs in the interactive list.
+fn node_rows(
+    proxies: &BTreeMap<String, ProxyView>,
+    mode: Option<&str>,
+    group_order: &[String],
+) -> Vec<NodeRow> {
+    let mut rows = Vec::new();
+    let rank: HashMap<&str, usize> = group_order
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect();
+    let mut groups: Vec<_> = proxies
+        .values()
+        .filter(|view| view.is_group() && (view.name != "GLOBAL" || mode == Some("global")))
+        .collect();
+    groups.sort_by_key(|view| rank.get(view.name.as_str()).copied().unwrap_or(usize::MAX));
+    for view in groups {
+        rows.push(NodeRow::from_group(view));
+        for name in view.members() {
+            if let Some(member) = proxies.get(name) {
+                rows.push(NodeRow::from_member(
+                    member,
+                    &view.name,
+                    view.now.as_deref() == Some(name.as_str())
+                        || view.fixed.as_deref() == Some(name.as_str()),
+                ));
+            }
+        }
+    }
+    rows
+}
+
+/// Show the selected document while Mihomo is stopped. Live health and
+/// provider-expanded membership become available once the core starts.
+fn config_node_rows(config: &cvt_core::model::config::Config) -> Vec<NodeRow> {
+    use cvt_core::model::proxy::GroupKind;
+
+    let proxies = config.proxies();
+    let groups = config.proxy_groups();
+    let mut rows = Vec::new();
+    let mut referenced = HashSet::new();
+    for group in &groups {
+        let kind = match GroupKind::from_wire(&group.kind) {
+            GroupKind::Select => "Selector",
+            GroupKind::UrlTest => "URLTest",
+            GroupKind::Fallback => "Fallback",
+            GroupKind::LoadBalance => "LoadBalance",
+            GroupKind::Unknown => group.kind.as_str(),
+        };
+        rows.push(NodeRow {
+            name: group.name.clone(),
+            kind: kind.to_owned(),
+            group: None,
+            delay: None,
+            alive: false,
+            active: false,
+            is_group: true,
+            is_proxy: false,
+            members: group.proxies.len(),
+            selectable: false,
+        });
+        for name in &group.proxies {
+            referenced.insert(name.as_str());
+            let kind = proxies
+                .iter()
+                .find(|proxy| proxy.name == *name)
+                .map_or_else(
+                    || {
+                        groups
+                            .iter()
+                            .find(|candidate| candidate.name == *name)
+                            .map_or("builtin", |candidate| candidate.kind.as_str())
+                    },
+                    |proxy| proxy.kind.as_str(),
+                );
+            rows.push(NodeRow {
+                name: name.clone(),
+                kind: kind.to_owned(),
+                group: Some(group.name.clone()),
+                delay: None,
+                alive: false,
+                active: false,
+                is_group: false,
+                is_proxy: proxies.iter().any(|proxy| {
+                    proxy.name == *name && proxy.server.is_some() && proxy.port.is_some()
+                }),
+                members: 0,
+                selectable: false,
+            });
+        }
+    }
+    for proxy in &proxies {
+        if !referenced.contains(proxy.name.as_str()) {
+            rows.push(NodeRow::from_config_proxy(proxy));
+        }
     }
     rows
 }
@@ -1005,9 +1828,142 @@ fn open_editor(path: &std::path::Path) -> Result<(), Error> {
 }
 
 #[cfg(test)]
+mod speedtest_contract_tests {
+    use super::{parse_exit_ip, speedtest_download_mbps};
+
+    #[test]
+    fn speedtest_go_reports_bytes_per_second() {
+        let sample = br#"{"servers":[{"dl_speed":12500000.0}]}"#;
+        assert_eq!(speedtest_download_mbps(sample), Some(100.0));
+        assert_eq!(speedtest_download_mbps(b"{}"), None);
+        assert_eq!(
+            speedtest_download_mbps(br#"{"servers":[{"dl_speed":-1}]}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn exit_ip_parses_both_providers_and_rejects_error_objects() {
+        let ipapi = serde_json::json!({"ip":"203.0.113.7","country_name":"Example","org":"Net"});
+        let ipsb = serde_json::json!({"ip":"2001:db8::7","country":"Example","organization":"Net"});
+        assert_eq!(
+            parse_exit_ip(&ipapi).map(|info| info.organization),
+            Ok("Net".to_owned())
+        );
+        assert_eq!(
+            parse_exit_ip(&ipsb).map(|info| info.ip),
+            Ok("2001:db8::7".to_owned())
+        );
+        assert!(parse_exit_ip(&serde_json::json!({"ip":"rate limited"})).is_err());
+    }
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_icmp_round_trip_without_mistaking_packet_statistics_for_latency() {
+        assert_eq!(parse_ping_ms("64 bytes: time=12.4 ms\n1 packets"), Some(13));
+        assert_eq!(parse_ping_ms("64 bytes: time=0,8 ms"), Some(1));
+        assert_eq!(parse_ping_ms("Reply from 127.0.0.1: time<1ms"), Some(1));
+        assert_eq!(parse_ping_ms("1 packets transmitted, 0 received"), None);
+    }
+
+    #[tokio::test]
+    async fn tcp_probe_measures_an_open_listener_and_rejects_a_closed_one() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(tcp_connect_ms("127.0.0.1", port, 500).await.is_ok());
+        drop(listener);
+        assert!(tcp_connect_ms("127.0.0.1", 0, 500).await.is_err());
+    }
+
+    #[test]
+    fn benchmark_addresses_cannot_be_reported_as_direct_server_latency() {
+        use std::net::IpAddr;
+        assert!(is_benchmark_address(IpAddr::from([198, 18, 0, 1])));
+        assert!(is_benchmark_address(IpAddr::from([198, 19, 255, 255])));
+        assert!(!is_benchmark_address(IpAddr::from([198, 20, 0, 1])));
+    }
+
+    #[test]
+    fn live_inventory_places_each_member_under_its_group() {
+        let inventory: cvt_core::mihomo::types::ProxiesResponse = serde_json::from_value(
+            serde_json::json!({"proxies": {
+                "GROUP": {"name":"GROUP", "type":"Selector", "all":["node-a", "DIRECT"], "now":"node-a"},
+                "node-a": {"name":"node-a", "type":"Vless", "alive":true},
+                "DIRECT": {"name":"DIRECT", "type":"Direct", "alive":true}
+            }}),
+        )
+        .unwrap();
+        let rows = node_rows(&inventory.proxies, Some("rule"), &[]);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].is_group);
+        assert_eq!(rows[0].members, 2);
+        assert_eq!(rows[1].group.as_deref(), Some("GROUP"));
+        assert!(rows[1].active);
+        assert_eq!(rows[2].group.as_deref(), Some("GROUP"));
+    }
+
+    #[test]
+    fn internal_adapters_are_hidden_and_global_only_appears_in_global_mode() {
+        let inventory: cvt_core::mihomo::types::ProxiesResponse =
+            serde_json::from_value(serde_json::json!({"proxies": {
+                "GLOBAL": {"name":"GLOBAL", "type":"Selector", "all":["node-a"]},
+                "GROUP": {"name":"GROUP", "type":"Selector", "all":["node-a"]},
+                "node-a": {"name":"node-a", "type":"Vless"},
+                "COMPATIBLE": {"name":"COMPATIBLE", "type":"Compatible"},
+                "PASS": {"name":"PASS", "type":"Pass"},
+                "PASS-RULE": {"name":"PASS-RULE", "type":"PassRule"},
+                "REJECT-DROP": {"name":"REJECT-DROP", "type":"RejectDrop"}
+            }}))
+            .unwrap();
+        let rule = node_rows(&inventory.proxies, Some("rule"), &[]);
+        assert_eq!(rule.iter().filter(|row| row.is_group).count(), 1);
+        assert!(
+            rule.iter()
+                .all(|row| row.name != "GLOBAL" && row.name != "PASS")
+        );
+        let global = node_rows(&inventory.proxies, Some("global"), &[]);
+        assert_eq!(global.iter().filter(|row| row.is_group).count(), 2);
+        assert!(global.iter().any(|row| row.name == "GLOBAL"));
+        assert!(global.iter().all(|row| row.name != "COMPATIBLE"));
+    }
+
+    #[test]
+    fn live_group_order_matches_generated_configuration() {
+        let inventory: cvt_core::mihomo::types::ProxiesResponse =
+            serde_json::from_value(serde_json::json!({"proxies": {
+                "Alpha": {"name":"Alpha", "type":"Selector", "all":["node-a"]},
+                "Zulu": {"name":"Zulu", "type":"Selector", "all":["node-a"]},
+                "node-a": {"name":"node-a", "type":"Vless"}
+            }}))
+            .unwrap();
+        let order = vec!["Zulu".to_owned(), "Alpha".to_owned()];
+        let rows = node_rows(&inventory.proxies, Some("rule"), &order);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.is_group)
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Zulu", "Alpha"]
+        );
+    }
+
+    #[test]
+    fn selected_document_has_group_members_even_without_a_core() {
+        let config = cvt_core::model::config::Config::from_yaml(
+            "proxies:\n  - {name: node-a, type: vless}\nproxy-groups:\n  - {name: GROUP, type: select, proxies: [node-a, DIRECT]}\n",
+        )
+        .unwrap();
+        let rows = config_node_rows(&config);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].members, 2);
+        assert_eq!(rows[1].group.as_deref(), Some("GROUP"));
+        assert_eq!(rows[2].name, "DIRECT");
+    }
 
     #[test]
     fn all_due_selects_only_remote_profiles_whose_interval_elapsed() {

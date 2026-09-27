@@ -389,8 +389,10 @@ impl Service {
     /// Locate the core binary, honouring the configured override.
     #[must_use]
     pub fn core_binary(&self) -> Option<PathBuf> {
-        self.supervisor()
-            .locate(self.settings.core.binary.as_deref())
+        self.supervisor().locate_with(
+            self.settings.core.binary.as_deref(),
+            self.settings.core.use_managed,
+        )
     }
 
     /// Start the core using the generated configuration.
@@ -413,10 +415,11 @@ impl Service {
         })?;
         let config = self.paths.runtime_config();
         if !config.is_file() {
-            return Err(Error::invalid(
-                "runtime config",
-                "no configuration has been generated yet; apply a profile first",
-            ));
+            // Selecting a subscription makes it current but does not write a
+            // runtime document. Starting from a fresh home should complete
+            // that first apply, using the same validation as an explicit apply.
+            let outcome = self.generate()?;
+            self.pipeline().commit(&outcome, false)?;
         }
         let text = self.paths.read(&config)?;
         let parsed = Config::from_yaml(&text)?;
@@ -651,6 +654,15 @@ impl Service {
     /// reload whose cause cannot be undone reports *that* cause, never a
     /// failure of the rollback bookkeeping.
     pub async fn reload(&self, mode: ReloadMode) -> Result<ReloadOutcome> {
+        // Reload operates on an already deployed document. `start_core` may
+        // prepare a first document for the user, but doing that here would
+        // silently turn a reload of nothing into a new apply.
+        if !self.paths.runtime_config().is_file() {
+            return Err(Error::invalid(
+                "runtime config",
+                "no configuration has been generated yet; apply a profile first",
+            ));
+        }
         match mode {
             ReloadMode::Restart => return self.restart_with_rollback().await,
             ReloadMode::HotReload => {
@@ -663,7 +675,7 @@ impl Service {
         match self.hot_reload().await {
             Ok(()) => Ok(ReloadOutcome::HotReloaded),
             Err(reason) => {
-                let reason = reason.short();
+                let reason = reason.to_string();
                 match self.restart_with_rollback().await {
                     Ok(ReloadOutcome::Restarted { pid }) => Ok(ReloadOutcome::Restarted { pid }),
                     Ok(other) => Ok(other),
@@ -784,30 +796,7 @@ impl Service {
     /// [`Error::ControllerUnreachable`] when it never answers within the
     /// deadline.
     pub async fn wait_until_ready(&self) -> Result<()> {
-        let client = self.client()?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut last = String::from("no attempt made");
-        while std::time::Instant::now() < deadline {
-            // Bounded, not merely checked between calls. `client.version`
-            // carries the client's own timeout, so a core that accepts the
-            // connection and answers nothing could outlive this deadline.
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            match tokio::time::timeout(left, client.version()).await {
-                Ok(Ok(v)) => {
-                    tracing::info!(version = %v.trimmed(), "core is up");
-                    return Ok(());
-                }
-                Ok(Err(e)) => last = e.short(),
-                Err(_) => break,
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-        Err(Error::ControllerUnreachable {
-            endpoint: self
-                .endpoint()?
-                .map_or_else(|| "unknown".to_owned(), |e| e.describe()),
-            source: format!("the core did not become ready: {last}").into(),
-        })
+        self.client()?.wait_until_ready().await
     }
 }
 
@@ -999,6 +988,35 @@ rules:
         assert!(matches!(err, Error::CoreUnavailable { .. }), "{err:?}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn starting_a_selected_profile_generates_the_first_runtime_configuration() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let f = fixture();
+        f.seed();
+        let binary = f.service.paths().core_dir().join("mihomo");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nif [ \"$1\" = \"-t\" ]; then exit 0; fi\nsleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!f.service.paths().runtime_config().exists());
+
+        let started = f.service.start_core();
+        assert!(started.is_ok(), "{started:?}");
+        assert!(f.service.paths().runtime_config().is_file());
+        assert!(
+            f.service
+                .paths()
+                .read(&f.service.paths().runtime_config())
+                .unwrap()
+                .contains("MATCH,PROXY")
+        );
+        f.service.stop_core().unwrap();
+    }
+
     #[test]
     fn an_invalid_generated_configuration_is_refused_before_the_core_sees_it() {
         let f = fixture();
@@ -1051,7 +1069,16 @@ rules:
             .pipeline()
             .commit(&f.service.generate().unwrap(), false)
             .unwrap();
-        // Nothing listens on 127.0.0.1:9090 in the test environment.
+        // Reserve a private port for the whole wait. A fixed 9090 can belong
+        // to a real Mihomo process on the developer's machine, making this
+        // test pass or fail depending on unrelated local state.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let runtime = f.service.paths().runtime_config();
+        let document = f.service.paths().read(&runtime).unwrap();
+        assert!(document.contains("127.0.0.1:9090"));
+        let document =
+            document.replace("127.0.0.1:9090", &silent.local_addr().unwrap().to_string());
+        f.service.paths().write_atomic(&runtime, &document).unwrap();
         let err = f.service.wait_until_ready().await.unwrap_err();
         assert!(
             matches!(err, Error::ControllerUnreachable { .. }),

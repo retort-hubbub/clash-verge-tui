@@ -315,6 +315,12 @@ impl Supervisor {
     /// compiled themselves.
     #[must_use]
     pub fn locate(&self, explicit: Option<&Path>) -> Option<PathBuf> {
+        self.locate_with(explicit, true)
+    }
+
+    /// Find the core binary, respecting whether the user prefers the managed core.
+    #[must_use]
+    pub fn locate_with(&self, explicit: Option<&Path>, use_managed: bool) -> Option<PathBuf> {
         if let Some(p) = explicit.filter(|p| p.is_file()) {
             return Some(p.to_path_buf());
         }
@@ -324,9 +330,11 @@ impl Supervisor {
                 return Some(candidate);
             }
         }
-        let bundled = self.paths.core_dir().join(exe_name());
-        if bundled.is_file() {
-            return Some(bundled);
+        if use_managed {
+            let bundled = self.paths.core_dir().join(exe_name());
+            if bundled.is_file() {
+                return Some(bundled);
+            }
         }
         which(exe_name())
     }

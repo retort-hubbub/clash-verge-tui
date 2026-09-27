@@ -230,8 +230,8 @@ impl UserInfo {
         self.upload.saturating_add(self.download)
     }
 
-    /// Fraction of the quota consumed, `None` when unlimited and `0.0` when
-    /// the quota is already exhausted exactly.
+    /// Fraction of the quota consumed, `None` when unlimited and `1.0` when
+    /// the quota is exhausted or exceeded.
     #[must_use]
     pub fn used_fraction(&self) -> Option<f64> {
         (self.total > 0).then(|| (self.used() as f64 / self.total as f64).clamp(0.0, 1.0))

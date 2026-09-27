@@ -490,18 +490,18 @@ fn append_items(
 /// promises. That it may not apply at all is a separate answer, and one only
 /// the document can give.
 fn shape_conflict(list: &Path, set: &Path, value: &Value) -> Option<String> {
-    // A `null` asserts no shape at all: it is the merge's deletion convention,
-    // meaning "this key should not be there". `set: {rules: null}` beside
-    // `append: {rules: [...]}` was refused as "a path cannot be a list and a
-    // mapping at once" — while the pair applies, and applies twice the same,
-    // because the deletion runs first and the append then makes the list.
-    if value.is_null() {
-        return None;
-    }
     let list = list.segments();
     let set = set.segments();
 
     if list == set {
+        // A `null` asserts no shape at all: it is the merge's deletion convention,
+        // meaning "this key should not be there". `set: {rules: null}` beside
+        // `append: {rules: [...]}` was refused as "a path cannot be a list and a
+        // mapping at once" — while the pair applies, and applies twice the same,
+        // because the deletion runs first and the append then makes the list.
+        if value.is_null() {
+            return None;
+        }
         // The two write the same path. The list edit replaces whatever is
         // there with a list, so a `set` that puts something else there is
         // describing a document that cannot exist.

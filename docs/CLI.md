@@ -1,7 +1,7 @@
 # `clash-verge-tui` command line
 
-Everything the terminal interface can do, a script can do. This document is
-written for someone who has never seen the source: it lists every subcommand,
+This document describes the command line interface. It is written for someone
+who has never seen the source: it lists every subcommand,
 every flag, the JSON shape each command prints, and the exit codes a script
 should branch on.
 
@@ -9,9 +9,8 @@ should branch on.
 clash-verge-tui [OPTIONS] [COMMAND]
 ```
 
-Running it with **no subcommand** starts the terminal interface. Until that
-interface is wired into the binary, the command says so and exits `1`; every
-subcommand below works.
+Running it with **no subcommand** starts the terminal interface. It requires
+an interactive terminal; subcommands also work in pipes and scripts.
 
 ## Global options
 

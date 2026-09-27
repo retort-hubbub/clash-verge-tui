@@ -172,10 +172,10 @@ impl ProfileRow {
         }
     }
 
-    /// Quota usage as a percentage, when the provider reported a total.
+    /// Remaining quota as a percentage, when the provider reported a total.
     #[must_use]
     pub fn quota_label(&self) -> Option<String> {
-        let fraction = self.quota.used_fraction()?;
+        let fraction = 1.0 - self.quota.used_fraction()?;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         Some(format!("{:.0}%", fraction * 100.0))
     }
@@ -228,6 +228,8 @@ pub struct NodeRow {
     pub active: bool,
     /// `true` for group rows.
     pub is_group: bool,
+    /// A concrete proxy rather than a nested policy or built-in adapter.
+    pub is_proxy: bool,
     /// Member count, for groups.
     pub members: usize,
     /// Whether a selection can be pinned here.
@@ -242,10 +244,13 @@ impl NodeRow {
             name: view.name.clone(),
             kind: view.kind.clone(),
             group: None,
-            delay: view.latest_delay(),
+            // A group is a policy, not a server. Its API history does not
+            // describe the latency of every member in this list.
+            delay: None,
             alive: view.alive,
             active: false,
             is_group: true,
+            is_proxy: false,
             members: view.members().len(),
             selectable: view.is_selectable(),
         }
@@ -258,10 +263,15 @@ impl NodeRow {
             name: view.name.clone(),
             kind: view.kind.clone(),
             group: Some(group.to_owned()),
-            delay: view.latest_delay(),
+            delay: if view.is_group() {
+                None
+            } else {
+                view.latest_delay()
+            },
             alive: view.alive,
             active,
             is_group: false,
+            is_proxy: view.id.is_some() && !view.is_group(),
             members: 0,
             selectable: true,
         }
@@ -280,6 +290,7 @@ impl NodeRow {
             alive: false,
             active: false,
             is_group: false,
+            is_proxy: proxy.server.is_some() && proxy.port.is_some(),
             members: 0,
             selectable: false,
         }
@@ -503,6 +514,40 @@ pub struct TestRow {
     pub result: TestResult,
 }
 
+/// What a latency value measures. TCP and ICMP probe the server directly;
+/// CONNECT exercises the full proxy through Mihomo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProbeMode {
+    /// HTTP(S) request through the named Mihomo proxy.
+    Connect,
+    /// Direct TCP connection to the proxy server.
+    Tcp,
+    /// Direct ICMP echo to the proxy server.
+    Icmp,
+}
+
+impl ProbeMode {
+    /// The next selectable mode.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Connect => Self::Tcp,
+            Self::Tcp => Self::Icmp,
+            Self::Icmp => Self::Connect,
+        }
+    }
+
+    /// Short visible label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connect => "CONNECT",
+            Self::Tcp => "TCP",
+            Self::Icmp => "ICMP",
+        }
+    }
+}
+
 /// The kinds of check the tests screen offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestKind {
@@ -510,21 +555,27 @@ pub enum TestKind {
     GroupLatency,
     /// Measure one node.
     NodeLatency,
-    /// Re-read the core's version and capabilities.
-    CoreHealth,
-    /// Resolve a name through the core's own resolver.
-    DnsLookup,
+    /// Check whether a streaming or AI service is available through Mihomo.
+    Unlock(&'static str),
 }
 
 impl TestKind {
     /// Every kind, in the order the screen lists them.
     #[must_use]
-    pub fn all() -> [Self; 4] {
+    pub fn all() -> [Self; 12] {
         [
-            Self::GroupLatency,
-            Self::NodeLatency,
-            Self::CoreHealth,
-            Self::DnsLookup,
+            Self::Unlock("哔哩哔哩大陆"),
+            Self::Unlock("哔哩哔哩港澳台"),
+            Self::Unlock("ChatGPT Web"),
+            Self::Unlock("Claude"),
+            Self::Unlock("Gemini"),
+            Self::Unlock("YouTube Premium"),
+            Self::Unlock("Bahamut Anime"),
+            Self::Unlock("Netflix"),
+            Self::Unlock("Disney+"),
+            Self::Unlock("Prime Video"),
+            Self::Unlock("Spotify"),
+            Self::Unlock("TikTok"),
         ]
     }
 
@@ -534,8 +585,7 @@ impl TestKind {
         match self {
             Self::GroupLatency => "group latency",
             Self::NodeLatency => "node latency",
-            Self::CoreHealth => "core health",
-            Self::DnsLookup => "dns lookup",
+            Self::Unlock(name) => name,
         }
     }
 
@@ -544,13 +594,10 @@ impl TestKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::GroupLatency => {
-                "asks the core to test every member of a group through its own health-check URL"
+                "tests each member with the selected probe method and updates results as they arrive"
             }
-            Self::NodeLatency => "opens a connection to the node and measures how long it takes",
-            Self::CoreHealth => "reads the core's version and reports which optional routes exist",
-            Self::DnsLookup => {
-                "resolves a name through the core's resolver, so fake-IP mode shows the synthetic address"
-            }
+            Self::NodeLatency => "measures one node with the selected probe method",
+            Self::Unlock(_) => "checks regional availability through the current Mihomo route",
         }
     }
 }
@@ -611,6 +658,7 @@ pub fn nodes_from_config(config: &Config) -> Vec<NodeRow> {
             alive: false,
             active: false,
             is_group: true,
+            is_proxy: false,
             members: group.proxies.len(),
             selectable: group.group_kind().is_selectable(),
         });
@@ -627,6 +675,9 @@ pub fn nodes_from_config(config: &Config) -> Vec<NodeRow> {
                 alive: false,
                 active: false,
                 is_group: false,
+                is_proxy: proxies
+                    .iter()
+                    .any(|p| p.name == *member && p.server.is_some() && p.port.is_some()),
                 members: 0,
                 selectable: false,
             });
@@ -667,6 +718,7 @@ pub fn nodes_from_core(groups: &[ProxyView], all: &[ProxyView]) -> Vec<NodeRow> 
                     alive: false,
                     active: false,
                     is_group: false,
+                    is_proxy: false,
                     members: 0,
                     selectable: false,
                 },
@@ -701,11 +753,13 @@ mod tests {
     #[test]
     fn a_group_row_reports_its_member_count_and_selectability() {
         let row = NodeRow::from_group(&view(json!({
-            "name": "PROXY", "type": "Selector", "all": ["a", "b", "c"], "now": "a"
+            "name": "PROXY", "type": "Selector", "all": ["a", "b", "c"], "now": "a",
+            "history": [{"time": "2026-01-01T00:00:00Z", "delay": 42}]
         })));
         assert!(row.is_group);
         assert_eq!(row.members, 3);
         assert!(row.selectable);
+        assert_eq!(row.delay, None, "a policy has no single node latency");
         assert_eq!(row.group_kind_label(), "select");
     }
 
@@ -927,13 +981,17 @@ rules: [MATCH,PROXY]
     fn quota_is_only_reported_when_the_provider_gave_a_total() {
         let mut item = PrfItem::remote("R1", "a", "https://x");
         item.extra = cvt_core::profile::item::UserInfo {
-            upload: 1,
+            upload: 0,
             download: 1,
             total: 4,
             expire: 0,
         };
         let row = ProfileRow::from_item(&item, false, false);
-        assert_eq!(row.quota_label().as_deref(), Some("50%"));
+        assert_eq!(row.quota_label().as_deref(), Some("75%"));
+
+        item.extra.download = 150;
+        let exhausted = ProfileRow::from_item(&item, false, false);
+        assert_eq!(exhausted.quota_label().as_deref(), Some("0%"));
 
         let unlimited =
             ProfileRow::from_item(&PrfItem::remote("R2", "b", "https://y"), false, false);
@@ -981,7 +1039,7 @@ rules: [MATCH,PROXY]
             assert!(!kind.label().is_empty());
             assert!(!kind.description().is_empty());
         }
-        assert_eq!(TestKind::all().len(), 4);
+        assert_eq!(TestKind::all().len(), 12);
     }
 
     #[test]

@@ -24,7 +24,7 @@
 //! [`StatusKind::Warning`] instead of failing silently, because "the key did
 //! nothing" is the worst answer a keyboard-driven program can give.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -37,7 +37,7 @@ use cvt_core::settings::{Language, Settings};
 use crate::action::{Action, Screen};
 use crate::keys::Keymap;
 use crate::row::{
-    ConnectionRow, LogRow, NodeRow, ProfileRow, RuleRow, TestKind, TestResult, TestRow,
+    ConnectionRow, LogRow, NodeRow, ProbeMode, ProfileRow, RuleRow, TestKind, TestResult, TestRow,
 };
 use crate::state::{Filterable, LogBuffer, Metrics, SortOrder, Table, contains_ignore_case};
 use crate::theme::Theme;
@@ -45,11 +45,12 @@ use crate::theme::Theme;
 /// How long a transient status message stays on screen.
 ///
 /// Long enough to read a sentence, short enough that it does not keep covering
-/// the footer. Errors ignore this and stay until something replaces them.
+/// the footer. The full latest message remains available through `m`.
 pub const STATUS_TTL: Duration = Duration::from_secs(4);
 
 /// How many ticks pass between background polls of the running core.
 pub const POLL_EVERY: u64 = 20;
+const NODE_HEALTH_TTL: Duration = Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
 // effects
@@ -75,6 +76,8 @@ pub enum Effect {
     Quit,
     /// Re-read everything a screen shows.
     Refresh(Screen),
+    /// Force a fresh exit-IP lookup from Home.
+    RefreshIp,
     /// Read the profile store into [`Data::Profiles`].
     LoadProfiles,
     /// Make a profile the base document and regenerate.
@@ -100,6 +103,8 @@ pub enum Effect {
         /// How the change should reach the core.
         mode: ReloadMode,
     },
+    /// Generate the selected profile without starting the core.
+    PrepareConfig,
     /// Restore the most recent snapshot.
     RollbackConfig,
     /// Delete a profile and its document.
@@ -144,24 +149,40 @@ pub enum Effect {
     TestNode {
         /// Node name.
         name: String,
+        /// Probe semantics.
+        mode: ProbeMode,
     },
     /// Measure every member of a group.
     TestGroup {
         /// Group name.
         group: String,
+        /// Probe semantics.
+        mode: ProbeMode,
     },
     /// Measure every node the core knows about.
-    TestAllNodes,
+    TestAllNodes {
+        /// Probe semantics.
+        mode: ProbeMode,
+    },
+    /// Measure download speed through the currently active proxy route.
+    TestRouteSpeed {
+        /// Which backend and sample size to use.
+        mode: SpeedMode,
+    },
+    /// Install speedtest-go after explicit confirmation.
+    InstallSpeedtestGo,
     /// Run one entry of the tests screen.
     RunTest {
         /// Which check to run.
         kind: TestKind,
         /// What to run it against.
         target: String,
+        /// Probe semantics for latency checks.
+        mode: ProbeMode,
     },
     /// Abandon the running test batch.
     CancelTests,
-    /// Forget cached latency results.
+    /// Clear cached unlock-check results.
     ClearTestResults,
     /// Drop one connection.
     CloseConnection {
@@ -184,6 +205,11 @@ pub enum Effect {
     },
     /// Change the core's minimum log level.
     SetCoreLogLevel(LogLevel),
+    /// Change the running core's routing mode.
+    SetCoreMode {
+        /// `rule`, `global` or `direct`.
+        mode: String,
+    },
     /// Launch the core with the generated configuration.
     StartCore,
     /// Stop the core process.
@@ -233,12 +259,14 @@ impl Effect {
             Self::Startup => "startup",
             Self::Quit => "quit",
             Self::Refresh(_) => "refresh",
+            Self::RefreshIp => "refresh IP",
             Self::LoadProfiles => "load profiles",
             Self::SwitchProfile { .. } => "switch profile",
             Self::UpdateProfiles { .. } => "update profiles",
             Self::SetChain { .. } => "save chain",
             Self::PreviewConfig => "preview config",
             Self::ApplyConfig { .. } => "apply config",
+            Self::PrepareConfig => "prepare config",
             Self::RollbackConfig => "roll back",
             Self::DeleteProfile { .. } => "delete profile",
             Self::RenameProfile { .. } => "rename profile",
@@ -249,7 +277,9 @@ impl Effect {
             Self::ClearNodePin { .. } => "clear pin",
             Self::TestNode { .. } => "test node",
             Self::TestGroup { .. } => "test group",
-            Self::TestAllNodes => "test all nodes",
+            Self::TestAllNodes { .. } => "test all nodes",
+            Self::TestRouteSpeed { .. } => "route speed",
+            Self::InstallSpeedtestGo => "install speedtest-go",
             Self::RunTest { .. } => "run test",
             Self::CancelTests => "cancel tests",
             Self::ClearTestResults => "clear results",
@@ -258,10 +288,11 @@ impl Effect {
             Self::ToggleRule { .. } => "toggle rule",
             Self::UpdateRuleProviders { .. } => "update rule sets",
             Self::SetCoreLogLevel(_) => "set log level",
+            Self::SetCoreMode { .. } => "set route mode",
             Self::StartCore => "start core",
             Self::StopCore => "stop core",
             Self::RestartCore => "restart core",
-            Self::UpgradeCore => "upgrade core",
+            Self::UpgradeCore => "install managed core",
             Self::UpdateGeo => "update geo databases",
             Self::FlushCaches => "flush caches",
             Self::SaveSettings { .. } => "save settings",
@@ -381,8 +412,16 @@ pub enum Data {
     Memory(u64),
     /// What the supervisor reports about the core.
     Core(CoreStatus),
+    /// Routing mode reported by the running core.
+    CoreMode(String),
     /// The core's version string.
     Version(String),
+    /// Public exit IP, obtained through Mihomo.
+    IpInfo(IpInfo),
+    /// The exit-IP lookup began.
+    IpLookupStarted,
+    /// Every configured exit-IP service failed.
+    IpLookupFailed(String),
     /// Settings read from disk.
     Settings(Box<Settings>),
     /// A preview of the generated configuration.
@@ -391,6 +430,8 @@ pub enum Data {
     ImportSources(Vec<PathBuf>),
     /// One test finished, or started.
     TestResult {
+        /// Probe method in effect when this test started.
+        mode: ProbeMode,
         /// Which check it was.
         kind: TestKind,
         /// What it ran against.
@@ -398,8 +439,86 @@ pub enum Data {
         /// How it ended.
         result: TestResult,
     },
+    /// Current route throughput measurement finished.
+    RouteSpeed(Result<String, String>),
+    /// Selected speedtest-go mode requires an installed backend.
+    SpeedtestMissing,
+    /// A node probe completed; every visible occurrence of that node updates.
+    NodeDelay {
+        /// Probe semantics.
+        mode: ProbeMode,
+        /// Node name.
+        name: String,
+        /// Measured milliseconds, or no answer.
+        delay: Option<u16>,
+    },
     /// A note from the binary that is worth showing but is not a failure.
     Notice(String),
+}
+
+/// Exit IP information returned through the running proxy route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpInfo {
+    /// Public IP of the current route.
+    pub ip: String,
+    /// Country or region reported by the lookup service.
+    pub country: String,
+    /// Network operator, if provided.
+    pub organization: String,
+}
+
+/// A route throughput backend and its download size, if applicable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeedMode {
+    /// A small, low-data sample.
+    Sample4,
+    /// A medium sample.
+    Sample20,
+    /// A large sample.
+    Sample100,
+    /// The external speedtest-go backend.
+    Speedtest,
+}
+
+impl SpeedMode {
+    /// Labels are semantic keys translated by the TUI at display time.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Sample4 => "download sample · 4 MB",
+            Self::Sample20 => "download sample · 20 MB",
+            Self::Sample100 => "download sample · 100 MB",
+            Self::Speedtest => "speedtest-go",
+        }
+    }
+
+    /// Requested sample bytes. The external backend manages its own samples.
+    pub const fn sample_bytes(self) -> Option<usize> {
+        match self {
+            Self::Sample4 => Some(4_000_000),
+            Self::Sample20 => Some(20_000_000),
+            Self::Sample100 => Some(100_000_000),
+            Self::Speedtest => None,
+        }
+    }
+
+    const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Sample4),
+            1 => Some(Self::Sample20),
+            2 => Some(Self::Sample100),
+            3 => Some(Self::Speedtest),
+            _ => None,
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Sample4 => 0,
+            Self::Sample20 => 1,
+            Self::Sample100 => 2,
+            Self::Speedtest => 3,
+        }
+    }
 }
 
 /// Something the binary finished.
@@ -440,6 +559,8 @@ pub enum Done {
     ProfileDeleted {
         /// What it was called.
         name: String,
+        /// Whether it was the active base profile.
+        was_current: bool,
     },
     /// A profile was renamed.
     ProfileRenamed {
@@ -450,6 +571,10 @@ pub enum Done {
     ProfileCreated {
         /// Its name.
         name: String,
+        /// Its UID, if known.
+        uid: Option<String>,
+        /// Whether it was created from a URL.
+        is_remote: bool,
     },
     /// Profiles were imported from another installation.
     ProfilesImported {
@@ -504,8 +629,21 @@ pub enum Done {
         /// The new process id.
         pid: u32,
     },
+    /// The live routing mode changed.
+    CoreModeChanged {
+        /// The mode now running.
+        mode: String,
+    },
     /// A newer core was installed.
-    CoreUpgraded,
+    CoreUpgraded {
+        /// The new version string.
+        version: String,
+    },
+    /// Optional route speed backend was installed and verified.
+    SpeedtestInstalled {
+        /// Release tag reported by GitHub.
+        version: String,
+    },
     /// The geo databases were refreshed.
     GeoUpdated,
     /// The fake-IP and DNS caches were cleared.
@@ -560,14 +698,6 @@ pub enum StatusKind {
     Error,
 }
 
-impl StatusKind {
-    /// Whether a message of this kind disappears on its own.
-    #[must_use]
-    pub fn expires(self) -> bool {
-        !matches!(self, Self::Error)
-    }
-}
-
 /// One line of feedback for the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
@@ -594,10 +724,10 @@ impl Status {
     ///
     /// Transient messages carry a timestamp so that a burst of them cannot
     /// pile up: the newest replaces the previous one and goes away by itself.
-    /// An error is not a passing note, so it stays until it is replaced.
+    /// The complete message is retained separately after the footer expires.
     #[must_use]
     pub fn is_expired_at(&self, now: Instant) -> bool {
-        self.kind.expires() && now.duration_since(self.at) >= STATUS_TTL
+        now.duration_since(self.at) >= STATUS_TTL
     }
 }
 
@@ -672,6 +802,17 @@ pub enum Overlay {
         /// First line on screen.
         scroll: usize,
     },
+    /// A modal displaying a full status or error message.
+    Message {
+        /// Popup title.
+        title: String,
+        /// Full message text.
+        text: String,
+        /// Message severity.
+        kind: StatusKind,
+        /// First rendered row on screen.
+        scroll: usize,
+    },
 }
 
 impl Overlay {
@@ -681,7 +822,9 @@ impl Overlay {
         match self {
             Self::Prompt { label, .. } => label.clone(),
             Self::Confirm { question, .. } => question.clone(),
-            Self::Picker { title, .. } | Self::Preview { title, .. } => title.clone(),
+            Self::Picker { title, .. }
+            | Self::Preview { title, .. }
+            | Self::Message { title, .. } => title.clone(),
         }
     }
 }
@@ -830,6 +973,14 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             value: yes_no(settings.core.rollback_on_failure),
             editable: yes_no(settings.core.rollback_on_failure),
             help: "restore the last snapshot when the core refuses the new one",
+            kind: SettingKind::Bool,
+        },
+        SettingRow {
+            key: "core.use_managed",
+            label: "use managed core",
+            value: yes_no(settings.core.use_managed),
+            editable: yes_no(settings.core.use_managed),
+            help: "use TUI-managed core in ~/.config/clash-verge-tui/core/mihomo instead of local/system core",
             kind: SettingKind::Bool,
         },
         SettingRow {
@@ -1068,6 +1219,10 @@ fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
             settings.core.rollback_on_failure = !settings.core.rollback_on_failure;
             true
         }
+        "core.use_managed" => {
+            settings.core.use_managed = !settings.core.use_managed;
+            true
+        }
         "ui.refresh_ms" => {
             let next = step_number(
                 i64::try_from(settings.ui.refresh_ms).unwrap_or(i64::MAX),
@@ -1193,7 +1348,7 @@ fn set_setting_text(settings: &mut Settings, key: &str, text: &str) -> Result<()
         Ok(()) => Ok(()),
         Err(error) => {
             *settings = before;
-            Err(error.short())
+            Err(error.to_string())
         }
     }
 }
@@ -1443,8 +1598,22 @@ pub struct App {
     pub metrics: Metrics,
     /// What the supervisor last reported.
     pub core: CoreStatus,
+    /// Routing mode reported by Mihomo's live configuration.
+    pub core_mode: Option<String>,
     /// The core's version, once the binary has read it.
     pub version: Option<String>,
+    /// Exit IP information for the active route.
+    pub ip_info: Option<IpInfo>,
+    /// Last lookup error, shown on Home instead of silently dropping it.
+    pub ip_error: Option<String>,
+    /// When the last successful lookup completed.
+    pub ip_updated_at: Option<Instant>,
+    /// Whether a lookup is still pending.
+    pub ip_refreshing: bool,
+    /// Last throughput measurement for the current route.
+    pub route_speed: Option<String>,
+    /// Last chosen route speed backend and size.
+    pub speed_mode: SpeedMode,
     /// The settings, with any unsaved edits.
     pub settings: Settings,
     /// Whether the settings differ from what is on disk.
@@ -1457,16 +1626,21 @@ pub struct App {
     pub preview: Option<Preview>,
     /// How the connection table is ordered.
     pub connection_sort: ConnectionSort,
-    /// How the proxies list is ordered; a finished measurement batch reorders
-    /// it fastest-first, because that is what the user just asked to know.
+    /// How members within each proxy group are ordered. Group headings keep
+    /// their order from the generated configuration.
     pub node_sort: SortOrder,
+    /// Latency method selected for both Proxies and Tests.
+    pub probe_mode: ProbeMode,
     /// Whether disabled rules are listed.
     pub show_disabled_rules: bool,
     status: Option<Status>,
+    last_status: Option<Status>,
     ticks: u64,
     quit: bool,
     chain: Vec<String>,
     all_nodes: Vec<NodeRow>,
+    node_delays: HashMap<(ProbeMode, String), Option<u16>>,
+    node_health: HashMap<String, (bool, Instant)>,
     expanded: Vec<String>,
     all_rules: Vec<RuleRow>,
     rule_providers: Vec<String>,
@@ -1474,6 +1648,38 @@ pub struct App {
     in_flight: Option<usize>,
     frozen: Option<usize>,
     loaded: Vec<Screen>,
+}
+
+/// Preserve the tree: only the contiguous children following a group may move.
+fn sort_group_members(rows: &mut [NodeRow], order: SortOrder) {
+    if !matches!(
+        order,
+        SortOrder::LatencyAscending | SortOrder::LatencyDescending
+    ) {
+        return;
+    }
+    let mut index = 0;
+    while index < rows.len() {
+        if !rows[index].is_group {
+            index += 1;
+            continue;
+        }
+        let group = rows[index].name.clone();
+        let start = index + 1;
+        let mut end = start;
+        while end < rows.len() && rows[end].group.as_deref() == Some(group.as_str()) {
+            end += 1;
+        }
+        rows[start..end].sort_by(|a, b| match order {
+            SortOrder::LatencyAscending => a
+                .delay
+                .unwrap_or(u16::MAX)
+                .cmp(&b.delay.unwrap_or(u16::MAX)),
+            SortOrder::LatencyDescending => b.delay.unwrap_or(0).cmp(&a.delay.unwrap_or(0)),
+            SortOrder::Natural | SortOrder::TrafficDescending => std::cmp::Ordering::Equal,
+        });
+        index = end;
+    }
 }
 
 impl App {
@@ -1489,6 +1695,12 @@ impl App {
         crate::i18n::text(self.language(), english)
     }
 
+    /// Format a status message, translating dynamic patterns in the chosen language.
+    #[must_use]
+    pub fn format_status_text(&self, text: &str) -> String {
+        crate::i18n::format_status(self.language(), text)
+    }
+
     /// Translate a context-specific interface label by its stable identity.
     #[must_use]
     pub(crate) fn tr_key(&self, key: crate::i18n::TextKey) -> &'static str {
@@ -1497,11 +1709,12 @@ impl App {
 
     /// A fresh application showing the dashboard, with no data.
     ///
-    /// Reads nothing: the settings shown are the defaults until the binary
-    /// answers the first refresh with [`Data::Settings`].
+    /// The settings shown are loaded from the home directory, or the defaults
+    /// if not present, and updated whenever [`Data::Settings`] arrives.
     #[must_use]
     pub fn new(home: PathBuf, theme: Theme) -> Self {
-        let settings = Settings::default();
+        let settings =
+            cvt_core::Settings::load(&cvt_core::AppPaths::new(&home)).unwrap_or_default();
         let log_level = settings.ui.log_level;
         let settings_rows = Table::from_items(setting_rows(&settings));
         let mut app = Self {
@@ -1519,7 +1732,14 @@ impl App {
             logs: LogBuffer::new(LOG_CAPACITY),
             metrics: Metrics::new(METRIC_SAMPLES),
             core: CoreStatus::Stopped,
+            core_mode: None,
             version: None,
+            ip_info: None,
+            ip_error: None,
+            ip_updated_at: None,
+            ip_refreshing: false,
+            route_speed: None,
+            speed_mode: SpeedMode::Sample4,
             settings,
             settings_dirty: false,
             log_level,
@@ -1527,12 +1747,16 @@ impl App {
             preview: None,
             connection_sort: ConnectionSort::Natural,
             node_sort: SortOrder::Natural,
+            probe_mode: ProbeMode::Connect,
             show_disabled_rules: false,
             status: None,
+            last_status: None,
             ticks: 0,
             quit: false,
             chain: Vec::new(),
             all_nodes: Vec::new(),
+            node_delays: HashMap::new(),
+            node_health: HashMap::new(),
             expanded: Vec::new(),
             all_rules: Vec::new(),
             rule_providers: Vec::new(),
@@ -1543,6 +1767,30 @@ impl App {
         };
         app.rebuild_tests();
         app
+    }
+
+    /// A summary of group selections; rules may choose among these per connection.
+    #[must_use]
+    pub fn selected_proxy_summary(&self) -> String {
+        let selected: Vec<_> = self
+            .all_nodes
+            .iter()
+            .filter(|row| row.active && row.group.is_some())
+            .take(2)
+            .map(|row| format!("{}: {}", row.group.as_deref().unwrap_or_default(), row.name))
+            .collect();
+        if selected.is_empty() {
+            "-".to_owned()
+        } else {
+            selected.join(" · ")
+        }
+    }
+
+    fn clear_ip(&mut self) {
+        self.ip_info = None;
+        self.ip_error = None;
+        self.ip_updated_at = None;
+        self.ip_refreshing = false;
     }
 
     // -- observable state ---------------------------------------------------
@@ -1559,6 +1807,12 @@ impl App {
         self.status
             .as_ref()
             .filter(|s| !s.is_expired_at(Instant::now()))
+    }
+
+    /// The most recent status message shown, even if expired.
+    #[must_use]
+    pub fn last_status(&self) -> Option<&Status> {
+        self.last_status.as_ref()
     }
 
     /// The explicit patch chain, in application order.
@@ -1671,6 +1925,12 @@ impl App {
     pub fn on_tick(&mut self) -> Vec<Effect> {
         self.ticks = self.ticks.wrapping_add(1);
         self.expire_status();
+        let before = self.node_health.len();
+        self.node_health
+            .retain(|_, (_, at)| at.elapsed() < NODE_HEALTH_TTL);
+        if self.node_health.len() != before {
+            self.rebuild_nodes();
+        }
         if self.core.is_running() && self.ticks.is_multiple_of(POLL_EVERY) {
             return Self::refresh_effects(self.screen);
         }
@@ -1697,6 +1957,9 @@ impl App {
         }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                if mouse.row == self.viewport.1.saturating_sub(1) {
+                    return self.show_last_message();
+                }
                 if let Some(screen) = crate::ui::tab_at(self, mouse.column, mouse.row) {
                     return self.goto(screen);
                 }
@@ -1733,25 +1996,61 @@ impl App {
     }
 
     fn on_overlay_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            let Some(overlay) = self.overlay.clone() else {
+                return Vec::new();
+            };
+            match overlay {
+                Overlay::Prompt { .. } => {
+                    if let Some(accept) = crate::ui::prompt_choice_at(self, mouse.column, mouse.row)
+                    {
+                        let key = if accept { KeyCode::Enter } else { KeyCode::Esc };
+                        return self.on_overlay_key(KeyEvent::new(key, KeyModifiers::NONE));
+                    }
+                }
+                Overlay::Confirm { question, .. } => {
+                    if let Some(accept) =
+                        crate::ui::confirm_choice_at(self, &question, mouse.column, mouse.row)
+                    {
+                        let key = if accept { KeyCode::Enter } else { KeyCode::Esc };
+                        return self.on_overlay_key(KeyEvent::new(key, KeyModifiers::NONE));
+                    }
+                }
+                Overlay::Picker {
+                    title,
+                    items,
+                    selected,
+                } => {
+                    if let Some(index) = crate::ui::picker_item_at(
+                        self.viewport,
+                        items.len(),
+                        selected,
+                        mouse.column,
+                        mouse.row,
+                    ) {
+                        self.overlay = None;
+                        return self.choose(&title, &items, index);
+                    }
+                }
+                Overlay::Preview { .. } | Overlay::Message { .. } => {
+                    self.overlay = None;
+                }
+            }
+            return Vec::new();
+        }
         let Some(overlay) = self.overlay.as_mut() else {
             return Vec::new();
         };
         match (overlay, mouse.kind) {
             (
-                Overlay::Picker {
-                    items, selected, ..
-                },
-                MouseEventKind::Down(MouseButton::Left),
+                Overlay::Message { scroll, .. } | Overlay::Preview { scroll, .. },
+                MouseEventKind::ScrollUp,
             ) => {
-                if let Some(index) = crate::ui::picker_item_at(
-                    self.viewport,
-                    items.len(),
-                    *selected,
-                    mouse.column,
-                    mouse.row,
-                ) {
-                    *selected = index;
-                }
+                *scroll = scroll.saturating_sub(3);
+            }
+            (Overlay::Message { text, scroll, .. }, MouseEventKind::ScrollDown) => {
+                let last = crate::ui::message_scroll_limit(self.viewport, text);
+                *scroll = scroll.saturating_add(3).min(last);
             }
             (Overlay::Picker { selected, .. }, MouseEventKind::ScrollUp) => {
                 *selected = selected.saturating_sub(3);
@@ -1765,9 +2064,6 @@ impl App {
                 *selected = selected
                     .saturating_add(3)
                     .min(items.len().saturating_sub(1));
-            }
-            (Overlay::Preview { scroll, .. }, MouseEventKind::ScrollUp) => {
-                *scroll = scroll.saturating_sub(3);
             }
             (Overlay::Preview { lines, scroll, .. }, MouseEventKind::ScrollDown) => {
                 *scroll = scroll.saturating_add(3).min(lines.len().saturating_sub(1));
@@ -1880,6 +2176,31 @@ impl App {
                     }
                     None => self.set_status(StatusKind::Info, "preview closed"),
                 }
+                Vec::new()
+            }
+            Overlay::Message {
+                title,
+                text,
+                kind,
+                scroll,
+            } => {
+                let limit = crate::ui::message_scroll_limit(self.viewport, &text);
+                let next = match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => return Vec::new(),
+                    KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1).min(limit),
+                    KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
+                    KeyCode::PageDown => scroll.saturating_add(self.visible_rows()).min(limit),
+                    KeyCode::PageUp => scroll.saturating_sub(self.visible_rows()),
+                    KeyCode::Home => 0,
+                    KeyCode::End => limit,
+                    _ => scroll,
+                };
+                self.overlay = Some(Overlay::Message {
+                    title,
+                    text,
+                    kind,
+                    scroll: next,
+                });
                 Vec::new()
             }
         }
@@ -2098,7 +2419,10 @@ impl App {
             Action::RollbackConfig => {
                 "restore the previous generated configuration and restart the core?".to_owned()
             }
-            Action::UpgradeCore => "download and replace the core binary?".to_owned(),
+            Action::UpgradeCore => "download and install the latest managed core?".to_owned(),
+            Action::InstallSpeedtestGo => {
+                "download and install speedtest-go in the application directory?".to_owned()
+            }
             other => format!("{}?", other.label()),
         }
     }
@@ -2120,12 +2444,17 @@ impl App {
             Action::PreviousScreen => self.goto(self.screen.previous()),
             Action::Refresh => {
                 self.remember_loaded(self.screen);
-                Self::refresh_effects(self.screen)
+                if self.screen == Screen::Home {
+                    vec![Effect::RefreshIp]
+                } else {
+                    Self::refresh_effects(self.screen)
+                }
             }
             Action::Cancel => {
                 self.cancel_scope();
                 Vec::new()
             }
+            Action::ShowLastMessage => self.show_last_message(),
             Action::Up => self.move_cursor(-1),
             Action::Down => self.move_cursor(1),
             Action::PageUp => self.page_cursor(-1),
@@ -2178,11 +2507,46 @@ impl App {
             Action::SelectNode => self.select_node(),
             Action::TestGroup => self.test_group(),
             Action::TestNode => self.test_node(),
+            Action::CycleTestMode => {
+                self.probe_mode = self.probe_mode.next();
+                self.node_delays.clear();
+                self.node_sort = SortOrder::Natural;
+                self.rebuild_nodes();
+                self.set_status(
+                    StatusKind::Info,
+                    format!("{}: {}", self.tr("test mode"), self.probe_mode.label()),
+                );
+                vec![Effect::Refresh(Screen::Proxies)]
+            }
+            Action::TestRouteSpeed => {
+                if !self.require_core("measuring route speed") {
+                    return Vec::new();
+                }
+                self.overlay = Some(Overlay::Picker {
+                    title: "route bandwidth".to_owned(),
+                    items: [
+                        SpeedMode::Sample4,
+                        SpeedMode::Sample20,
+                        SpeedMode::Sample100,
+                        SpeedMode::Speedtest,
+                    ]
+                    .map(|mode| mode.label().to_owned())
+                    .to_vec(),
+                    selected: self.speed_mode.index(),
+                });
+                Vec::new()
+            }
+            Action::InstallSpeedtestGo => {
+                self.set_status(StatusKind::Info, "downloading speedtest-go…");
+                vec![Effect::InstallSpeedtestGo]
+            }
             Action::TestAllNodes => {
                 if !self.require_core("testing nodes") {
                     return Vec::new();
                 }
-                vec![Effect::TestAllNodes]
+                vec![Effect::TestAllNodes {
+                    mode: self.probe_mode,
+                }]
             }
             Action::ClearNodeSelection => self.clear_node_pin(),
             Action::CloseConnection => self.close_connection(),
@@ -2197,6 +2561,21 @@ impl App {
                 self.resort_connections();
                 let label = self.connection_sort.label();
                 self.set_status(StatusKind::Info, format!("connections sorted by {label}"));
+                Vec::new()
+            }
+            Action::CycleNodeSort => {
+                let next = match self.node_sort {
+                    SortOrder::Natural | SortOrder::TrafficDescending => {
+                        SortOrder::LatencyAscending
+                    }
+                    SortOrder::LatencyAscending => SortOrder::LatencyDescending,
+                    SortOrder::LatencyDescending => SortOrder::Natural,
+                };
+                self.sort_nodes(next);
+                self.set_status(
+                    StatusKind::Info,
+                    format!("members sorted by {}", next.label()),
+                );
                 Vec::new()
             }
             Action::ToggleLogFollow => {
@@ -2250,6 +2629,7 @@ impl App {
                 Vec::new()
             }
             Action::RunTests => self.run_tests(),
+            Action::RunAllTests => self.run_all_tests(),
             Action::CancelTests => self.cancel_tests(),
             Action::ClearTestResults => {
                 self.clear_test_results();
@@ -2262,6 +2642,19 @@ impl App {
                     return Vec::new();
                 }
                 vec![Effect::RestartCore]
+            }
+            Action::CycleCoreMode => {
+                if !self.require_core("changing the routing mode") {
+                    return Vec::new();
+                }
+                let next = match self.core_mode.as_deref() {
+                    Some("rule") => "global",
+                    Some("global") => "direct",
+                    _ => "rule",
+                };
+                vec![Effect::SetCoreMode {
+                    mode: next.to_owned(),
+                }]
             }
             Action::UpgradeCore => vec![Effect::UpgradeCore],
             Action::UpdateGeo => {
@@ -2294,7 +2687,7 @@ impl App {
             self.rebuild_tests();
         }
         self.sync_scroll();
-        if self.loaded.contains(&screen) {
+        if self.loaded.contains(&screen) && screen != Screen::Home {
             return Vec::new();
         }
         self.remember_loaded(screen);
@@ -2384,6 +2777,10 @@ impl App {
     }
 
     fn move_cursor(&mut self, delta: isize) -> Vec<Effect> {
+        if self.screen == Screen::Logs {
+            self.scroll_logs(delta);
+            return Vec::new();
+        }
         if let Some(rows) = self.active_rows_mut() {
             rows.move_by(delta);
         }
@@ -2392,6 +2789,13 @@ impl App {
     }
 
     fn page_cursor(&mut self, direction: isize) -> Vec<Effect> {
+        if self.screen == Screen::Logs {
+            self.scroll_logs(
+                direction
+                    .saturating_mul(isize::try_from(self.visible_rows()).unwrap_or(isize::MAX)),
+            );
+            return Vec::new();
+        }
         let height = self.visible_rows();
         if let Some(rows) = self.active_rows_mut() {
             rows.page(direction, height);
@@ -2401,6 +2805,12 @@ impl App {
     }
 
     fn move_to_edge(&mut self, first: bool) -> Vec<Effect> {
+        if self.screen == Screen::Logs {
+            let end = if first { 1 } else { self.logs.filtered().len() };
+            self.logs.follow = !first;
+            self.frozen = if first { Some(end) } else { None };
+            return Vec::new();
+        }
         if let Some(rows) = self.active_rows_mut() {
             if first {
                 rows.select_first();
@@ -2433,7 +2843,9 @@ impl App {
         if self.clear_filter() {
             self.set_status(StatusKind::Info, "filter cleared");
         } else {
-            self.set_status(StatusKind::Info, "nothing to cancel");
+            // Esc dismisses the footer immediately; the full text remains
+            // available with `m` through `last_status`.
+            self.status = None;
         }
     }
 
@@ -2467,6 +2879,18 @@ impl App {
                 source: PathBuf::from(item),
             }],
             "update rule set" => vec![Effect::UpdateRuleProviders { names: vec![item] }],
+            "route bandwidth" => {
+                let Some(mode) = SpeedMode::from_index(selected) else {
+                    return Vec::new();
+                };
+                self.speed_mode = mode;
+                self.route_speed = None;
+                self.set_status(
+                    StatusKind::Info,
+                    format!("measuring current route with {}…", mode.label()),
+                );
+                vec![Effect::TestRouteSpeed { mode }]
+            }
             other => {
                 self.set_status(
                     StatusKind::Info,
@@ -2649,7 +3073,10 @@ impl App {
         if !self.require_core("testing a node") {
             return Vec::new();
         }
-        vec![Effect::TestNode { name: row.name }]
+        vec![Effect::TestNode {
+            name: row.name,
+            mode: self.probe_mode,
+        }]
     }
 
     fn test_group(&mut self) -> Vec<Effect> {
@@ -2664,7 +3091,10 @@ impl App {
         if !self.require_core("testing a group") {
             return Vec::new();
         }
-        vec![Effect::TestGroup { group }]
+        vec![Effect::TestGroup {
+            group,
+            mode: self.probe_mode,
+        }]
     }
 
     fn clear_node_pin(&mut self) -> Vec<Effect> {
@@ -2771,29 +3201,7 @@ impl App {
     /// Results are kept for a target that has not changed: re-entering the
     /// screen must not wipe a measurement the user just waited for.
     fn rebuild_tests(&mut self) {
-        let group = self
-            .nodes
-            .items()
-            .iter()
-            .find(|row| row.is_group)
-            .map_or_else(|| "-".to_owned(), |row| row.name.clone());
-        let node = self
-            .nodes
-            .items()
-            .iter()
-            .find(|row| !row.is_group)
-            .map_or_else(|| "-".to_owned(), |row| row.name.clone());
-        let host = self
-            .connections
-            .items()
-            .first()
-            .map_or_else(|| "-".to_owned(), |row| row.destination.clone());
-        let targets = [
-            (TestKind::GroupLatency, group),
-            (TestKind::NodeLatency, node),
-            (TestKind::CoreHealth, "core".to_owned()),
-            (TestKind::DnsLookup, host),
-        ];
+        let targets = TestKind::all().map(|kind| (kind, "current route".to_owned()));
         let selected = self
             .tests
             .selected_item()
@@ -2865,7 +3273,31 @@ impl App {
         vec![Effect::RunTest {
             kind: row.kind,
             target: row.target,
+            mode: self.probe_mode,
         }]
+    }
+
+    fn run_all_tests(&mut self) -> Vec<Effect> {
+        if !self.require_core("running unlock checks") {
+            return Vec::new();
+        }
+        if self.tests.items().is_empty() {
+            self.refuse("no unlock checks are available");
+            return Vec::new();
+        }
+        self.clear_test_results();
+        self.queue = (1..self.tests.items().len()).collect();
+        self.in_flight = Some(0);
+        self.set_test_result(0, TestResult::Running);
+        let first = &self.tests.items()[0];
+        vec![
+            Effect::CancelTests,
+            Effect::RunTest {
+                kind: first.kind,
+                target: first.target.clone(),
+                mode: self.probe_mode,
+            },
+        ]
     }
 
     fn cancel_tests(&mut self) -> Vec<Effect> {
@@ -2918,6 +3350,7 @@ impl App {
     }
 
     fn on_test_result(&mut self, kind: TestKind, target: &str, result: TestResult) -> Vec<Effect> {
+        let started = matches!(result, TestResult::Running);
         let index = self
             .tests
             .items()
@@ -2925,6 +3358,9 @@ impl App {
             .position(|row| row.kind == kind && row.target == target);
         if let Some(index) = index {
             self.set_test_result(index, result);
+            if started {
+                return Vec::new();
+            }
             self.queue.retain(|queued| *queued != index);
             if self.in_flight == Some(index) {
                 self.in_flight = None;
@@ -2936,7 +3372,11 @@ impl App {
             if let Some(row) = self.tests.items().get(next) {
                 let (kind, target) = (row.kind, row.target.clone());
                 self.in_flight = Some(next);
-                return vec![Effect::RunTest { kind, target }];
+                return vec![Effect::RunTest {
+                    kind,
+                    target,
+                    mode: self.probe_mode,
+                }];
             }
         }
         Vec::new()
@@ -3020,9 +3460,48 @@ impl App {
                 if was_running && !self.core.is_running() {
                     // Nothing can be running against a core that is gone.
                     self.abandon_tests();
+                    self.core_mode = None;
+                    self.clear_ip();
+                    self.route_speed = None;
+                    self.invalidate_controller_views();
+                    return vec![Effect::Refresh(Screen::Proxies)];
+                }
+                if !was_running && self.core.is_running() {
+                    self.invalidate_controller_views();
+                    return vec![
+                        Effect::Refresh(Screen::Proxies),
+                        Effect::Refresh(Screen::Rules),
+                        Effect::Refresh(Screen::Connections),
+                    ];
                 }
             }
+            Data::CoreMode(mode) => self.core_mode = Some(mode),
             Data::Version(version) => self.version = Some(version),
+            Data::IpInfo(info) => {
+                self.ip_info = Some(info);
+                self.ip_error = None;
+                self.ip_updated_at = Some(Instant::now());
+                self.ip_refreshing = false;
+            }
+            Data::IpLookupStarted => self.ip_refreshing = true,
+            Data::IpLookupFailed(error) => {
+                self.set_status(StatusKind::Warning, format!("IP lookup failed: {error}"));
+                self.ip_error = Some(error);
+                self.ip_refreshing = false;
+            }
+            Data::RouteSpeed(result) => match result {
+                Ok(value) => {
+                    self.route_speed = Some(value.clone());
+                    self.set_status(StatusKind::Success, format!("current route: {value}"));
+                }
+                Err(error) => self.set_status(StatusKind::Warning, format!("route speed: {error}")),
+            },
+            Data::SpeedtestMissing => {
+                self.overlay = Some(Overlay::Confirm {
+                    question: self.confirm_question(&Action::InstallSpeedtestGo),
+                    action: Action::InstallSpeedtestGo,
+                });
+            }
             Data::Settings(settings) => self.set_settings(*settings),
             Data::Preview(preview) => {
                 let lines = preview.lines();
@@ -3035,10 +3514,25 @@ impl App {
             }
             Data::ImportSources(sources) => return self.open_import_picker(&sources),
             Data::TestResult {
+                mode,
                 kind,
                 target,
                 result,
-            } => return self.on_test_result(kind, &target, result),
+            } => {
+                if mode == self.probe_mode || matches!(kind, TestKind::Unlock(_)) {
+                    return self.on_test_result(kind, &target, result);
+                }
+            }
+            Data::NodeDelay { mode, name, delay } => {
+                if mode == ProbeMode::Connect {
+                    self.node_health
+                        .insert(name.clone(), (delay.is_some(), Instant::now()));
+                }
+                self.node_delays.insert((mode, name), delay);
+                if mode == self.probe_mode || mode == ProbeMode::Connect {
+                    self.rebuild_nodes();
+                }
+            }
             Data::Notice(text) => self.set_status(StatusKind::Info, text),
         }
         Vec::new()
@@ -3095,15 +3589,36 @@ impl App {
         self.refresh_test_targets();
     }
 
+    fn invalidate_controller_views(&mut self) {
+        self.all_nodes.clear();
+        self.node_delays.clear();
+        self.node_health.clear();
+        self.nodes.set_items(Vec::new());
+        self.expanded.clear();
+        self.connections.set_items(Vec::new());
+        self.all_rules.clear();
+        self.rules.set_items(Vec::new());
+        self.rule_providers.clear();
+        self.loaded.retain(|screen| {
+            !matches!(
+                screen,
+                Screen::Proxies | Screen::Connections | Screen::Rules
+            )
+        });
+    }
+
     /// Flatten the node tree to what the expansion state shows.
     ///
     /// Groups are collapsed the first time they are seen: a subscription can
     /// hold hundreds of nodes, and a list that starts as a wall of them hides
     /// the group the user is looking for.
     fn rebuild_nodes(&mut self) {
-        let selected = self.nodes.selected_item().map(|row| row.name.clone());
+        let selected = self
+            .nodes
+            .selected_item()
+            .map(|row| (row.name.clone(), row.group.clone()));
         let expanded = self.expanded.clone();
-        let rows: Vec<NodeRow> = self
+        let mut rows: Vec<NodeRow> = self
             .all_nodes
             .iter()
             .filter(|row| {
@@ -3112,38 +3627,34 @@ impl App {
                     .is_none_or(|group| expanded.iter().any(|e| e == group))
             })
             .cloned()
+            .map(|mut row| {
+                if !row.is_group
+                    && let Some((alive, at)) = self.node_health.get(&row.name)
+                    && at.elapsed() < NODE_HEALTH_TTL
+                {
+                    row.alive = *alive;
+                }
+                if self.probe_mode != ProbeMode::Connect {
+                    row.delay = None;
+                }
+                if let Some(delay) = self.node_delays.get(&(self.probe_mode, row.name.clone())) {
+                    row.delay = *delay;
+                }
+                row
+            })
             .collect();
+        sort_group_members(&mut rows, self.node_sort);
         self.nodes.set_items(rows);
-        if let Some(name) = selected {
-            self.nodes.select_by_key(name, |row| row.name.clone());
-        }
-        let order = self.node_sort;
-        if order != SortOrder::Natural {
-            self.sort_nodes(order);
+        if let Some(key) = selected {
+            self.nodes
+                .select_by_key(key, |row| (row.name.clone(), row.group.clone()));
         }
     }
 
-    /// Order nodes by latency, keeping each group's members together.
+    /// Order members inside each group without moving a group heading.
     fn sort_nodes(&mut self, order: SortOrder) {
         self.node_sort = order;
-        if order == SortOrder::Natural {
-            return;
-        }
-        let selected = self.nodes.selected_item().map(|row| row.name.clone());
-        let mut rows = self.nodes.items().to_vec();
-        let compare = |a: &NodeRow, b: &NodeRow| match order {
-            SortOrder::LatencyDescending => b.delay.cmp(&a.delay),
-            _ => a.delay.cmp(&b.delay),
-        };
-        rows.sort_by(|a, b| {
-            let key_a = (a.group.clone(), a.is_group);
-            let key_b = (b.group.clone(), b.is_group);
-            key_a.cmp(&key_b).then_with(|| compare(a, b))
-        });
-        self.nodes.set_items(rows);
-        if let Some(name) = selected {
-            self.nodes.select_by_key(name, |row| row.name.clone());
-        }
+        self.rebuild_nodes();
     }
 
     fn set_connections(&mut self, rows: Vec<ConnectionRow>) {
@@ -3224,7 +3735,7 @@ impl App {
             return;
         }
         self.log_level = settings.ui.log_level;
-        self.theme = Theme::from_settings(settings.ui.color);
+        self.theme = Theme::from_settings(settings.ui.color && self.theme.color);
         self.settings = settings;
         self.settings_dirty = false;
         self.rebuild_settings_rows();
@@ -3236,7 +3747,20 @@ impl App {
         match done {
             Done::ProfilesLoaded => self.set_status(StatusKind::Success, "profiles loaded"),
             Done::ProfileSwitched { name } => {
+                self.clear_ip();
+                self.route_speed = None;
                 self.set_status(StatusKind::Success, format!("switched to `{name}`"));
+                self.invalidate_controller_views();
+                return vec![
+                    Effect::LoadProfiles,
+                    if self.core.is_running() {
+                        Effect::ApplyConfig {
+                            mode: self.reload_mode(),
+                        }
+                    } else {
+                        Effect::PrepareConfig
+                    },
+                ];
             }
             Done::ProfilesUpdated { updated, failed } => {
                 let kind = if failed == 0 {
@@ -3251,46 +3775,102 @@ impl App {
                 return vec![Effect::LoadProfiles];
             }
             Done::ChainSaved => self.set_status(StatusKind::Success, "chain saved"),
-            Done::ConfigApplied { reload, changed } => match reload {
-                Some(outcome) if outcome.succeeded() => self.set_status(
-                    StatusKind::Success,
-                    format!("{} ({changed} change(s))", outcome.summary()),
-                ),
-                Some(outcome) => {
-                    self.set_status(StatusKind::Error, outcome.summary());
+            Done::ConfigApplied { reload, changed } => {
+                self.clear_ip();
+                self.route_speed = None;
+                match reload {
+                    Some(outcome) if outcome.succeeded() => self.set_status(
+                        StatusKind::Success,
+                        format!("{} ({changed} change(s))", outcome.summary()),
+                    ),
+                    Some(outcome) => {
+                        self.set_status(StatusKind::Error, outcome.summary());
+                    }
+                    None => self.set_status(
+                        StatusKind::Success,
+                        format!(
+                            "configuration written ({changed} change(s)); the core is not running"
+                        ),
+                    ),
                 }
-                None => self.set_status(
-                    StatusKind::Success,
-                    format!("configuration written ({changed} change(s)); the core is not running"),
-                ),
-            },
+                return vec![
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                    Effect::Refresh(Screen::Rules),
+                    Effect::Refresh(Screen::Connections),
+                ];
+            }
             Done::ConfigRolledBack { snapshot } => self.set_status(
                 StatusKind::Warning,
                 format!("restored {}", snapshot.display()),
             ),
-            Done::ProfileDeleted { name } => {
+            Done::ProfileDeleted { name, was_current } => {
+                self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("deleted `{name}`"));
+                if was_current {
+                    self.invalidate_controller_views();
+                    if self.core.is_running() {
+                        return vec![Effect::LoadProfiles, Effect::StopCore];
+                    }
+                    return vec![Effect::LoadProfiles, Effect::Refresh(Screen::Proxies)];
+                }
+                return vec![Effect::LoadProfiles];
             }
             Done::ProfileRenamed { name } => {
+                self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("renamed to `{name}`"));
+                return vec![Effect::LoadProfiles];
             }
-            Done::ProfileCreated { name } => {
+            Done::ProfileCreated {
+                name,
+                uid,
+                is_remote,
+            } => {
+                self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("created `{name}`"));
+                let mut effects = vec![Effect::LoadProfiles];
+                if is_remote && let Some(uid) = uid {
+                    effects.push(Effect::UpdateProfiles { uids: vec![uid] });
+                }
+                return effects;
             }
             Done::ProfilesImported { count } => {
+                self.loaded.retain(|&s| s != Screen::Profiles);
                 self.set_status(StatusKind::Success, format!("imported {count} profile(s)"));
+                return vec![Effect::LoadProfiles];
             }
-            Done::NodeSelected { group, member } => self.set_status(
-                StatusKind::Success,
-                format!("`{group}` now uses `{member}`"),
-            ),
-            Done::NodeCleared { group } => self.set_status(
-                StatusKind::Success,
-                format!("`{group}` chooses automatically again"),
-            ),
+            Done::NodeSelected { group, member } => {
+                self.clear_ip();
+                self.route_speed = None;
+                for row in &mut self.all_nodes {
+                    if row.group.as_deref() == Some(group.as_str()) {
+                        row.active = row.name == member;
+                    }
+                }
+                self.rebuild_nodes();
+                self.set_status(
+                    StatusKind::Success,
+                    format!("`{group}` now uses `{member}`"),
+                );
+                return vec![Effect::Refresh(Screen::Proxies), Effect::RefreshIp];
+            }
+            Done::NodeCleared { group } => {
+                self.clear_ip();
+                self.route_speed = None;
+                for row in &mut self.all_nodes {
+                    if row.group.as_deref() == Some(group.as_str()) {
+                        row.active = false;
+                    }
+                }
+                self.rebuild_nodes();
+                self.set_status(
+                    StatusKind::Success,
+                    format!("`{group}` chooses automatically again"),
+                );
+                return vec![Effect::Refresh(Screen::Proxies), Effect::RefreshIp];
+            }
             Done::NodeTestsFinished { tested } => {
                 self.set_status(StatusKind::Success, format!("measured {tested} node(s)"));
-                self.sort_nodes(SortOrder::LatencyAscending);
             }
             Done::ConnectionClosed => self.set_status(StatusKind::Success, "connection closed"),
             Done::ConnectionsClosed { count } => {
@@ -3305,13 +3885,54 @@ impl App {
             }
             Done::CoreStarted { pid } => {
                 self.set_status(StatusKind::Success, format!("core started (pid {pid})"));
-                return vec![Effect::Refresh(Screen::Home)];
+                return vec![
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                ];
             }
-            Done::CoreStopped => self.set_status(StatusKind::Success, "core stopped"),
+            Done::CoreStopped => {
+                self.set_status(StatusKind::Success, "core stopped");
+                self.invalidate_controller_views();
+                return vec![
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                ];
+            }
             Done::CoreRestarted { pid } => {
                 self.set_status(StatusKind::Success, format!("core restarted (pid {pid})"));
+                return vec![
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                ];
             }
-            Done::CoreUpgraded => self.set_status(StatusKind::Success, "core upgraded"),
+            Done::CoreModeChanged { mode } => {
+                self.clear_ip();
+                self.route_speed = None;
+                self.core_mode = Some(mode.clone());
+                self.set_status(StatusKind::Success, format!("routing mode: {mode}"));
+                return vec![
+                    Effect::Refresh(Screen::Proxies),
+                    Effect::Refresh(Screen::Home),
+                ];
+            }
+            Done::CoreUpgraded { version } => {
+                self.set_status(
+                    StatusKind::Success,
+                    format!("installed mihomo {version} (managed)"),
+                );
+                return vec![Effect::Refresh(Screen::Home)];
+            }
+            Done::SpeedtestInstalled { version } => {
+                self.set_status(
+                    StatusKind::Success,
+                    format!("installed speedtest-go {version}"),
+                );
+                if self.core.is_running() && self.speed_mode == SpeedMode::Speedtest {
+                    return vec![Effect::TestRouteSpeed {
+                        mode: SpeedMode::Speedtest,
+                    }];
+                }
+            }
             Done::GeoUpdated => self.set_status(StatusKind::Success, "geo databases updated"),
             Done::CachesFlushed => self.set_status(StatusKind::Success, "caches flushed"),
             Done::SettingsSaved => {
@@ -3348,7 +3969,31 @@ impl App {
     }
 
     fn set_status(&mut self, kind: StatusKind, text: impl Into<String>) {
-        self.status = Some(Status::new(kind, text));
+        let text = text.into();
+        let status = Status::new(kind, text);
+        self.last_status = Some(status.clone());
+        self.status = Some(status);
+    }
+
+    /// Open a modal overlay showing the full text of the latest status message.
+    pub fn show_last_message(&mut self) -> Vec<Effect> {
+        if let Some(status) = self.last_status() {
+            let formatted = self.format_status_text(&status.text);
+            self.overlay = Some(Overlay::Message {
+                title: self.tr("message").to_owned(),
+                text: formatted,
+                kind: status.kind,
+                scroll: 0,
+            });
+        } else {
+            self.overlay = Some(Overlay::Message {
+                title: self.tr("message").to_owned(),
+                text: self.tr("no message to show").to_owned(),
+                kind: StatusKind::Info,
+                scroll: 0,
+            });
+        }
+        Vec::new()
     }
 
     fn expire_status(&mut self) {
@@ -3464,6 +4109,7 @@ mod tests {
             alive: true,
             active: false,
             is_group,
+            is_proxy: !is_group && group.is_some(),
             members: if is_group { 2 } else { 0 },
             selectable: is_group,
         }
@@ -3728,31 +4374,26 @@ mod tests {
     }
 
     #[test]
-    fn escape_without_a_filter_says_so_rather_than_doing_nothing() {
+    fn escape_without_a_filter_dismisses_the_footer() {
         let mut a = loaded();
         goto(&mut a, Screen::Rules);
+        let _ = a.on_event(Event::Failed("a useful error".to_owned()));
         assert_eq!(press(&mut a, KeyCode::Esc), Vec::new());
-        assert_eq!(a.current_status().unwrap().text, "nothing to cancel");
+        assert!(a.current_status().is_none());
+        assert_eq!(a.last_status().unwrap().text, "a useful error");
     }
 
     // -- status -------------------------------------------------------------
 
     #[test]
-    fn transient_messages_expire_but_errors_persist() {
+    fn every_footer_message_expires() {
         let info = Status::new(StatusKind::Info, "done");
         assert!(!info.is_expired_at(info.at));
         assert!(!info.is_expired_at(info.at + STATUS_TTL.saturating_sub(Duration::from_millis(1))));
         assert!(info.is_expired_at(info.at + STATUS_TTL));
 
         let error = Status::new(StatusKind::Error, "boom");
-        assert!(
-            !error.is_expired_at(error.at + STATUS_TTL * 1_000),
-            "an error is not a passing note"
-        );
-        assert!(!StatusKind::Error.expires());
-        for kind in [StatusKind::Info, StatusKind::Success, StatusKind::Warning] {
-            assert!(kind.expires(), "{kind:?}");
-        }
+        assert!(error.is_expired_at(error.at + STATUS_TTL));
     }
 
     #[test]
@@ -3770,11 +4411,9 @@ mod tests {
         let failed = a.current_status().unwrap();
         assert_eq!(failed.kind, StatusKind::Error);
         assert!(failed.text.contains("refused"));
-        a.expire_status_at(failed.at + STATUS_TTL * 10);
-        assert!(
-            a.current_status().is_some(),
-            "an error waits to be replaced"
-        );
+        a.expire_status_at(failed.at + STATUS_TTL);
+        assert!(a.current_status().is_none());
+        assert_eq!(a.last_status().unwrap().text, "the controller refused");
     }
 
     #[test]
@@ -4103,6 +4742,69 @@ mod tests {
     // -- proxies ------------------------------------------------------------
 
     #[test]
+    fn switching_a_profile_replaces_stale_proxy_data_and_prepares_or_applies() {
+        let mut stopped = loaded();
+        stopped.core = CoreStatus::Stopped;
+        let effects = stopped.on_event(Event::Done(Done::ProfileSwitched {
+            name: "new".to_owned(),
+        }));
+        assert!(stopped.nodes.is_empty());
+        assert!(effects.contains(&Effect::PrepareConfig));
+        assert!(effects.contains(&Effect::LoadProfiles));
+
+        let mut running = loaded();
+        let effects = running.on_event(Event::Done(Done::ProfileSwitched {
+            name: "new".to_owned(),
+        }));
+        assert!(running.nodes.is_empty());
+        assert!(effects.contains(&Effect::ApplyConfig {
+            mode: ReloadMode::Auto,
+        }));
+    }
+
+    #[test]
+    fn deleting_the_current_profile_clears_proxies_and_stops_its_core() {
+        let mut a = loaded();
+        let effects = a.on_event(Event::Done(Done::ProfileDeleted {
+            name: "base".to_owned(),
+            was_current: true,
+        }));
+        assert!(a.nodes.is_empty());
+        assert!(effects.contains(&Effect::StopCore));
+    }
+
+    #[test]
+    fn routing_mode_cycles_through_all_three_core_modes() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Home);
+        a.core_mode = Some("rule".to_owned());
+        assert_eq!(
+            press(&mut a, KeyCode::Char('M')),
+            vec![Effect::SetCoreMode {
+                mode: "global".to_owned(),
+            }]
+        );
+        let _ = a.on_event(Event::Done(Done::CoreModeChanged {
+            mode: "global".to_owned(),
+        }));
+        assert_eq!(
+            press(&mut a, KeyCode::Char('M')),
+            vec![Effect::SetCoreMode {
+                mode: "direct".to_owned(),
+            }]
+        );
+        let _ = a.on_event(Event::Done(Done::CoreModeChanged {
+            mode: "direct".to_owned(),
+        }));
+        assert_eq!(
+            press(&mut a, KeyCode::Char('M')),
+            vec![Effect::SetCoreMode {
+                mode: "rule".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
     fn a_group_row_expands_and_collapses_its_members() {
         let mut a = loaded();
         goto(&mut a, Screen::Proxies);
@@ -4136,6 +4838,33 @@ mod tests {
     }
 
     #[test]
+    fn successful_node_selection_updates_the_visible_row_and_refreshes() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Proxies);
+        press(&mut a, KeyCode::Enter);
+        let effects = a.on_event(Event::Done(Done::NodeSelected {
+            group: "PROXY".to_owned(),
+            member: "US 01".to_owned(),
+        }));
+        assert_eq!(
+            effects,
+            vec![Effect::Refresh(Screen::Proxies), Effect::RefreshIp]
+        );
+        assert!(
+            a.nodes
+                .items()
+                .iter()
+                .any(|row| row.name == "US 01" && row.active)
+        );
+        assert!(
+            a.nodes
+                .items()
+                .iter()
+                .any(|row| row.name == "JP 01" && !row.active)
+        );
+    }
+
+    #[test]
     fn testing_reads_the_highlighted_row_the_way_the_proxies_screen_shows_it() {
         let mut a = loaded();
         goto(&mut a, Screen::Proxies);
@@ -4143,7 +4872,8 @@ mod tests {
         assert_eq!(
             press(&mut a, KeyCode::Char('t')),
             vec![Effect::TestGroup {
-                group: "PROXY".to_owned()
+                group: "PROXY".to_owned(),
+                mode: ProbeMode::Connect,
             }]
         );
         press(&mut a, KeyCode::Enter);
@@ -4151,18 +4881,22 @@ mod tests {
         assert_eq!(
             press(&mut a, KeyCode::Char('t')),
             vec![Effect::TestNode {
-                name: "JP 01".to_owned()
+                name: "JP 01".to_owned(),
+                mode: ProbeMode::Connect,
             }]
         );
         assert_eq!(
             press(&mut a, KeyCode::Char('T')),
             vec![Effect::TestGroup {
-                group: "PROXY".to_owned()
+                group: "PROXY".to_owned(),
+                mode: ProbeMode::Connect,
             }]
         );
         assert_eq!(
             press(&mut a, KeyCode::Char('a')),
-            vec![Effect::TestAllNodes]
+            vec![Effect::TestAllNodes {
+                mode: ProbeMode::Connect
+            }]
         );
     }
 
@@ -4335,13 +5069,151 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proxy_speed_key_reports_the_current_route_without_changing_selection() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Proxies);
+        let before = app.nodes.selected_item().map(|row| row.name.clone());
+        assert!(press(&mut app, KeyCode::Char('b')).is_empty());
+        assert!(matches!(app.overlay, Some(Overlay::Picker { .. })));
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            vec![Effect::TestRouteSpeed {
+                mode: SpeedMode::Sample4
+            }]
+        );
+        let _ = app.on_event(Event::Data(Data::RouteSpeed(Ok(
+            "42.0 Mbit/s (speedtest-go)".to_owned(),
+        ))));
+        assert_eq!(
+            app.route_speed.as_deref(),
+            Some("42.0 Mbit/s (speedtest-go)")
+        );
+        assert_eq!(
+            app.nodes.selected_item().map(|row| row.name.clone()),
+            before
+        );
+    }
+
+    #[test]
+    fn bandwidth_picker_remembers_size_and_asks_before_installing_backend() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Proxies);
+        assert!(press(&mut app, KeyCode::Char('b')).is_empty());
+        let _ = press(&mut app, KeyCode::Down);
+        let _ = press(&mut app, KeyCode::Down);
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            vec![Effect::TestRouteSpeed {
+                mode: SpeedMode::Sample100
+            }]
+        );
+        assert_eq!(app.speed_mode, SpeedMode::Sample100);
+        let _ = press(&mut app, KeyCode::Char('b'));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Picker { selected: 2, .. })
+        ));
+        let _ = press(&mut app, KeyCode::Down);
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            vec![Effect::TestRouteSpeed {
+                mode: SpeedMode::Speedtest
+            }]
+        );
+        assert!(app.on_event(Event::Data(Data::SpeedtestMissing)).is_empty());
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm {
+                action: Action::InstallSpeedtestGo,
+                ..
+            })
+        ));
+        assert_eq!(press(&mut app, KeyCode::Char('n')), Vec::new());
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn connect_result_changes_unavailable_node_health_until_it_expires() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Proxies);
+        let mut rows = app.all_nodes.clone();
+        rows[1].alive = false;
+        let _ = app.on_event(Event::Data(Data::Nodes(rows.clone())));
+        app.expanded.push("PROXY".to_owned());
+        app.rebuild_nodes();
+        assert!(
+            !app.nodes
+                .items()
+                .iter()
+                .find(|row| row.name == "JP 01")
+                .unwrap()
+                .alive
+        );
+        let _ = app.on_event(Event::Data(Data::NodeDelay {
+            mode: ProbeMode::Connect,
+            name: "JP 01".to_owned(),
+            delay: Some(42),
+        }));
+        assert!(
+            app.nodes
+                .items()
+                .iter()
+                .find(|row| row.name == "JP 01")
+                .unwrap()
+                .alive
+        );
+        let _ = app.on_event(Event::Data(Data::Nodes(rows)));
+        assert!(
+            app.nodes
+                .items()
+                .iter()
+                .find(|row| row.name == "JP 01")
+                .unwrap()
+                .alive
+        );
+        app.node_health.insert(
+            "JP 01".to_owned(),
+            (true, Instant::now().checked_sub(NODE_HEALTH_TTL).unwrap()),
+        );
+        let _ = app.on_tick();
+        assert!(
+            !app.nodes
+                .items()
+                .iter()
+                .find(|row| row.name == "JP 01")
+                .unwrap()
+                .alive
+        );
+    }
+
+    #[test]
+    fn home_refresh_and_lookup_failure_have_visible_state() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Home);
+        assert_eq!(press(&mut app, KeyCode::Char('r')), vec![Effect::RefreshIp]);
+        let _ = app.on_event(Event::Data(Data::IpLookupStarted));
+        assert!(app.ip_refreshing);
+        let _ = app.on_event(Event::Data(Data::IpLookupFailed(
+            "service unavailable".to_owned(),
+        )));
+        assert!(!app.ip_refreshing);
+        assert_eq!(app.ip_error.as_deref(), Some("service unavailable"));
+        assert!(
+            app.current_status()
+                .unwrap()
+                .text
+                .contains("service unavailable")
+        );
+    }
+
     // -- tests screen -------------------------------------------------------
 
     #[test]
     fn the_test_queue_runs_one_at_a_time_and_cancels_as_a_batch() {
         let mut a = loaded();
         goto(&mut a, Screen::Tests);
-        assert_eq!(a.tests.len(), 4, "one row per kind of check");
+        assert_eq!(a.tests.len(), 12, "one row per unlock service");
 
         let first = press(&mut a, KeyCode::Enter);
         assert_eq!(a.queued_tests(), 1);
@@ -4350,8 +5222,9 @@ mod tests {
         assert_eq!(
             first,
             vec![Effect::RunTest {
-                kind: TestKind::GroupLatency,
-                target
+                kind: TestKind::Unlock("哔哩哔哩大陆"),
+                target,
+                mode: ProbeMode::Connect,
             }]
         );
 
@@ -4363,7 +5236,8 @@ mod tests {
 
         // The answer to the first starts the second.
         let effects = a.on_event(Event::Data(Data::TestResult {
-            kind: TestKind::GroupLatency,
+            mode: ProbeMode::Connect,
+            kind: TestKind::Unlock("哔哩哔哩大陆"),
             target: a.tests.items()[0].target.clone(),
             result: TestResult::Passed("42 ms".to_owned()),
         }));
@@ -4376,12 +5250,56 @@ mod tests {
     }
 
     #[test]
+    fn run_all_waits_for_completion_and_clear_resets_every_row() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Tests);
+        assert!(matches!(
+            press(&mut app, KeyCode::Char('a')).as_slice(),
+            [Effect::CancelTests, Effect::RunTest { .. }]
+        ));
+        assert_eq!(app.queued_tests(), 12);
+        let first = app.tests.items()[0].clone();
+        assert!(
+            app.on_event(Event::Data(Data::TestResult {
+                mode: ProbeMode::Connect,
+                kind: first.kind,
+                target: first.target.clone(),
+                result: TestResult::Running
+            }))
+            .is_empty()
+        );
+        assert_eq!(app.queued_tests(), 12);
+        assert!(matches!(
+            app.on_event(Event::Data(Data::TestResult {
+                mode: ProbeMode::Connect,
+                kind: first.kind,
+                target: first.target,
+                result: TestResult::Passed("ok".to_owned())
+            }))
+            .as_slice(),
+            [Effect::RunTest { .. }]
+        ));
+        assert_eq!(app.queued_tests(), 11);
+        assert_eq!(
+            press(&mut app, KeyCode::Char('c')),
+            vec![Effect::ClearTestResults]
+        );
+        assert!(
+            app.tests
+                .items()
+                .iter()
+                .all(|row| row.result == TestResult::Pending)
+        );
+    }
+
+    #[test]
     fn a_test_that_has_run_is_not_queued_twice() {
         let mut a = loaded();
         goto(&mut a, Screen::Tests);
         let _ = press(&mut a, KeyCode::Enter);
         let _ = a.on_event(Event::Data(Data::TestResult {
-            kind: TestKind::GroupLatency,
+            mode: ProbeMode::Connect,
+            kind: TestKind::Unlock("哔哩哔哩大陆"),
             target: a.tests.items()[0].target.clone(),
             result: TestResult::Passed("12 ms".to_owned()),
         }));
@@ -4401,11 +5319,13 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_batch_orders_the_nodes_by_latency() {
+    fn a_finished_batch_preserves_source_order_until_the_user_changes_it() {
         let mut a = loaded();
         goto(&mut a, Screen::Proxies);
         press(&mut a, KeyCode::Enter);
         let _ = a.on_event(Event::Done(Done::NodeTestsFinished { tested: 2 }));
+        assert_eq!(a.node_sort, SortOrder::Natural);
+        assert_eq!(press(&mut a, KeyCode::Char('s')), Vec::new());
         assert_eq!(a.node_sort, SortOrder::LatencyAscending);
         let names: Vec<&str> = a.nodes.items().iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
@@ -4413,6 +5333,71 @@ mod tests {
             vec!["PROXY", "JP 01", "US 01"],
             "the group stays on top and its members are ordered fastest first"
         );
+    }
+
+    #[test]
+    fn live_probe_updates_only_members_and_survives_inventory_refresh() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Proxies);
+        let inventory = vec![
+            node("A", None, true, None),
+            node("a-slow", Some("A"), false, Some(90)),
+            node("a-fast", Some("A"), false, Some(20)),
+            node("B", None, true, None),
+            node("b-fast", Some("B"), false, Some(5)),
+            node("b-slow", Some("B"), false, Some(70)),
+        ];
+        let _ = a.on_event(Event::Data(Data::Nodes(inventory.clone())));
+        a.expanded = vec!["A".to_owned(), "B".to_owned()];
+        a.rebuild_nodes();
+        let _ = a.on_event(Event::Done(Done::NodeTestsFinished { tested: 4 }));
+        press(&mut a, KeyCode::Char('s'));
+        let names = |app: &App| {
+            app.nodes
+                .items()
+                .iter()
+                .map(|row| row.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&a),
+            ["A", "a-fast", "a-slow", "B", "b-fast", "b-slow"]
+        );
+        let _ = a.on_event(Event::Data(Data::NodeDelay {
+            mode: ProbeMode::Connect,
+            name: "a-slow".to_owned(),
+            delay: Some(1),
+        }));
+        assert_eq!(
+            names(&a),
+            ["A", "a-slow", "a-fast", "B", "b-fast", "b-slow"]
+        );
+        let _ = a.on_event(Event::Data(Data::Nodes(inventory)));
+        assert_eq!(
+            names(&a),
+            ["A", "a-slow", "a-fast", "B", "b-fast", "b-slow"]
+        );
+        assert_eq!(a.nodes.items()[1].delay, Some(1));
+        assert_eq!(
+            press(&mut a, KeyCode::Char('v')),
+            vec![Effect::Refresh(Screen::Proxies)]
+        );
+        assert_eq!(a.probe_mode, ProbeMode::Tcp);
+        assert_eq!(a.nodes.items()[1].delay, None);
+    }
+
+    #[test]
+    fn unlock_targets_remain_the_current_route_when_proxy_groups_change() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Tests);
+        let _ = a.on_event(Event::Data(Data::Nodes(vec![node("A", None, true, None)])));
+        assert!(
+            a.tests
+                .items()
+                .iter()
+                .all(|row| row.target == "current route")
+        );
+        assert_eq!(a.tests.items().len(), 12);
     }
 
     // -- settings -----------------------------------------------------------
@@ -4457,7 +5442,7 @@ mod tests {
     fn every_setting_row_can_be_cycled_from_the_keyboard() {
         let mut a = loaded();
         goto(&mut a, Screen::Settings);
-        assert_eq!(a.settings_rows.len(), 24);
+        assert_eq!(a.settings_rows.len(), 25);
         a.settings_rows
             .select_by_key("ui.color".to_owned(), |row| row.key.to_owned());
         assert_eq!(press(&mut a, KeyCode::Enter), Vec::new());
@@ -4468,6 +5453,11 @@ mod tests {
             a.current_status().unwrap().text.contains("colour"),
             "the status names the row that changed"
         );
+
+        a.settings_rows
+            .select_by_key("core.use_managed".to_owned(), |row| row.key.to_owned());
+        let _ = press(&mut a, KeyCode::Enter);
+        assert!(!a.settings.core.use_managed);
 
         a.settings_rows
             .select_by_key("test.concurrency".to_owned(), |row| row.key.to_owned());
@@ -4766,8 +5756,8 @@ mod tests {
         assert_eq!(a.profiles.selected_index(), offset);
 
         a.overlay = Some(Overlay::Picker {
-            title: "choose".to_owned(),
-            items: vec!["first".to_owned(), "second".to_owned()],
+            title: "new profile".to_owned(),
+            items: vec!["from a URL".to_owned(), "a blank local profile".to_owned()],
             selected: 0,
         });
         let picker_row = crate::ui::picker_item_at(a.viewport, 2, 0, 0, 0);
@@ -4776,8 +5766,89 @@ mod tests {
         let _ = a.on_event(click(popup.x + 1, popup.y + 2));
         assert!(matches!(
             a.overlay,
-            Some(Overlay::Picker { selected: 1, .. })
+            Some(Overlay::Prompt {
+                kind: PromptKind::Name,
+                ..
+            })
         ));
+    }
+
+    #[test]
+    fn mouse_buttons_confirm_cancel_and_accept_modal_input() {
+        let mut a = app();
+        a.viewport = (80, 24);
+        let click = |column, row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+
+        a.overlay = Some(Overlay::Prompt {
+            label: "profile name".to_owned(),
+            kind: PromptKind::Name,
+            value: "sample".to_owned(),
+            cursor: 6,
+        });
+        assert_eq!(
+            a.on_event(click(6, 12)),
+            vec![Effect::NewProfile {
+                name: "sample".to_owned(),
+                url: None,
+            }]
+        );
+        a.overlay = Some(Overlay::Prompt {
+            label: "profile name".to_owned(),
+            kind: PromptKind::Name,
+            value: "discard".to_owned(),
+            cursor: 7,
+        });
+        assert!(a.on_event(click(30, 12)).is_empty());
+        assert!(a.overlay.is_none());
+
+        a.overlay = Some(Overlay::Confirm {
+            question: "quit?".to_owned(),
+            action: Action::Quit,
+        });
+        assert_eq!(
+            crate::ui::confirm_choice_at(&a, "quit?", 18, 13),
+            Some(false)
+        );
+        assert!(a.on_event(click(18, 13)).is_empty());
+        assert!(a.overlay.is_none());
+        assert!(!a.is_quit());
+        a.overlay = Some(Overlay::Confirm {
+            question: "quit?".to_owned(),
+            action: Action::Quit,
+        });
+        assert_eq!(a.on_event(click(6, 13)), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn full_error_message_survives_footer_expiry_and_scrolls_in_its_popup() {
+        let mut a = app();
+        a.viewport = (40, 10);
+        let message = format!("{}\n{}", "first ".repeat(30), "last detail");
+        let _ = a.on_event(Event::Failed(message.clone()));
+        let at = a.current_status().unwrap().at;
+        a.expire_status_at(at + STATUS_TTL);
+        assert!(a.current_status().is_none());
+        let _ = a.show_last_message();
+        assert!(matches!(&a.overlay, Some(Overlay::Message { text, .. }) if text == &message));
+        let _ = a.on_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(matches!(
+            a.overlay,
+            Some(Overlay::Message { scroll: 1.., .. })
+        ));
+        assert!(press(&mut a, KeyCode::Esc).is_empty());
+        assert!(a.overlay.is_none());
     }
 
     // -- navigation ---------------------------------------------------------
@@ -4854,6 +5925,13 @@ mod tests {
                 );
                 continue;
             }
+            if action == Action::Cancel {
+                let mut a = loaded();
+                a.set_status(StatusKind::Error, "dismiss me");
+                assert!(a.dispatch(action, true).is_empty());
+                assert!(a.current_status().is_none());
+                continue;
+            }
             let mut a = loaded();
             let before = a.screen;
             let expanded_before = a.is_expanded("PROXY");
@@ -4878,6 +5956,7 @@ mod tests {
             Action::PreviousScreen,
             Action::Refresh,
             Action::Cancel,
+            Action::ShowLastMessage,
             Action::Up,
             Action::Down,
             Action::PageUp,
@@ -4902,6 +5981,7 @@ mod tests {
             Action::TestGroup,
             Action::TestNode,
             Action::TestAllNodes,
+            Action::CycleNodeSort,
             Action::ClearNodeSelection,
             Action::CloseConnection,
             Action::CloseAllConnections,
@@ -4920,6 +6000,7 @@ mod tests {
             Action::StartCore,
             Action::StopCore,
             Action::RestartCore,
+            Action::CycleCoreMode,
             Action::UpgradeCore,
             Action::UpdateGeo,
             Action::FlushCaches,
@@ -5084,23 +6165,23 @@ mod tests {
     }
 
     #[test]
-    fn the_test_targets_follow_the_data_and_keep_the_cursor() {
+    fn unlock_checks_keep_the_cursor_when_proxy_data_refreshes() {
         let mut a = loaded();
         goto(&mut a, Screen::Tests);
-        assert_eq!(a.tests.items()[0].target, "PROXY");
+        assert_eq!(a.tests.items()[0].target, "current route");
         let _ = press(&mut a, KeyCode::Down);
         let _ = press(&mut a, KeyCode::Down);
-        assert_eq!(a.tests.selected_item().unwrap().kind, TestKind::CoreHealth);
-
-        // A refreshed proxy list lands while the screen is open.
+        assert_eq!(
+            a.tests.selected_item().unwrap().kind,
+            TestKind::Unlock("ChatGPT Web")
+        );
         let _ = a.on_event(Event::Data(Data::Nodes(vec![node(
             "OFFICE", None, true, None,
         )])));
-        assert_eq!(a.tests.items()[0].target, "OFFICE");
+        assert_eq!(a.tests.items()[0].target, "current route");
         assert_eq!(
             a.tests.selected_item().unwrap().kind,
-            TestKind::CoreHealth,
-            "a refresh must not move the cursor"
+            TestKind::Unlock("ChatGPT Web")
         );
     }
 

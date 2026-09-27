@@ -37,7 +37,7 @@ use ratatui::widgets::{Clear, List, ListState, Paragraph, Tabs, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::action::Screen;
-use crate::app::{App, Overlay, PromptKind};
+use crate::app::{App, Overlay};
 use crate::theme::Theme;
 
 use widgets as w;
@@ -213,7 +213,7 @@ fn footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     }
     let line = if app.current_status().is_some() {
-        w::status_line(app)
+        w::status_line(app, area.width)
     } else if app.settings.ui.show_footer {
         w::hints(app, area.width)
     } else {
@@ -227,10 +227,10 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, app: &App, overlay: &Overlay)
     match overlay {
         Overlay::Prompt {
             label,
-            kind,
             value,
             cursor,
-        } => prompt(frame, area, app, label, *kind, value, *cursor),
+            ..
+        } => prompt(frame, area, app, label, value, *cursor),
         Overlay::Confirm { question, action } => confirm(frame, area, app, question, action),
         Overlay::Picker {
             title,
@@ -242,21 +242,21 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, app: &App, overlay: &Overlay)
             lines,
             scroll,
         } => preview(frame, area, app, title, lines, *scroll),
+        Overlay::Message {
+            title,
+            text,
+            kind,
+            scroll,
+        } => {
+            message_popup(frame, area, app, title, text, *kind, *scroll);
+        }
     }
 }
 
 /// A one-line input.
-fn prompt(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    app: &App,
-    label: &str,
-    kind: PromptKind,
-    value: &str,
-    cursor: usize,
-) {
-    let width = area.width.saturating_sub(4).clamp(8, 72);
-    let popup = w::centered(area, width, 3);
+fn prompt(frame: &mut Frame<'_>, area: Rect, app: &App, label: &str, value: &str, cursor: usize) {
+    let popup = prompt_popup_rect(area);
+    let width = popup.width;
     frame.render_widget(Clear, popup);
 
     // The caret is drawn as a selected cell rather than as a character, so a
@@ -318,13 +318,43 @@ fn prompt(
         Span::styled(under.to_string(), app.theme.selection()),
         Span::styled(after, app.theme.key_label()),
     ]);
-    let hint = app.tr(match kind {
-        PromptKind::Search => "type to narrow the list · Enter keep · Esc clear",
-        _ => "Enter accept · Esc cancel",
-    });
-    let block = w::panel(Line::from(format!(" {} ", app.tr(label))), app.theme)
-        .title_bottom(Line::from(format!(" {hint} ")).style(app.theme.key_label()));
-    frame.render_widget(Paragraph::new(line).block(block), popup);
+    let buttons = Line::from(vec![
+        Span::styled(app.tr(" [Enter] accept "), app.theme.ok()),
+        Span::styled("   ", app.theme.key_label()),
+        Span::styled(app.tr(" [Esc] cancel "), app.theme.warn()),
+    ]);
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![line, buttons])).block(w::panel(
+            Line::from(format!(" {} ", app.tr(label))),
+            app.theme,
+        )),
+        popup,
+    );
+}
+
+fn prompt_popup_rect(area: Rect) -> Rect {
+    w::centered(area, area.width.saturating_sub(4).clamp(8, 72), 4)
+}
+
+/// Which button in a text prompt was clicked.
+pub(crate) fn prompt_choice_at(app: &App, column: u16, row: u16) -> Option<bool> {
+    let popup = prompt_popup_rect(Rect::new(0, 0, app.viewport.0, app.viewport.1));
+    if row != popup.y.saturating_add(2) {
+        return None;
+    }
+    let start = popup.x.saturating_add(1);
+    let accept = app.tr(" [Enter] accept ").width();
+    let cancel = app.tr(" [Esc] cancel ").width();
+    let x = usize::from(column.saturating_sub(start));
+    if column < start {
+        None
+    } else if x < accept {
+        Some(true)
+    } else if (accept + 3..accept + 3 + cancel).contains(&x) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// A question about something destructive.
@@ -365,6 +395,40 @@ fn confirm(frame: &mut Frame<'_>, area: Rect, app: &App, question: &str, action:
     );
 }
 
+/// Which visible yes/no button was clicked in a confirmation popup.
+pub(crate) fn confirm_choice_at(app: &App, question: &str, column: u16, row: u16) -> Option<bool> {
+    let area = Rect::new(0, 0, app.viewport.0, app.viewport.1);
+    let width = area.width.saturating_sub(4).clamp(12, 72);
+    let inner = usize::from(width).saturating_sub(2).max(1);
+    let rows = wrapped_rows(question, inner);
+    let height = u16::try_from(rows.saturating_add(4))
+        .unwrap_or(u16::MAX)
+        .min(area.height)
+        .max(5);
+    let popup = w::centered(area, width, height);
+    if row
+        != popup
+            .y
+            .saturating_add(2)
+            .saturating_add(u16::try_from(rows).unwrap_or(u16::MAX))
+    {
+        return None;
+    }
+    let start = popup.x.saturating_add(1);
+    let yes = app.tr(" [y] yes ").width();
+    let no = app.tr("[n] no ").width();
+    let x = usize::from(column.saturating_sub(start));
+    if column < start {
+        None
+    } else if x < yes {
+        Some(true)
+    } else if (yes + 3..yes + 3 + no).contains(&x) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// A list of choices.
 fn picker(
     frame: &mut Frame<'_>,
@@ -381,7 +445,10 @@ fn picker(
         .min(area.height);
     let popup = w::centered(area, width, height);
     frame.render_widget(Clear, popup);
-    let rows: Vec<Line<'static>> = items.iter().map(|item| Line::from(item.clone())).collect();
+    let rows: Vec<Line<'static>> = items
+        .iter()
+        .map(|item| Line::from(app.tr(item).to_owned()))
+        .collect();
     let list = List::new(rows)
         .block(w::panel(
             Line::from(format!(" {} ", app.tr(title))),
@@ -392,6 +459,76 @@ fn picker(
     let mut state =
         ListState::default().with_selected(Some(selected.min(items.len().saturating_sub(1))));
     frame.render_stateful_widget(list, popup, &mut state);
+}
+
+/// A modal popup displaying a full status or error message.
+fn message_popup(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    title: &str,
+    text: &str,
+    kind: crate::app::StatusKind,
+    scroll: usize,
+) {
+    let popup = message_popup_rect(area, text);
+    let border_style = match kind {
+        crate::app::StatusKind::Error => app.theme.error(),
+        crate::app::StatusKind::Warning => app.theme.warn(),
+        crate::app::StatusKind::Success => app.theme.ok(),
+        crate::app::StatusKind::Info => app.theme.info(),
+    };
+    let marker = match kind {
+        crate::app::StatusKind::Error => "✗ ",
+        crate::app::StatusKind::Warning => "! ",
+        crate::app::StatusKind::Success => "✓ ",
+        crate::app::StatusKind::Info => "i ",
+    };
+
+    frame.render_widget(Clear, popup);
+
+    let block = w::empty_panel(app.theme)
+        .border_style(border_style)
+        .title(Line::from(format!(" {} ", app.tr(title))))
+        .title_style(border_style)
+        .title_bottom(Line::from(format!(
+            " {} ",
+            app.tr("j/k scroll · PgUp/PgDn page · Esc close")
+        )));
+
+    frame.render_widget(
+        Paragraph::new(format!("{marker}{text}"))
+            .style(app.theme.key_label())
+            .wrap(Wrap { trim: true })
+            .block(block)
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
+        popup,
+    );
+}
+
+fn message_popup_rect(area: Rect, text: &str) -> Rect {
+    let width = area.width.saturating_sub(4).clamp(16, 100).min(area.width);
+    let inner_width = usize::from(width.saturating_sub(2)).max(1);
+    let rows: usize = text
+        .lines()
+        .map(|line| wrapped_rows(line, inner_width))
+        .sum();
+    let height = u16::try_from(rows.saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .clamp(4, area.height.saturating_sub(2).max(4))
+        .min(area.height);
+    w::centered(area, width, height)
+}
+
+/// Maximum vertical scroll for the full status message at the current size.
+pub(crate) fn message_scroll_limit(viewport: (u16, u16), text: &str) -> usize {
+    let popup = message_popup_rect(Rect::new(0, 0, viewport.0, viewport.1), text);
+    let inner_width = usize::from(popup.width.saturating_sub(2)).max(1);
+    let rows: usize = text
+        .lines()
+        .map(|line| wrapped_rows(line, inner_width))
+        .sum();
+    rows.saturating_sub(usize::from(popup.height.saturating_sub(2)))
 }
 
 /// The choice under a picker click. `ListState` starts at offset zero and

@@ -2,6 +2,7 @@
 //! the process supervisor.
 
 pub mod client;
+pub mod download;
 pub mod endpoint;
 pub mod stream;
 pub mod supervisor;

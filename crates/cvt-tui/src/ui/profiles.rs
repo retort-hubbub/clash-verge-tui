@@ -34,12 +34,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         w::ListSpec {
             state: w::state_of(&app.profiles),
             title,
-            header: vec!["name", "role", "updated", "quota"],
+            header: vec!["name", "role", "updated", "remaining"],
             widths: vec![
                 Constraint::Min(14),
                 Constraint::Length(20),
                 Constraint::Length(12),
-                Constraint::Length(7),
+                Constraint::Length(10),
             ],
             rows,
             empty: "no profiles yet — press `a` to add one".to_owned(),

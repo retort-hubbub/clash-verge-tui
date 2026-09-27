@@ -639,8 +639,10 @@ mod tests {
         assert!(app.is_quit(), "`q` has to end the loop");
         assert!(fake.asked().contains(&Effect::Startup));
         assert!(
-            fake.asked()
-                .contains(&Effect::Refresh(crate::action::Screen::Home)),
+            fake.asked().iter().any(|effect| matches!(
+                effect,
+                Effect::Refresh(crate::action::Screen::Home) | Effect::RefreshIp
+            )),
             "the dashboard must be loaded before the user asks: {:?}",
             fake.asked()
         );
@@ -733,6 +735,6 @@ mod tests {
         let key = refresh_key(&app).unwrap();
         let mut app = app;
         let effects = app.on_event(Event::Key(key));
-        assert_eq!(effects, vec![Effect::Refresh(crate::action::Screen::Home)]);
+        assert_eq!(effects, vec![Effect::RefreshIp]);
     }
 }

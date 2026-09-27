@@ -160,6 +160,9 @@ pub fn details(frame: &mut Frame<'_>, area: Rect, app: &App, title: &str, rows: 
 #[must_use]
 pub fn core_summary(app: &App) -> String {
     let mut parts = vec![crate::i18n::core_status(app.language(), &app.core)];
+    if let Some(mode) = &app.core_mode {
+        parts.push(format!("{}: {}", app.tr("mode"), app.tr(mode)));
+    }
     if let Some(live) = &app.metrics.latest {
         parts.push(format!(
             "↓{}/s ↑{}/s",
@@ -196,7 +199,7 @@ pub fn hints(app: &App, width: u16) -> Line<'static> {
 
 /// The status message, styled by how bad it is.
 #[must_use]
-pub fn status_line(app: &App) -> Line<'static> {
+pub fn status_line(app: &App, width: u16) -> Line<'static> {
     let Some(status) = app.current_status() else {
         return Line::default();
     };
@@ -206,10 +209,38 @@ pub fn status_line(app: &App) -> Line<'static> {
         StatusKind::Warning => ("!", app.theme.warn()),
         StatusKind::Error => ("✗", app.theme.error()),
     };
-    Line::from(vec![
-        Span::styled(format!(" {marker} "), style),
-        Span::styled(app.tr(&status.text).to_owned(), style),
-    ])
+    let text = app.format_status_text(&status.text);
+    let marker_str = format!(" {marker} ");
+    let marker_width = unicode_width::UnicodeWidthStr::width(marker_str.as_str());
+    let text_width = unicode_width::UnicodeWidthStr::width(text.as_str());
+    let available = usize::from(width).saturating_sub(marker_width);
+
+    let hint_str = app.tr_key(crate::i18n::TextKey::StatusOverflowMore);
+    let hint_width = unicode_width::UnicodeWidthStr::width(hint_str);
+
+    if text_width > available && available > hint_width {
+        let max_content_width = available.saturating_sub(hint_width);
+        let mut truncated = String::new();
+        let mut cur_w = 0;
+        for ch in text.chars() {
+            let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if cur_w + ch_w > max_content_width {
+                break;
+            }
+            cur_w += ch_w;
+            truncated.push(ch);
+        }
+        truncated.push_str(hint_str);
+        Line::from(vec![
+            Span::styled(marker_str, style),
+            Span::styled(truncated, style),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(marker_str, style),
+            Span::styled(text, style),
+        ])
+    }
 }
 
 /// A rectangle of `width` by `height`, centred in `area` and never larger.

@@ -60,6 +60,13 @@ pub struct CoreSettings {
     pub auto_start: bool,
     /// Revert to the last snapshot when a new configuration fails to load.
     pub rollback_on_failure: bool,
+    /// Prefer the managed core in the application data directory over local/system binaries.
+    #[serde(default = "default_true")]
+    pub use_managed: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 impl Default for CoreSettings {
@@ -70,6 +77,7 @@ impl Default for CoreSettings {
             secret: None,
             auto_start: false,
             rollback_on_failure: true,
+            use_managed: true,
         }
     }
 }

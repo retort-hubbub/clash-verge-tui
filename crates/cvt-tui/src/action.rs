@@ -109,6 +109,8 @@ pub enum Action {
     Refresh,
     /// Cancel the current overlay, search or selection.
     Cancel,
+    /// View the latest status message in full.
+    ShowLastMessage,
 
     // -- list navigation --------------------------------------------------
     /// Move the cursor up one row.
@@ -165,6 +167,14 @@ pub enum Action {
     TestNode,
     /// Latency-test every node.
     TestAllNodes,
+    /// Measure throughput through the currently active route.
+    TestRouteSpeed,
+    /// Install the optional speedtest-go backend in application home.
+    InstallSpeedtestGo,
+    /// Cycle CONNECT, TCP and ICMP probe methods.
+    CycleTestMode,
+    /// Cycle the order of members within each proxy group.
+    CycleNodeSort,
     /// Return a group to automatic selection.
     ClearNodeSelection,
 
@@ -199,6 +209,8 @@ pub enum Action {
     // -- tests ------------------------------------------------------------
     /// Run the selected test suite.
     RunTests,
+    /// Run every unlock check in one batch.
+    RunAllTests,
     /// Cancel a running test batch.
     CancelTests,
     /// Clear cached results.
@@ -211,7 +223,9 @@ pub enum Action {
     StopCore,
     /// Restart the core process.
     RestartCore,
-    /// Update the core binary from its release channel.
+    /// Cycle rule, global and direct routing modes.
+    CycleCoreMode,
+    /// Download or update the managed core binary.
     UpgradeCore,
     /// Refresh the GeoIP and GeoSite databases.
     UpdateGeo,
@@ -241,6 +255,7 @@ impl Action {
             Self::PreviousScreen => "prev tab",
             Self::Refresh => "refresh",
             Self::Cancel => "cancel",
+            Self::ShowLastMessage => "message",
             Self::Up => "up",
             Self::Down => "down",
             Self::PageUp => "page up",
@@ -265,10 +280,13 @@ impl Action {
             Self::TestGroup => "test group",
             Self::TestNode => "test node",
             Self::TestAllNodes => "test all",
+            Self::TestRouteSpeed => "route speed",
+            Self::InstallSpeedtestGo => "install speedtest-go",
+            Self::CycleTestMode => "test mode",
             Self::ClearNodeSelection => "unpin",
             Self::CloseConnection => "close",
             Self::CloseAllConnections => "close all",
-            Self::CycleConnectionSort => "sort",
+            Self::CycleNodeSort | Self::CycleConnectionSort => "sort",
             Self::ToggleLogFollow => "follow",
             Self::CycleLogLevel => "level",
             Self::ClearLogs => "clear",
@@ -278,12 +296,14 @@ impl Action {
             Self::UpdateAllRuleProviders => "update sets",
             Self::ToggleDisabledRules => "show disabled",
             Self::RunTests => "run",
+            Self::RunAllTests => "run all",
             Self::CancelTests => "stop tests",
             Self::ClearTestResults => "clear results",
             Self::StartCore => "start core",
             Self::StopCore => "stop core",
             Self::RestartCore => "restart core",
-            Self::UpgradeCore => "upgrade core",
+            Self::CycleCoreMode => "route mode",
+            Self::UpgradeCore => "install core",
             Self::UpdateGeo => "update geo",
             Self::FlushCaches => "flush caches",
             Self::EditRuntimeConfig => "edit config",
@@ -304,7 +324,7 @@ impl Action {
                 Screen::Connections => "connections the core is currently proxying",
                 Screen::Logs => "live log stream from the core",
                 Screen::Rules => "routing rules and rule providers",
-                Screen::Tests => "latency tests",
+                Screen::Tests => "unlock tests",
                 Screen::Settings => "application and core settings",
                 Screen::Help => "this reference",
             },
@@ -312,6 +332,7 @@ impl Action {
             Self::PreviousScreen => "move to the previous tab",
             Self::Refresh => "re-read everything from the core",
             Self::Cancel => "close a prompt, or clear the search",
+            Self::ShowLastMessage => "view the full text of the latest status message",
             Self::Up => "move the cursor up",
             Self::Down => "move the cursor down",
             Self::PageUp => "move up by a screenful",
@@ -336,6 +357,12 @@ impl Action {
             Self::TestGroup => "measure every member of this group",
             Self::TestNode => "measure this node",
             Self::TestAllNodes => "measure every node the core knows about",
+            Self::TestRouteSpeed => "measure current-route download through Mihomo",
+            Self::InstallSpeedtestGo => "download speedtest-go into the application directory",
+            Self::CycleTestMode => "change between proxy URL, direct TCP and direct ICMP probes",
+            Self::CycleNodeSort => {
+                "order members within each group by source order or measured latency"
+            }
             Self::ClearNodeSelection => "let an automatic group choose again",
             Self::CloseConnection => "drop this connection; the client will reconnect",
             Self::CloseAllConnections => "drop every connection",
@@ -349,12 +376,14 @@ impl Action {
             Self::UpdateAllRuleProviders => "download every rule set again",
             Self::ToggleDisabledRules => "include disabled rules in the list",
             Self::RunTests => "run the highlighted test",
+            Self::RunAllTests => "run all unlock checks",
             Self::CancelTests => "stop the running batch",
-            Self::ClearTestResults => "forget cached latency results",
+            Self::ClearTestResults => "clear unlock check results",
             Self::StartCore => "launch the core with the generated configuration",
             Self::StopCore => "stop the core process",
             Self::RestartCore => "stop and start the core",
-            Self::UpgradeCore => "download and install a newer core from its release channel",
+            Self::CycleCoreMode => "switch rule, global and direct routing modes",
+            Self::UpgradeCore => "download or update the managed mihomo core",
             Self::UpdateGeo => "download fresh GeoIP and GeoSite databases",
             Self::FlushCaches => "clear the fake-IP and DNS caches",
             Self::EditRuntimeConfig => "open the generated configuration in $EDITOR",
@@ -373,6 +402,7 @@ impl Action {
                 | Self::StopCore
                 | Self::RollbackConfig
                 | Self::UpgradeCore
+                | Self::InstallSpeedtestGo
         )
     }
 
@@ -385,7 +415,8 @@ impl Action {
             | Self::NextScreen
             | Self::PreviousScreen
             | Self::Refresh
-            | Self::Cancel => "General",
+            | Self::Cancel
+            | Self::ShowLastMessage => "General",
             Self::Up
             | Self::Down
             | Self::PageUp
@@ -410,6 +441,10 @@ impl Action {
             | Self::TestGroup
             | Self::TestNode
             | Self::TestAllNodes
+            | Self::TestRouteSpeed
+            | Self::InstallSpeedtestGo
+            | Self::CycleTestMode
+            | Self::CycleNodeSort
             | Self::ClearNodeSelection => "Proxies",
             Self::CloseConnection | Self::CloseAllConnections | Self::CycleConnectionSort => {
                 "Connections"
@@ -421,10 +456,13 @@ impl Action {
             | Self::UpdateRuleProvider
             | Self::UpdateAllRuleProviders
             | Self::ToggleDisabledRules => "Rules",
-            Self::RunTests | Self::CancelTests | Self::ClearTestResults => "Tests",
+            Self::RunTests | Self::RunAllTests | Self::CancelTests | Self::ClearTestResults => {
+                "Tests"
+            }
             Self::StartCore
             | Self::StopCore
             | Self::RestartCore
+            | Self::CycleCoreMode
             | Self::UpgradeCore
             | Self::UpdateGeo
             | Self::FlushCaches
@@ -514,6 +552,7 @@ mod tests {
             Action::PreviousScreen,
             Action::Refresh,
             Action::Cancel,
+            Action::ShowLastMessage,
             Action::Up,
             Action::Down,
             Action::PageUp,
@@ -538,6 +577,9 @@ mod tests {
             Action::TestGroup,
             Action::TestNode,
             Action::TestAllNodes,
+            Action::TestRouteSpeed,
+            Action::InstallSpeedtestGo,
+            Action::CycleTestMode,
             Action::ClearNodeSelection,
             Action::CloseConnection,
             Action::CloseAllConnections,
@@ -551,6 +593,7 @@ mod tests {
             Action::UpdateAllRuleProviders,
             Action::ToggleDisabledRules,
             Action::RunTests,
+            Action::RunAllTests,
             Action::CancelTests,
             Action::ClearTestResults,
             Action::StartCore,

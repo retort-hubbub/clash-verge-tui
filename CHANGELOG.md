@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-27
+
 ### Added
 
 - Proxies can cycle CONNECT, direct TCP and direct ICMP latency probes with
@@ -779,7 +781,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.5.0...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.6.0...develop
+[0.6.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.5.0
 [0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1
 [0.4.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.0

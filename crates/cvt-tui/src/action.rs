@@ -111,6 +111,8 @@ pub enum Action {
     Cancel,
     /// View the latest status message in full.
     ShowLastMessage,
+    /// View every field of the highlighted row in full.
+    InspectSelection,
 
     // -- list navigation --------------------------------------------------
     /// Move the cursor up one row.
@@ -256,6 +258,7 @@ impl Action {
             Self::Refresh => "refresh",
             Self::Cancel => "cancel",
             Self::ShowLastMessage => "message",
+            Self::InspectSelection => "details",
             Self::Up => "up",
             Self::Down => "down",
             Self::PageUp => "page up",
@@ -294,7 +297,7 @@ impl Action {
             Self::ToggleRule => "toggle",
             Self::UpdateRuleProvider => "update set",
             Self::UpdateAllRuleProviders => "update sets",
-            Self::ToggleDisabledRules => "show disabled",
+            Self::ToggleDisabledRules => "toggle disabled",
             Self::RunTests => "run",
             Self::RunAllTests => "run all",
             Self::CancelTests => "stop tests",
@@ -333,6 +336,7 @@ impl Action {
             Self::Refresh => "re-read everything from the core",
             Self::Cancel => "close a prompt, or clear the search",
             Self::ShowLastMessage => "view the full text of the latest status message",
+            Self::InspectSelection => "view every field of the highlighted row in full",
             Self::Up => "move the cursor up",
             Self::Down => "move the cursor down",
             Self::PageUp => "move up by a screenful",
@@ -374,7 +378,7 @@ impl Action {
             Self::ToggleRule => "enable or disable this rule in the running core",
             Self::UpdateRuleProvider => "download this rule set again",
             Self::UpdateAllRuleProviders => "download every rule set again",
-            Self::ToggleDisabledRules => "include disabled rules in the list",
+            Self::ToggleDisabledRules => "show or hide disabled rules in the list",
             Self::RunTests => "run the highlighted test",
             Self::RunAllTests => "run all unlock checks",
             Self::CancelTests => "stop the running batch",
@@ -416,7 +420,8 @@ impl Action {
             | Self::PreviousScreen
             | Self::Refresh
             | Self::Cancel
-            | Self::ShowLastMessage => "General",
+            | Self::ShowLastMessage
+            | Self::InspectSelection => "General",
             Self::Up
             | Self::Down
             | Self::PageUp
@@ -553,6 +558,7 @@ mod tests {
             Action::Refresh,
             Action::Cancel,
             Action::ShowLastMessage,
+            Action::InspectSelection,
             Action::Up,
             Action::Down,
             Action::PageUp,

@@ -22,8 +22,30 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let height = usize::from(inner.height);
-    let width = usize::from(inner.width).max(1);
+    let lines = visible_lines(app, inner.width, inner.height);
+    if lines.is_empty() {
+        let text = if app.logs.is_empty() {
+            "no log lines yet — start the core, and check that stream.logs is on"
+        } else {
+            "no buffered line matches the filter"
+        };
+        frame.render_widget(
+            Paragraph::new(app.tr(text))
+                .style(app.theme.key_label())
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    }
+    // The window already ends where following stopped, so the paragraph is
+    // rendered as it is: nothing here may re-anchor it to the newest line.
+    let rendered: Vec<Line<'static>> = lines.iter().map(|line| render_line(line, app)).collect();
+    frame.render_widget(Paragraph::new(rendered).wrap(Wrap { trim: false }), inner);
+}
+
+fn visible_lines(app: &App, width: u16, height: u16) -> Vec<&crate::row::LogRow> {
+    let height = usize::from(height);
+    let width = usize::from(width).max(1);
     // The window is in terminal rows. Count wrapped rows with the same
     // Paragraph implementation that draws them; a conservative estimate that
     // charged every space as a new row hid most of the buffer.
@@ -45,25 +67,28 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         used += rows;
         first -= 1;
     }
-    let lines = &candidates[first..];
-    if lines.is_empty() {
-        let text = if app.logs.is_empty() {
-            "no log lines yet — start the core, and check that stream.logs is on"
-        } else {
-            "no buffered line matches the filter"
-        };
-        frame.render_widget(
-            Paragraph::new(app.tr(text))
-                .style(app.theme.key_label())
-                .wrap(Wrap { trim: true }),
-            inner,
-        );
-        return;
+    candidates[first..].to_vec()
+}
+
+/// Resolve the log line under the pointer using the same wrapping as the renderer.
+pub(crate) fn line_at(app: &App, column: u16, row: u16) -> Option<crate::row::LogRow> {
+    let area = Rect::new(0, 1, app.viewport.0, app.viewport.1.saturating_sub(2));
+    let inner = area.inner(ratatui::layout::Margin::new(1, 1));
+    if !inner.contains(ratatui::layout::Position::new(column, row)) {
+        return None;
     }
-    // The window already ends where following stopped, so the paragraph is
-    // rendered as it is: nothing here may re-anchor it to the newest line.
-    let rendered: Vec<Line<'static>> = lines.iter().map(|line| render_line(line, app)).collect();
-    frame.render_widget(Paragraph::new(rendered).wrap(Wrap { trim: false }), inner);
+    let mut top = inner.y;
+    for line in visible_lines(app, inner.width, inner.height) {
+        let rows = Paragraph::new(render_line(line, app))
+            .wrap(Wrap { trim: false })
+            .line_count(inner.width.max(1));
+        let bottom = top.saturating_add(u16::try_from(rows).unwrap_or(u16::MAX));
+        if (top..bottom).contains(&row) {
+            return Some(line.clone());
+        }
+        top = bottom;
+    }
+    None
 }
 
 fn render_line(line: &crate::row::LogRow, app: &App) -> Line<'static> {

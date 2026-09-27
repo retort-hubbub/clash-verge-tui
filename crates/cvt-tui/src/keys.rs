@@ -40,6 +40,8 @@ pub enum Context {
     Tests,
     /// Settings only.
     Settings,
+    /// Key reference only.
+    Help,
 }
 
 impl Context {
@@ -57,6 +59,7 @@ impl Context {
             Self::Rules => "rules",
             Self::Tests => "tests",
             Self::Settings => "settings",
+            Self::Help => "help",
         }
     }
 }
@@ -128,7 +131,7 @@ pub fn contexts_for(screen: Screen) -> Vec<Context> {
         Screen::Rules => vec![Context::Rules, Context::List, Context::Global],
         Screen::Tests => vec![Context::Tests, Context::List, Context::Global],
         Screen::Settings => vec![Context::Settings, Context::List, Context::Global],
-        Screen::Help => vec![Context::Global],
+        Screen::Help => vec![Context::Help, Context::Global],
     }
 }
 
@@ -152,6 +155,7 @@ impl Keymap {
             Binding::new(K::Esc, none, A::Cancel, C::Global, "Esc"),
             Binding::new(K::Char('r'), none, A::Refresh, C::Global, "r"),
             Binding::new(K::Char('m'), none, A::ShowLastMessage, C::Global, "m"),
+            Binding::new(K::F(1), none, A::InspectSelection, C::Global, "F1"),
             // -- list movement --------------------------------------------
             Binding::new(K::Up, none, A::Up, C::List, "k/↑"),
             Binding::new(K::Char('k'), none, A::Up, C::List, "k/↑"),
@@ -167,6 +171,15 @@ impl Keymap {
             Binding::new(K::Char('G'), none, A::Bottom, C::List, "G"),
             Binding::new(K::Char('/'), none, A::Search, C::List, "/"),
             Binding::new(K::Char('n'), none, A::SearchNext, C::List, "n"),
+            // The help reference has a cursor but no search filter.
+            Binding::new(K::Up, none, A::Up, C::Help, "k/↑"),
+            Binding::new(K::Char('k'), none, A::Up, C::Help, "k/↑"),
+            Binding::new(K::Down, none, A::Down, C::Help, "j/↓"),
+            Binding::new(K::Char('j'), none, A::Down, C::Help, "j/↓"),
+            Binding::new(K::PageUp, none, A::PageUp, C::Help, "PgUp"),
+            Binding::new(K::PageDown, none, A::PageDown, C::Help, "PgDn"),
+            Binding::new(K::Home, none, A::Top, C::Help, "Home"),
+            Binding::new(K::End, none, A::Bottom, C::Help, "End"),
             // -- home -----------------------------------------------------
             Binding::new(K::Char('s'), none, A::StartCore, C::Home, "s"),
             Binding::new(K::Char('S'), none, A::StopCore, C::Home, "S"),
@@ -491,6 +504,7 @@ mod tests {
             Action::NextScreen,
             Action::PreviousScreen,
             Action::ShowLastMessage,
+            Action::InspectSelection,
             Action::StartCore,
             Action::StopCore,
             Action::RestartCore,

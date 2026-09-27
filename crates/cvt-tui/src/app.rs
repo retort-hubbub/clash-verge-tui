@@ -51,6 +51,7 @@ pub const STATUS_TTL: Duration = Duration::from_secs(4);
 /// How many ticks pass between background polls of the running core.
 pub const POLL_EVERY: u64 = 20;
 const NODE_HEALTH_TTL: Duration = Duration::from_secs(300);
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
 // effects
@@ -599,7 +600,10 @@ pub enum Done {
         tested: usize,
     },
     /// One connection was dropped.
-    ConnectionClosed,
+    ConnectionClosed {
+        /// Controller connection identifier.
+        id: String,
+    },
     /// Every connection was dropped.
     ConnectionsClosed {
         /// How many there were.
@@ -908,6 +912,8 @@ const LOG_KEEP_PRESETS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
 const LOG_DAYS_PRESETS: &[i64] = &[0, 1, 3, 7, 14, 30, 90];
 const LOG_LEVELS: &[&str] = &["silent", "error", "warning", "info", "debug"];
 const LANGUAGES: &[&str] = &["en", "zh-CN"];
+const LOGIN_AUTOSTART: &[&str] = &["off", "systemd", "KDE", "GNOME"];
+const TUN_CHOICES: &[&str] = &["profile", "on", "off"];
 
 /// Every setting the screen offers, with its current value.
 #[must_use]
@@ -966,6 +972,36 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
             editable: yes_no(settings.core.auto_start),
             help: "launch the core as soon as the application starts",
             kind: SettingKind::Bool,
+        },
+        SettingRow {
+            key: "core.login_autostart",
+            label: "start core on login",
+            value: settings.core.login_autostart.label().to_owned(),
+            editable: settings.core.login_autostart.label().to_owned(),
+            help: "register a user-level systemd, KDE or GNOME login startup entry; save to apply",
+            kind: SettingKind::Choice {
+                options: LOGIN_AUTOSTART,
+            },
+        },
+        SettingRow {
+            key: "core.tun_enabled",
+            label: "TUN mode",
+            value: match settings.core.tun_enabled {
+                None => "profile",
+                Some(true) => "on",
+                Some(false) => "off",
+            }
+            .to_owned(),
+            editable: match settings.core.tun_enabled {
+                None => "profile",
+                Some(true) => "on",
+                Some(false) => "off",
+            }
+            .to_owned(),
+            help: "override the profile's TUN setting; enabling needs network privileges and may change system routes",
+            kind: SettingKind::Choice {
+                options: TUN_CHOICES,
+            },
         },
         SettingRow {
             key: "core.rollback_on_failure",
@@ -1162,6 +1198,8 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
                 || (row.key == "core.binary" && settings.core.binary.is_none())
                 || (row.key == "core.external_controller"
                     && settings.core.external_controller.is_none())
+                || row.key == "core.login_autostart"
+                || row.key == "core.tun_enabled"
             {
                 row.value = crate::i18n::text(settings.ui.language, &row.value).to_owned();
             }
@@ -1213,6 +1251,18 @@ fn cycle_setting(settings: &mut Settings, key: &str, forward: bool) -> bool {
         }
         "core.auto_start" => {
             settings.core.auto_start = !settings.core.auto_start;
+            true
+        }
+        "core.login_autostart" => {
+            settings.core.login_autostart = settings.core.login_autostart.next();
+            true
+        }
+        "core.tun_enabled" => {
+            settings.core.tun_enabled = match settings.core.tun_enabled {
+                None => Some(true),
+                Some(true) => Some(false),
+                Some(false) => None,
+            };
             true
         }
         "core.rollback_on_failure" => {
@@ -1633,6 +1683,11 @@ pub struct App {
     pub probe_mode: ProbeMode,
     /// Whether disabled rules are listed.
     pub show_disabled_rules: bool,
+    /// Selected help entry.
+    pub help_selected: usize,
+    /// First help entry shown.
+    pub help_offset: usize,
+    last_table_click: Option<(Screen, usize, Instant)>,
     status: Option<Status>,
     last_status: Option<Status>,
     ticks: u64,
@@ -1748,7 +1803,10 @@ impl App {
             connection_sort: ConnectionSort::Natural,
             node_sort: SortOrder::Natural,
             probe_mode: ProbeMode::Connect,
-            show_disabled_rules: false,
+            show_disabled_rules: true,
+            help_selected: 0,
+            help_offset: 0,
+            last_table_click: None,
             status: None,
             last_status: None,
             ticks: 0,
@@ -1945,6 +2003,10 @@ impl App {
         if self.overlay.is_some() {
             return self.on_overlay_key(key);
         }
+        if self.screen == Screen::Help && key.code == KeyCode::Enter {
+            self.show_help_entry();
+            return Vec::new();
+        }
         match self.keymap.resolve(self.screen, key) {
             Some(action) => self.dispatch(action, false),
             None => Vec::new(),
@@ -1958,27 +2020,75 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if mouse.row == self.viewport.1.saturating_sub(1) {
-                    return self.show_last_message();
+                    self.last_table_click = None;
+                    if self.current_status().is_some() {
+                        return self.show_last_message();
+                    }
+                    if let Some(action) = crate::ui::footer_action_at(self, mouse.column) {
+                        return self.dispatch(action, false);
+                    }
+                    return Vec::new();
                 }
                 if let Some(screen) = crate::ui::tab_at(self, mouse.column, mouse.row) {
+                    self.last_table_click = None;
                     return self.goto(screen);
                 }
-                let Some(area) = crate::ui::table_rows_area(self) else {
-                    return Vec::new();
-                };
-                if !area.contains(ratatui::layout::Position::new(mouse.column, mouse.row)) {
+                if mouse.row == 0 {
+                    self.last_table_click = None;
+                    self.inspect_core_summary();
                     return Vec::new();
                 }
-                let index =
-                    self.active_table_offset() + usize::from(mouse.row.saturating_sub(area.y));
-                if self.active_rows().is_some_and(|rows| index < rows.len()) {
-                    self.select_table_row(index);
+                if self.screen == Screen::Home {
+                    self.last_table_click = None;
+                    self.inspect_home();
+                    return Vec::new();
+                }
+                if self.screen == Screen::Logs {
+                    self.last_table_click = None;
+                    self.inspect_log_at(mouse.column, mouse.row);
+                    return Vec::new();
+                }
+                if crate::ui::detail_area(self).is_some_and(|area| {
+                    area.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                }) {
+                    self.last_table_click = None;
+                    self.inspect_selection();
+                    return Vec::new();
+                }
+                self.click_table_row(mouse.column, mouse.row, false)
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.last_table_click = None;
+                if mouse.row == self.viewport.1.saturating_sub(1) {
+                    return self.show_last_message();
+                }
+                if mouse.row == 0 {
+                    self.inspect_core_summary();
+                    return Vec::new();
+                }
+                if self.screen == Screen::Logs {
+                    self.inspect_log_at(mouse.column, mouse.row);
+                    return Vec::new();
+                }
+                if self.screen == Screen::Home {
+                    self.inspect_home();
+                    return Vec::new();
+                }
+                if !self
+                    .click_table_row(mouse.column, mouse.row, true)
+                    .is_empty()
+                {
+                    return Vec::new();
+                }
+                if self.overlay.is_none() {
+                    self.inspect_selection();
                 }
                 Vec::new()
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if mouse.row > 0 && mouse.row < self.viewport.1.saturating_sub(1) =>
             {
+                self.last_table_click = None;
                 let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
                     -3
                 } else {
@@ -1993,6 +2103,64 @@ impl App {
             }
             _ => Vec::new(),
         }
+    }
+
+    fn click_table_row(&mut self, column: u16, row: u16, inspect: bool) -> Vec<Effect> {
+        if self.screen == Screen::Help {
+            self.last_table_click = None;
+            if let Some(index) = crate::ui::help::entry_at(self, column, row) {
+                self.help_selected = index;
+                if inspect {
+                    self.show_help_entry();
+                }
+            }
+            return Vec::new();
+        }
+        let Some(area) = crate::ui::table_rows_area(self) else {
+            self.last_table_click = None;
+            return Vec::new();
+        };
+        if !area.contains(ratatui::layout::Position::new(column, row)) {
+            self.last_table_click = None;
+            return Vec::new();
+        }
+        let offset = self.active_table_offset();
+        let index = offset + usize::from(row.saturating_sub(area.y));
+        if self.active_rows().is_none_or(|rows| index >= rows.len()) {
+            self.last_table_click = None;
+            return Vec::new();
+        }
+        let second_click = self.last_table_click.is_some_and(|(screen, previous, at)| {
+            screen == self.screen && previous == index && at.elapsed() <= DOUBLE_CLICK_WINDOW
+        });
+        self.select_table_row(index);
+        if inspect {
+            self.last_table_click = None;
+            self.inspect_selection();
+            return Vec::new();
+        }
+        if self.screen == Screen::Proxies
+            && column == area.x
+            && self.nodes.selected_item().is_some_and(|node| node.is_group)
+        {
+            self.last_table_click = None;
+            return self.dispatch(Action::SelectNode, false);
+        }
+        self.last_table_click = Some((self.screen, index, Instant::now()));
+        if second_click {
+            self.last_table_click = None;
+            let action = match self.screen {
+                Screen::Profiles => Action::ActivateProfile,
+                Screen::Proxies => Action::SelectNode,
+                Screen::Connections => Action::CloseConnection,
+                Screen::Rules => Action::ToggleRule,
+                Screen::Tests => Action::RunTests,
+                Screen::Settings => Action::ToggleSetting,
+                Screen::Home | Screen::Logs | Screen::Help => return Vec::new(),
+            };
+            return self.dispatch(action, false);
+        }
+        Vec::new()
     }
 
     fn on_overlay_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
@@ -2066,7 +2234,9 @@ impl App {
                     .min(items.len().saturating_sub(1));
             }
             (Overlay::Preview { lines, scroll, .. }, MouseEventKind::ScrollDown) => {
-                *scroll = scroll.saturating_add(3).min(lines.len().saturating_sub(1));
+                *scroll = scroll
+                    .saturating_add(3)
+                    .min(crate::ui::preview_scroll_limit(self.viewport, lines));
             }
             _ => {}
         }
@@ -2150,20 +2320,18 @@ impl App {
                 lines,
                 scroll,
             } => {
-                let last = lines.len().saturating_sub(1);
-                let page = self.visible_rows().max(1);
+                let last = crate::ui::preview_scroll_limit(self.viewport, &lines);
+                let page = crate::ui::preview_page_rows(self.viewport, &lines);
                 let next = match key.code {
                     KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => None,
                     KeyCode::Down | KeyCode::Char('j') => Some(scroll.saturating_add(1).min(last)),
                     KeyCode::Up | KeyCode::Char('k') => Some(scroll.saturating_sub(1)),
-                    KeyCode::PageDown | KeyCode::Char(' ') => Some(
-                        scroll
-                            .saturating_add(page)
-                            .min(last.saturating_sub(page.saturating_sub(1))),
-                    ),
+                    KeyCode::PageDown | KeyCode::Char(' ') => {
+                        Some(scroll.saturating_add(page).min(last))
+                    }
                     KeyCode::PageUp => Some(scroll.saturating_sub(page)),
                     KeyCode::Home | KeyCode::Char('g') => Some(0),
-                    KeyCode::End | KeyCode::Char('G') => Some(last.saturating_sub(page - 1)),
+                    KeyCode::End | KeyCode::Char('G') => Some(last),
                     _ => Some(scroll),
                 };
                 match next {
@@ -2374,6 +2542,17 @@ impl App {
     // -- action dispatch ----------------------------------------------------
 
     fn dispatch(&mut self, action: Action, confirmed: bool) -> Vec<Effect> {
+        if action == Action::SaveSettings
+            && !confirmed
+            && self.settings.core.tun_enabled == Some(true)
+            && self.settings_dirty
+        {
+            self.overlay = Some(Overlay::Confirm {
+                question: "enable TUN and grant the core network capabilities? this may change system routes; the grant persists on the core binary".to_owned(),
+                action,
+            });
+            return Vec::new();
+        }
         if action.is_destructive() && !confirmed {
             if let Some(reason) = self.destructive_blocker(&action) {
                 self.refuse(reason);
@@ -2419,7 +2598,9 @@ impl App {
             Action::RollbackConfig => {
                 "restore the previous generated configuration and restart the core?".to_owned()
             }
-            Action::UpgradeCore => "download and install the latest managed core?".to_owned(),
+            Action::UpgradeCore => self
+                .tr_key(crate::i18n::TextKey::ManagedCoreConfirmation)
+                .to_owned(),
             Action::InstallSpeedtestGo => {
                 "download and install speedtest-go in the application directory?".to_owned()
             }
@@ -2455,6 +2636,10 @@ impl App {
                 Vec::new()
             }
             Action::ShowLastMessage => self.show_last_message(),
+            Action::InspectSelection => {
+                self.inspect_selection();
+                Vec::new()
+            }
             Action::Up => self.move_cursor(-1),
             Action::Down => self.move_cursor(1),
             Action::PageUp => self.page_cursor(-1),
@@ -2769,7 +2954,235 @@ impl App {
         self.frozen = if self.logs.follow { None } else { Some(next) };
     }
 
+    fn move_help(&mut self, delta: isize) {
+        let count = crate::ui::help::entries(self).len();
+        self.help_selected = self
+            .help_selected
+            .saturating_add_signed(delta)
+            .min(count.saturating_sub(1));
+        self.sync_help_scroll();
+    }
+
+    fn sync_help_scroll(&mut self) {
+        let height = self.visible_rows().max(1);
+        let max_offset = crate::ui::help::entries(self).len().saturating_sub(height);
+        self.help_offset = self.help_offset.min(max_offset);
+        if self.help_selected < self.help_offset {
+            self.help_offset = self.help_selected;
+        } else if self.help_selected >= self.help_offset.saturating_add(height) {
+            self.help_offset = self
+                .help_selected
+                .saturating_sub(height - 1)
+                .min(max_offset);
+        }
+    }
+
+    fn show_help_entry(&mut self) {
+        if let Some(entry) = crate::ui::help::entries(self).get(self.help_selected) {
+            self.overlay = Some(Overlay::Preview {
+                title: "key reference".to_owned(),
+                lines: vec![
+                    format!("{} · {}", entry.group, entry.action),
+                    format!("{} · {}", entry.keys, entry.context),
+                    String::new(),
+                    entry.description.clone(),
+                ],
+                scroll: 0,
+            });
+        }
+    }
+
+    fn inspect_selection(&mut self) {
+        if self.screen == Screen::Home {
+            self.inspect_home();
+            return;
+        }
+        if self.screen == Screen::Logs {
+            self.inspect_latest_log();
+            return;
+        }
+        if self.screen == Screen::Help {
+            self.show_help_entry();
+            return;
+        }
+        let fields: Option<Vec<(&str, String)>> = match self.screen {
+            Screen::Profiles => self.profiles.selected_item().map(|row| {
+                let mut fields = vec![
+                    ("name", row.name.clone()),
+                    ("uid", row.uid.clone()),
+                    ("role", crate::i18n::profile_role(self.language(), row)),
+                    (
+                        "source",
+                        row.url
+                            .clone()
+                            .unwrap_or_else(|| self.tr("local document").to_owned()),
+                    ),
+                    (
+                        "updated",
+                        row.updated_label(chrono::Local::now().timestamp()),
+                    ),
+                ];
+                if let Some(quota) = row.quota_label() {
+                    fields.push(("remaining", quota));
+                }
+                if let Some(reason) = &row.unsupported {
+                    fields.push(("cannot run", reason.clone()));
+                }
+                fields
+            }),
+            Screen::Proxies => self.nodes.selected_item().map(|row| {
+                vec![
+                    ("node", row.name.clone()),
+                    ("group", row.group.clone().unwrap_or_default()),
+                    ("type", row.kind.clone()),
+                    ("delay", row.delay_label()),
+                    (
+                        "state",
+                        self.tr(if row.active {
+                            "active"
+                        } else if row.alive {
+                            "available"
+                        } else {
+                            "unavailable"
+                        })
+                        .to_owned(),
+                    ),
+                ]
+            }),
+            Screen::Connections => self.connections.selected_item().map(|row| {
+                vec![
+                    ("destination", row.destination.clone()),
+                    ("process", row.process.clone()),
+                    ("network", row.network.clone()),
+                    ("rule", row.rule.clone()),
+                    ("chain", row.chain.clone()),
+                    ("traffic", row.traffic_label()),
+                    ("id", row.id.clone()),
+                ]
+            }),
+            Screen::Rules => self.rules.selected_item().map(|row| {
+                vec![
+                    ("rule", row.raw.clone()),
+                    ("type", row.kind.clone()),
+                    ("value", row.payload.clone()),
+                    ("policy", row.policy.clone()),
+                    (
+                        "state",
+                        self.tr(if row.disabled { "disabled" } else { "enabled" })
+                            .to_owned(),
+                    ),
+                    ("hits", row.hits.to_string()),
+                    ("misses", row.misses.to_string()),
+                ]
+            }),
+            Screen::Tests => self.tests.selected_item().map(|row| {
+                vec![
+                    ("check", self.tr(row.kind.label()).to_owned()),
+                    ("target", row.target.clone()),
+                    ("what it does", self.tr(row.kind.description()).to_owned()),
+                    ("result", row.result.label()),
+                ]
+            }),
+            Screen::Settings => self.settings_rows.selected_item().map(|row| {
+                vec![
+                    ("setting", self.tr(row.label).to_owned()),
+                    ("key", row.key.to_owned()),
+                    ("value", row.value.clone()),
+                    ("what it does", self.tr(row.help).to_owned()),
+                ]
+            }),
+            Screen::Home | Screen::Logs | Screen::Help => None,
+        };
+        if let Some(fields) = fields {
+            let lines = fields
+                .into_iter()
+                .map(|(label, value)| format!("{}: {value}", self.tr(label)))
+                .collect();
+            self.overlay = Some(Overlay::Preview {
+                title: "full details".to_owned(),
+                lines,
+                scroll: 0,
+            });
+        } else {
+            self.set_status(StatusKind::Info, "no selected row to inspect");
+        }
+    }
+
+    fn inspect_core_summary(&mut self) {
+        self.overlay = Some(Overlay::Preview {
+            title: "core".to_owned(),
+            lines: vec![crate::ui::widgets::core_summary(self)],
+            scroll: 0,
+        });
+    }
+
+    fn inspect_home(&mut self) {
+        let mut lines = vec![
+            format!(
+                "{}: {}",
+                self.tr("state"),
+                crate::i18n::core_status(self.language(), &self.core)
+            ),
+            format!(
+                "{}: {}",
+                self.tr("mode"),
+                self.core_mode
+                    .as_deref()
+                    .map_or_else(|| self.tr("unknown"), |mode| self.tr(mode))
+            ),
+            format!(
+                "{}: {}",
+                self.tr("version"),
+                self.version
+                    .as_deref()
+                    .unwrap_or_else(|| self.tr("unknown"))
+            ),
+            format!("{}: {}", self.tr("data directory"), self.home.display()),
+        ];
+        if let Some(ip) = &self.ip_info {
+            lines.extend([
+                format!("IP: {}", ip.ip),
+                format!("{}: {}", self.tr("country"), ip.country),
+                format!("{}: {}", self.tr("network"), ip.organization),
+            ]);
+        }
+        if let Some(error) = &self.ip_error {
+            lines.push(format!("IP: {error}"));
+        }
+        self.overlay = Some(Overlay::Preview {
+            title: "full details".to_owned(),
+            lines,
+            scroll: 0,
+        });
+    }
+
+    fn inspect_latest_log(&mut self) {
+        if let Some(line) = self.log_window(1).0.last().copied().cloned() {
+            self.show_log_detail(&line);
+        } else {
+            self.set_status(StatusKind::Info, "no log lines yet");
+        }
+    }
+
+    fn inspect_log_at(&mut self, column: u16, row: u16) {
+        if let Some(line) = crate::ui::logs::line_at(self, column, row) {
+            self.show_log_detail(&line);
+        }
+    }
+
+    fn show_log_detail(&mut self, line: &LogRow) {
+        self.overlay = Some(Overlay::Preview {
+            title: "full details".to_owned(),
+            lines: vec![format!("{} {} {}", line.at, line.level, line.message)],
+            scroll: 0,
+        });
+    }
+
     fn sync_scroll(&mut self) {
+        if self.screen == Screen::Help {
+            self.sync_help_scroll();
+            return;
+        }
         let height = self.visible_rows();
         if let Some(rows) = self.active_rows_mut() {
             rows.scroll_into_view(height);
@@ -2777,6 +3190,10 @@ impl App {
     }
 
     fn move_cursor(&mut self, delta: isize) -> Vec<Effect> {
+        if self.screen == Screen::Help {
+            self.move_help(delta);
+            return Vec::new();
+        }
         if self.screen == Screen::Logs {
             self.scroll_logs(delta);
             return Vec::new();
@@ -2789,6 +3206,13 @@ impl App {
     }
 
     fn page_cursor(&mut self, direction: isize) -> Vec<Effect> {
+        if self.screen == Screen::Help {
+            self.move_help(
+                direction
+                    .saturating_mul(isize::try_from(self.visible_rows()).unwrap_or(isize::MAX)),
+            );
+            return Vec::new();
+        }
         if self.screen == Screen::Logs {
             self.scroll_logs(
                 direction
@@ -2805,6 +3229,12 @@ impl App {
     }
 
     fn move_to_edge(&mut self, first: bool) -> Vec<Effect> {
+        if self.screen == Screen::Help {
+            let count = crate::ui::help::entries(self).len();
+            self.help_selected = if first { 0 } else { count.saturating_sub(1) };
+            self.sync_help_scroll();
+            return Vec::new();
+        }
         if self.screen == Screen::Logs {
             let end = if first { 1 } else { self.logs.filtered().len() };
             self.logs.follow = !first;
@@ -2890,6 +3320,36 @@ impl App {
                     format!("measuring current route with {}…", mode.label()),
                 );
                 vec![Effect::TestRouteSpeed { mode }]
+            }
+            key if key.starts_with("setting:") => {
+                let key = &key[8..];
+                let mut settings = self.settings.clone();
+                let mut found = false;
+                for _ in 0..=items.len() {
+                    if setting_rows(&settings)
+                        .iter()
+                        .any(|row| row.key == key && row.editable == item)
+                    {
+                        found = true;
+                        break;
+                    }
+                    if !cycle_setting(&mut settings, key, true) {
+                        break;
+                    }
+                }
+                if !found {
+                    self.refuse(format!("invalid setting choice: {key} = {item}"));
+                    return Vec::new();
+                }
+                if let Err(error) = settings.validate() {
+                    self.refuse(error.to_string());
+                    return Vec::new();
+                }
+                self.settings = settings;
+                self.settings_dirty = true;
+                let effects = self.after_settings_change();
+                self.set_status(StatusKind::Info, format!("{key} = {item}"));
+                effects
             }
             other => {
                 self.set_status(
@@ -3390,11 +3850,34 @@ impl App {
             return Vec::new();
         };
         let key = row.key;
-        if row.kind == SettingKind::Text {
-            // The editable form, never the rendering.
-            let current = row.editable.clone();
-            self.open_prompt(PromptKind::Text, current);
-            return Vec::new();
+        match row.kind {
+            SettingKind::Text => {
+                self.open_prompt(PromptKind::Text, row.editable.clone());
+                return Vec::new();
+            }
+            SettingKind::Choice { options } => {
+                self.overlay = Some(Overlay::Picker {
+                    title: format!("setting:{key}"),
+                    items: options.iter().map(|option| (*option).to_owned()).collect(),
+                    selected: options
+                        .iter()
+                        .position(|option| *option == row.editable)
+                        .unwrap_or(0),
+                });
+                return Vec::new();
+            }
+            SettingKind::Number { presets } => {
+                self.overlay = Some(Overlay::Picker {
+                    title: format!("setting:{key}"),
+                    items: presets.iter().map(ToString::to_string).collect(),
+                    selected: presets
+                        .iter()
+                        .position(|option| option.to_string() == row.editable)
+                        .unwrap_or(0),
+                });
+                return Vec::new();
+            }
+            SettingKind::Bool => {}
         }
         if !cycle_setting(&mut self.settings, key, true) {
             self.refuse(format!("`{key}` cannot be changed here"));
@@ -3872,13 +4355,31 @@ impl App {
             Done::NodeTestsFinished { tested } => {
                 self.set_status(StatusKind::Success, format!("measured {tested} node(s)"));
             }
-            Done::ConnectionClosed => self.set_status(StatusKind::Success, "connection closed"),
+            Done::ConnectionClosed { id } => {
+                let remaining = self
+                    .connections
+                    .items()
+                    .iter()
+                    .filter(|row| row.id != id)
+                    .cloned()
+                    .collect();
+                self.set_connections(remaining);
+                self.set_status(StatusKind::Success, "connection closed");
+                return vec![Effect::Refresh(Screen::Connections)];
+            }
             Done::ConnectionsClosed { count } => {
+                self.set_connections(Vec::new());
                 self.set_status(StatusKind::Success, format!("closed {count} connection(s)"));
+                return vec![Effect::Refresh(Screen::Connections)];
             }
             Done::RuleToggled { index, disabled } => {
+                if let Some(rule) = self.all_rules.iter_mut().find(|rule| rule.index == index) {
+                    rule.disabled = disabled;
+                }
+                self.rebuild_rules();
                 let state = if disabled { "disabled" } else { "enabled" };
                 self.set_status(StatusKind::Success, format!("rule {index} {state}"));
+                return vec![Effect::Refresh(Screen::Rules)];
             }
             Done::RuleProvidersUpdated { count } => {
                 self.set_status(StatusKind::Success, format!("updated {count} rule set(s)"));
@@ -4060,6 +4561,15 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn left_click(column: u16, row: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
     }
 
     /// Send a key press, and collect whatever the machine wants done.
@@ -4707,6 +5217,7 @@ mod tests {
     #[test]
     fn a_preview_arrives_as_a_scrollable_overlay() {
         let mut a = loaded();
+        a.viewport = (40, 8);
         let _ = a.on_event(Event::Data(Data::Preview(Box::new(Preview {
             summary: "12 proxies, 3 groups, 40 rules - no errors".to_owned(),
             changes: vec![PreviewChange {
@@ -5021,10 +5532,10 @@ mod tests {
     // -- rules --------------------------------------------------------------
 
     #[test]
-    fn a_rule_is_toggled_the_other_way_and_disabled_rules_can_be_hidden() {
+    fn a_rule_is_toggled_the_other_way_and_disabled_rules_remain_reachable() {
         let mut a = loaded();
         goto(&mut a, Screen::Rules);
-        assert_eq!(a.rules.len(), 1, "the disabled rule is hidden by default");
+        assert_eq!(a.rules.len(), 2, "disabled rules are visible by default");
         assert_eq!(
             press(&mut a, KeyCode::Enter),
             vec![Effect::ToggleRule {
@@ -5033,8 +5544,8 @@ mod tests {
             }]
         );
         assert_eq!(press(&mut a, KeyCode::Char('h')), Vec::new());
-        assert!(a.show_disabled_rules);
-        assert_eq!(a.rules.len(), 2);
+        assert!(!a.show_disabled_rules);
+        assert_eq!(a.rules.len(), 1);
         assert_eq!(
             press(&mut a, KeyCode::Char(' ')),
             vec![Effect::ToggleRule {
@@ -5042,6 +5553,48 @@ mod tests {
                 disabled: true
             }]
         );
+    }
+
+    #[test]
+    fn successful_rule_toggle_updates_the_visible_row_before_refresh() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Rules);
+        assert!(!a.rules.items()[0].disabled);
+        assert_eq!(
+            a.on_event(Event::Done(Done::RuleToggled {
+                index: 0,
+                disabled: true,
+            })),
+            vec![Effect::Refresh(Screen::Rules)]
+        );
+        assert!(a.rules.items()[0].disabled);
+        assert_eq!(
+            press(&mut a, KeyCode::Enter),
+            vec![Effect::ToggleRule {
+                index: 0,
+                disabled: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn successful_connection_close_updates_the_visible_list_before_refresh() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Connections);
+        assert_eq!(a.connections.len(), 2);
+        assert_eq!(
+            a.on_event(Event::Done(Done::ConnectionClosed {
+                id: "c1".to_owned()
+            })),
+            vec![Effect::Refresh(Screen::Connections)]
+        );
+        assert_eq!(a.connections.len(), 1);
+        assert_eq!(a.connections.items()[0].id, "c2");
+        assert_eq!(
+            a.on_event(Event::Done(Done::ConnectionsClosed { count: 1 })),
+            vec![Effect::Refresh(Screen::Connections)]
+        );
+        assert!(a.connections.is_empty());
     }
 
     #[test]
@@ -5439,10 +5992,10 @@ mod tests {
     }
 
     #[test]
-    fn every_setting_row_can_be_cycled_from_the_keyboard() {
+    fn setting_switches_toggle_and_choices_open_a_picker() {
         let mut a = loaded();
         goto(&mut a, Screen::Settings);
-        assert_eq!(a.settings_rows.len(), 25);
+        assert_eq!(a.settings_rows.len(), 27);
         a.settings_rows
             .select_by_key("ui.color".to_owned(), |row| row.key.to_owned());
         assert_eq!(press(&mut a, KeyCode::Enter), Vec::new());
@@ -5462,11 +6015,15 @@ mod tests {
         a.settings_rows
             .select_by_key("test.concurrency".to_owned(), |row| row.key.to_owned());
         let _ = press(&mut a, KeyCode::Enter);
-        assert_eq!(a.settings.test.concurrency, 32, "16 steps up to 32");
+        assert!(matches!(a.overlay, Some(Overlay::Picker { .. })));
+        assert_eq!(a.settings.test.concurrency, 16);
+        let _ = press(&mut a, KeyCode::Down);
+        let _ = press(&mut a, KeyCode::Enter);
+        assert_eq!(a.settings.test.concurrency, 32);
         let _ = press(&mut a, KeyCode::Char(' '));
+        let _ = press(&mut a, KeyCode::End);
+        let _ = press(&mut a, KeyCode::Enter);
         assert_eq!(a.settings.test.concurrency, 64);
-        let _ = press(&mut a, KeyCode::Char(' '));
-        assert_eq!(a.settings.test.concurrency, 1, "the cycle wraps");
     }
 
     #[test]
@@ -5476,12 +6033,16 @@ mod tests {
         app.settings_rows
             .select_by_key("ui.language".to_owned(), |row| row.key.to_owned());
         let _ = press(&mut app, KeyCode::Enter);
+        let _ = press(&mut app, KeyCode::Down);
+        let _ = press(&mut app, KeyCode::Enter);
         assert_eq!(app.settings.ui.language, Language::Chinese);
         assert!(app.settings_dirty);
         let row = app.settings_rows.selected_item().expect("language row");
         assert_eq!(row.key, "ui.language");
         assert_eq!(row.label, "界面语言");
         assert_eq!(row.value, "简体中文");
+        let _ = press(&mut app, KeyCode::Enter);
+        let _ = press(&mut app, KeyCode::Up);
         let _ = press(&mut app, KeyCode::Enter);
         assert_eq!(app.settings.ui.language, Language::English);
         assert_eq!(app.settings_rows.selected_item().unwrap().label, "language");
@@ -5641,7 +6202,7 @@ mod tests {
         goto(&mut a, Screen::Proxies);
         let _ = a.on_event(Event::Resize(120, 40));
         assert_eq!(a.viewport, (120, 40));
-        assert_eq!(a.visible_rows(), 27);
+        assert_eq!(a.visible_rows(), 25);
         // A one-row terminal must still be usable rather than a panic.
         let _ = a.on_event(Event::Resize(1, 1));
         assert_eq!(a.visible_rows(), 1);
@@ -5695,6 +6256,165 @@ mod tests {
         let _ = a.on_event(mouse(MouseEventKind::Down(MouseButton::Left), 2, 0));
         assert_eq!(a.screen, Screen::Profiles, "a modal blocks tab clicks");
         assert!(a.overlay.is_some());
+    }
+
+    #[test]
+    fn mouse_opens_proxy_groups_and_activates_members_on_double_click() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Proxies);
+        let area = crate::ui::table_rows_area(&a).unwrap();
+        let click = |column, row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(!a.is_expanded("PROXY"));
+        assert!(a.on_event(click(area.x, area.y)).is_empty());
+        assert!(a.is_expanded("PROXY"));
+        assert!(a.on_event(click(area.x + 3, area.y + 1)).is_empty());
+        assert_eq!(
+            a.on_event(click(area.x + 3, area.y + 1)),
+            vec![Effect::SelectNode {
+                group: "PROXY".to_owned(),
+                member: "JP 01".to_owned(),
+            }]
+        );
+        assert!(a.on_event(click(area.x, area.y)).is_empty());
+        assert!(!a.is_expanded("PROXY"));
+    }
+
+    #[test]
+    fn tests_mouse_hitbox_stops_at_the_drawn_list_border() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Tests);
+        let _ = a.on_event(Event::Resize(80, 20));
+        let area = crate::ui::table_rows_area(&a).unwrap();
+        assert_eq!(area.height, 9);
+        let before = a.tests.selected_index();
+        let _ = a.on_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 2,
+            row: area.y + area.height,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(a.tests.selected_index(), before);
+    }
+
+    #[test]
+    fn mouse_double_click_matches_primary_keyboard_action_across_tables() {
+        let click = |column, row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        for screen in [
+            Screen::Profiles,
+            Screen::Rules,
+            Screen::Tests,
+            Screen::Settings,
+        ] {
+            let mut a = loaded();
+            goto(&mut a, screen);
+            let area = crate::ui::table_rows_area(&a).unwrap();
+            let _ = a.on_event(click(area.x + 2, area.y));
+            let effects = a.on_event(click(area.x + 2, area.y));
+            match screen {
+                Screen::Profiles => assert!(a.current_status().is_some()),
+                Screen::Rules => assert!(matches!(effects.as_slice(), [Effect::ToggleRule { .. }])),
+                Screen::Tests => assert!(matches!(effects.as_slice(), [Effect::RunTest { .. }])),
+                Screen::Settings => assert!(matches!(a.overlay, Some(Overlay::Prompt { .. }))),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn profile_double_click_switches_the_clicked_profile() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Profiles);
+        let _ = a.on_event(Event::Data(Data::Profiles(vec![
+            ProfileRow::from_item(&PrfItem::local("base", "Base"), true, false),
+            ProfileRow::from_item(&PrfItem::local("other", "Other"), false, false),
+        ])));
+        let area = crate::ui::table_rows_area(&a).unwrap();
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 2,
+            row: area.y + 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(a.on_event(click.clone()).is_empty());
+        assert_eq!(
+            a.on_event(click),
+            vec![Effect::SwitchProfile {
+                uid: "other".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn settings_description_is_available_in_full_by_key_and_detail_click() {
+        let mut a = loaded();
+        goto(&mut a, Screen::Settings);
+        let help = a.settings_rows.selected_item().unwrap().help.to_owned();
+        let _ = press(&mut a, KeyCode::F(1));
+        assert!(
+            matches!(&a.overlay, Some(Overlay::Preview { lines, .. }) if lines.iter().any(|line| line.contains(&help)))
+        );
+        let _ = press(&mut a, KeyCode::Esc);
+        let area = crate::ui::detail_area(&a).unwrap();
+        let _ = a.on_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 1,
+            row: area.y + 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(matches!(a.overlay, Some(Overlay::Preview { .. })));
+    }
+
+    #[test]
+    fn help_click_selects_and_right_click_opens_that_entry() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Help);
+        let area = crate::ui::table_rows_area(&app).unwrap();
+        let row = area.y + 2;
+        let click = |button| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(button),
+                column: area.x + 2,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let _ = app.on_event(click(MouseButton::Left));
+        assert_eq!(app.help_selected, 1);
+        assert!(app.overlay.is_none());
+        let _ = app.on_event(click(MouseButton::Right));
+        assert!(matches!(app.overlay, Some(Overlay::Preview { .. })));
+    }
+
+    #[test]
+    fn help_right_click_in_the_second_column_opens_the_clicked_action() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Help);
+        app.viewport = (160, 40);
+        let column = 82;
+        let row = 4;
+        let expected = crate::ui::help::entry_at(&app, column, row).expect("second column row");
+        let _ = app.on_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.help_selected, expected);
+        assert!(matches!(app.overlay, Some(Overlay::Preview { .. })));
     }
 
     #[test]
@@ -5827,6 +6547,98 @@ mod tests {
     }
 
     #[test]
+    fn managed_core_confirmation_has_clickable_buttons_in_both_languages() {
+        for language in [Language::English, Language::Chinese] {
+            let mut a = app();
+            a.settings.ui.language = language;
+            a.viewport = (80, 24);
+            let question = "download and install the latest managed core?";
+            assert!(!a.tr(question).is_empty());
+            let (yes_x, yes_y) = (0..24)
+                .flat_map(|row| (0..80).map(move |column| (column, row)))
+                .find(|&(column, row)| {
+                    crate::ui::confirm_choice_at(&a, question, column, row) == Some(true)
+                })
+                .expect("the yes button is clickable");
+            a.overlay = Some(Overlay::Confirm {
+                question: question.to_owned(),
+                action: Action::UpgradeCore,
+            });
+            assert_eq!(
+                a.on_event(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: yes_x,
+                    row: yes_y,
+                    modifiers: KeyModifiers::NONE,
+                })),
+                vec![Effect::UpgradeCore]
+            );
+        }
+    }
+
+    #[test]
+    fn managed_core_action_uses_a_semantic_chinese_confirmation() {
+        let mut a = app();
+        a.settings.ui.language = Language::Chinese;
+        assert!(press(&mut a, KeyCode::Char('U')).is_empty());
+        assert!(
+            matches!(&a.overlay, Some(Overlay::Confirm { question, .. }) if question == "是否下载并安装最新的托管内核？")
+        );
+    }
+
+    #[test]
+    fn enabling_tun_requires_confirmation_before_saving() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Settings);
+        app.settings_rows
+            .select_by_key("core.tun_enabled".to_owned(), |row| row.key.to_owned());
+        assert!(app.settings.core.tun_enabled.is_none());
+        assert!(press(&mut app, KeyCode::Enter).is_empty());
+        assert!(matches!(app.overlay, Some(Overlay::Picker { .. })));
+        assert!(app.settings.core.tun_enabled.is_none());
+        assert!(press(&mut app, KeyCode::Down).is_empty());
+        assert!(press(&mut app, KeyCode::Enter).is_empty());
+        assert_eq!(app.settings.core.tun_enabled, Some(true));
+        assert!(app.settings_dirty);
+        assert!(press(&mut app, KeyCode::Char('s')).is_empty());
+        assert!(matches!(app.overlay, Some(Overlay::Confirm { .. })));
+    }
+
+    #[test]
+    fn footer_click_uses_the_visible_hint_when_no_status_is_displayed() {
+        let mut a = app();
+        let mut keyboard = app();
+        assert_eq!(crate::ui::footer_action_at(&a, 1), Some(Action::StartCore));
+        let expected = press(&mut keyboard, KeyCode::Char('s'));
+        assert_eq!(
+            a.on_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 1,
+                row: 23,
+                modifiers: KeyModifiers::NONE,
+            })),
+            expected
+        );
+    }
+
+    #[test]
+    fn help_descriptions_can_be_opened_after_scrolling() {
+        let mut a = app();
+        goto(&mut a, Screen::Help);
+        a.viewport = (55, 10);
+        for _ in 0..12 {
+            let _ = press(&mut a, KeyCode::Down);
+        }
+        assert_eq!(a.help_selected, 12);
+        assert!(a.help_offset > 0);
+        let expected = crate::ui::help::entries(&a)[12].description.clone();
+        let _ = press(&mut a, KeyCode::Enter);
+        assert!(
+            matches!(&a.overlay, Some(Overlay::Preview { lines, .. }) if lines.contains(&expected))
+        );
+    }
+
+    #[test]
     fn full_error_message_survives_footer_expiry_and_scrolls_in_its_popup() {
         let mut a = app();
         a.viewport = (40, 10);
@@ -5849,6 +6661,44 @@ mod tests {
         ));
         assert!(press(&mut a, KeyCode::Esc).is_empty());
         assert!(a.overlay.is_none());
+    }
+
+    #[test]
+    fn home_and_tab_summary_open_complete_values() {
+        let mut a = app();
+        a.viewport = (40, 12);
+        a.ip_info = Some(IpInfo {
+            ip: "203.0.113.100".to_owned(),
+            country: "A long country name".to_owned(),
+            organization: "An unusually long network organization".to_owned(),
+        });
+        let _ = a.on_event(left_click(5, 4));
+        assert!(
+            matches!(&a.overlay, Some(Overlay::Preview { lines, .. }) if lines.iter().any(|line| line.contains("An unusually long network organization")))
+        );
+        let _ = press(&mut a, KeyCode::Esc);
+        a.viewport = (120, 12);
+        let _ = a.on_event(left_click(110, 0));
+        assert!(matches!(a.overlay, Some(Overlay::Preview { .. })));
+    }
+
+    #[test]
+    fn clicking_a_wrapped_log_opens_that_line_in_full() {
+        let mut a = app();
+        goto(&mut a, Screen::Logs);
+        a.viewport = (35, 12);
+        let _ = a.on_event(Event::Data(Data::Log(LogRow::new(
+            "info",
+            "first log line with a long explanation",
+        ))));
+        let _ = a.on_event(Event::Data(Data::Log(LogRow::new("warn", "second log"))));
+        assert!(
+            crate::ui::logs::line_at(&a, 3, 3).is_some_and(|row| row.message.starts_with("first"))
+        );
+        let _ = a.on_event(left_click(3, 3));
+        assert!(
+            matches!(&a.overlay, Some(Overlay::Preview { lines, .. }) if lines.join(" ").contains("first log line with a long explanation"))
+        );
     }
 
     // -- navigation ---------------------------------------------------------
@@ -6107,10 +6957,10 @@ mod tests {
     fn the_rule_count_reports_what_the_list_is_hiding() {
         let mut a = loaded();
         goto(&mut a, Screen::Rules);
-        assert_eq!(a.rules.len(), 1);
-        assert_eq!(a.hidden_rules(), 1);
-        let _ = press(&mut a, KeyCode::Char('h'));
+        assert_eq!(a.rules.len(), 2);
         assert_eq!(a.hidden_rules(), 0);
+        let _ = press(&mut a, KeyCode::Char('h'));
+        assert_eq!(a.hidden_rules(), 1);
     }
 
     #[test]

@@ -39,9 +39,7 @@ pub(crate) enum Message<'a> {
         connections: usize,
     },
     RunningTests(usize),
-    QueuedTestsHint(usize),
     TestsTitle(usize),
-    HelpTitle(usize),
     LogLines(usize),
     LogNew(usize),
     LogDropped(u64),
@@ -61,10 +59,18 @@ pub(crate) enum Message<'a> {
 pub(crate) fn message(language: Language, message: Message<'_>) -> String {
     match (language, message) {
         (Language::English, Message::ProfilesTitle { shown, total }) => {
-            format!(" profiles ({shown} shown of {total}) ")
+            if shown == total {
+                " profiles ".to_owned()
+            } else {
+                format!(" profiles ({shown}/{total}) ")
+            }
         }
         (Language::Chinese, Message::ProfilesTitle { shown, total }) => {
-            format!(" 配置（显示 {shown} / {total}） ")
+            if shown == total {
+                " 配置 ".to_owned()
+            } else {
+                format!(" 配置（{shown}/{total}） ")
+            }
         }
         (
             Language::English,
@@ -73,7 +79,13 @@ pub(crate) fn message(language: Language, message: Message<'_>) -> String {
                 shown,
                 total,
             },
-        ) => format!(" proxies ({groups} group(s) · {shown} of {total} rows shown) "),
+        ) => {
+            if shown == total {
+                format!(" proxies ({groups} groups) ")
+            } else {
+                format!(" proxies ({groups} groups · {shown}/{total}) ")
+            }
+        }
         (
             Language::Chinese,
             Message::ProxiesTitle {
@@ -81,7 +93,13 @@ pub(crate) fn message(language: Language, message: Message<'_>) -> String {
                 shown,
                 total,
             },
-        ) => format!(" 代理（{groups} 组 · 显示 {shown} / {total} 行） "),
+        ) => {
+            if shown == total {
+                format!(" 代理（{groups} 组） ")
+            } else {
+                format!(" 代理（{groups} 组 · {shown}/{total}） ")
+            }
+        }
         (Language::English, Message::ConnectionsTitle { count, sort }) => {
             format!(" connections ({count}) · sorted by {sort} ")
         }
@@ -124,12 +142,6 @@ pub(crate) fn message(language: Language, message: Message<'_>) -> String {
         ) => format!("↓ {down}   ↑ {up}   总计 {total}   {connections} 个连接"),
         (Language::English, Message::RunningTests(count)) => format!("{count} test(s) running"),
         (Language::Chinese, Message::RunningTests(count)) => format!("{count} 项测试运行中"),
-        (Language::English, Message::QueuedTestsHint(count)) => {
-            format!("{count} check(s) queued or running — s stops the batch")
-        }
-        (Language::Chinese, Message::QueuedTestsHint(count)) => {
-            format!("{count} 项等待或运行中 — 按 s 停止批次")
-        }
         (Language::English, Message::TestsTitle(queued)) if queued > 0 => {
             format!(" tests ({queued} queued or running) ")
         }
@@ -137,10 +149,6 @@ pub(crate) fn message(language: Language, message: Message<'_>) -> String {
             format!(" 测试（{queued} 项等待或运行中） ")
         }
         (language, Message::TestsTitle(_)) => format!(" {} ", text(language, "tests")),
-        (Language::English, Message::HelpTitle(columns)) => {
-            format!(" key reference ({columns} column(s)) ")
-        }
-        (Language::Chinese, Message::HelpTitle(columns)) => format!(" 快捷键 ({columns} 栏) "),
         (Language::English, Message::LogLines(count)) => format!("{count} line(s)"),
         (Language::Chinese, Message::LogLines(count)) => format!("{count} 行"),
         (Language::English, Message::LogNew(count)) => format!("{count} new"),
@@ -256,6 +264,8 @@ pub(crate) enum TextKey {
     UploadRate,
     /// Truncated status line overflow indicator.
     StatusOverflowMore,
+    /// Confirmation before installing the managed Mihomo binary.
+    ManagedCoreConfirmation,
 }
 
 /// Look up a message by its semantic identity.
@@ -273,6 +283,10 @@ pub(crate) const fn label(language: Language, key: TextKey) -> &'static str {
         (Language::Chinese, TextKey::UploadRate) => "上传",
         (Language::English, TextKey::StatusOverflowMore) => " … [m: more]",
         (Language::Chinese, TextKey::StatusOverflowMore) => " … [m: 详情]",
+        (Language::English, TextKey::ManagedCoreConfirmation) => {
+            "download and install the latest managed core?"
+        }
+        (Language::Chinese, TextKey::ManagedCoreConfirmation) => "是否下载并安装最新的托管内核？",
     }
 }
 
@@ -292,6 +306,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::Refresh => "刷新",
         Action::Cancel => "取消",
         Action::ShowLastMessage => "消息详情",
+        Action::InspectSelection => "完整详情",
         Action::Up => "上移",
         Action::Down => label(language, TextKey::CursorDown),
         Action::PageUp => "上翻页",
@@ -330,7 +345,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::ToggleRule => "切换状态",
         Action::UpdateRuleProvider => "更新规则集",
         Action::UpdateAllRuleProviders => "更新全部规则集",
-        Action::ToggleDisabledRules => "显示已禁用",
+        Action::ToggleDisabledRules => "显示/隐藏已禁用",
         Action::RunTests => "运行",
         Action::CancelTests => "停止测试",
         Action::ClearTestResults => "清空结果",
@@ -363,6 +378,14 @@ pub(crate) fn setting_text(language: Language, key: &str) -> Option<(&'static st
         "core.use_managed" => (
             "使用托管内核",
             "优先使用数据目录下由程序下载托管的内核，而非本地内核",
+        ),
+        "core.login_autostart" => (
+            "登录时启动内核",
+            "使用用户级 systemd、KDE 或 GNOME 登录启动项；保存后生效",
+        ),
+        "core.tun_enabled" => (
+            "TUN 模式",
+            "覆盖配置中的 TUN 开关；启用需要网络权限，并可能改变系统路由",
         ),
         "ui.language" => ("界面语言", "界面语言；立即生效，保存设置后写入磁盘"),
         "ui.refresh_ms" => ("刷新间隔", "界面重绘频率"),
@@ -477,7 +500,7 @@ pub fn text(language: Language, english: &str) -> &str {
         "enable or disable this rule in the running core" => "在运行中的内核里启用或禁用此规则",
         "download this rule set again" => "重新下载当前规则集",
         "download every rule set again" => "重新下载所有规则集",
-        "include disabled rules in the list" => "在列表中显示已禁用规则",
+        "show or hide disabled rules in the list" => "显示或隐藏列表中的已禁用规则",
         "run the highlighted test" => "运行当前测试",
         "run all unlock checks" => "运行全部解锁测试",
         "stop the running batch" => "停止当前批次",
@@ -520,6 +543,8 @@ pub fn text(language: Language, english: &str) -> &str {
         "result" => "结果",
         "setting" => "设置项",
         "what it does" => "作用",
+        "selected action" => "当前操作",
+        "selected profile" => "当前配置",
         "keys" => "按键",
         "applies" => "适用范围",
         "action" | "actions" => "操作",
@@ -569,8 +594,8 @@ pub fn text(language: Language, english: &str) -> &str {
         "no connections — the core reports them only while it is running" => {
             "暂无连接；仅在内核运行时显示"
         }
-        "no rules — apply a profile, or press h to include the disabled ones" => {
-            "暂无规则；请应用配置，或按 h 显示已禁用规则"
+        "no rules — apply a profile, or press h to show hidden rules" => {
+            "暂无规则；请应用配置，或按 h 显示隐藏规则"
         }
         "no checks are available yet — load a profile so there is something to test" => {
             "暂无可用测试；请先加载配置"
@@ -702,8 +727,8 @@ pub fn text(language: Language, english: &str) -> &str {
         "apply a profile or start the core; t tests, T tests the group, a tests everything" => {
             "应用配置或启动内核；t 测试节点，T 测试组，a 测试全部"
         }
-        "Enter toggles the highlighted rule; h includes disabled rules" => {
-            "Enter 切换规则状态，h 显示已禁用规则"
+        "Enter toggles the highlighted rule; h shows or hides disabled rules" => {
+            "Enter 切换规则状态，h 显示或隐藏已禁用规则"
         }
         "Enter runs the highlighted check" => "按 Enter 运行当前检查",
         "not running; latency checks need it, so start it from Home" => {
@@ -778,6 +803,29 @@ pub fn text(language: Language, english: &str) -> &str {
         "error" => "错误",
         "download and replace the core binary?" => "是否下载并替换内核？",
         "download and install the latest managed core?" => "是否下载并安装最新的托管内核？",
+        "key reference" => "快捷键说明",
+        "Enter: full details" => "Enter：完整说明",
+        "view every field of the highlighted row in full" => "完整查看当前条目的全部字段",
+        "full details" => "完整详情",
+        "F1 details · double click to activate" => "F1 详情 · 双击执行",
+        "no selected row to inspect" => "当前没有可查看详情的条目",
+        "no log lines yet" => "暂无日志",
+        "no node selected" => "未选中节点",
+        "no group selected" => "未选中代理组",
+        "no connection selected" => "未选中连接",
+        "no rule selected" => "未选中规则",
+        "no test selected" => "未选中测试项",
+        "no test batch is running" => "没有正在运行的测试批次",
+        "no unlock checks are available" => "没有可用的解锁测试",
+        "the log buffer is empty" => "日志缓冲区为空",
+        "downloading speedtest-go…" => "正在下载 speedtest-go…",
+        "following new lines" => "正在跟随新日志",
+        "follow stopped; new lines are buffered but not shown" => "已暂停跟随；新日志仍会缓存",
+        "showing disabled rules" => "正在显示已禁用规则",
+        "hiding disabled rules" => "已隐藏禁用规则",
+        "the core lists no rule providers; updating every set" => {
+            "内核未列出规则集；正在更新全部规则集"
+        }
         "download and install speedtest-go in the application directory?" => {
             "是否在应用目录下载并安装 speedtest-go？"
         }
@@ -786,6 +834,14 @@ pub fn text(language: Language, english: &str) -> &str {
         "downloading latest mihomo core..." => "正在下载最新的 mihomo 内核...",
         "managed" => "托管",
         "local" => "本地",
+        "profile" => "跟随配置",
+        "on" => "开启",
+        "off" => "关闭",
+        "saving settings…" => "正在保存设置…",
+        "TUN configuration applied" => "TUN 配置已应用",
+        "enable TUN and grant the core network capabilities? this may change system routes; the grant persists on the core binary" => {
+            "是否启用 TUN 并授予内核网络权限？这可能改变系统路由；授权会保留在内核文件上"
+        }
         "core management" => "内核管理",
         "download latest managed core" => "下载最新托管内核",
         "use local core (PATH or core.binary)" => "使用本地内核 (PATH 或自定义路径)",
@@ -916,6 +972,187 @@ pub fn format_status(language: Language, text: &str) -> String {
         return format!("已安装 mihomo {rest}");
     }
 
+    if let Some(what) = text.strip_suffix(" needs a running core; press `s` on Home to start it") {
+        let action = match what {
+            "measuring route speed" => "路由测速",
+            "testing nodes" => "节点测试",
+            "closing connections" | "closing a connection" => "关闭连接",
+            "updating rule sets" | "updating a rule set" => "更新规则集",
+            "selecting a node" => "选择节点",
+            "testing a node" => "测试节点",
+            "testing a group" => "测试代理组",
+            "clearing a pin" => "取消节点固定",
+            "changing a rule" => "修改规则",
+            "running a test" | "running unlock checks" => "运行解锁测试",
+            _ => what,
+        };
+        return format!("{action}需要运行中的内核；请在首页按 s 启动");
+    }
+    if let Some(count) = text
+        .strip_prefix("discarded ")
+        .and_then(|rest| rest.strip_suffix(" log line(s)"))
+    {
+        return format!("已清除 {count} 行日志");
+    }
+    if let Some(count) = text
+        .strip_prefix("cancelled ")
+        .and_then(|rest| rest.strip_suffix(" test(s)"))
+    {
+        return format!("已取消 {count} 项测试");
+    }
+    if let Some(rest) = text.strip_prefix("rule ")
+        && let Some((index, state)) = rest.split_once(' ')
+        && matches!(state, "enabled" | "disabled")
+    {
+        return format!(
+            "规则 {index} 已{}",
+            if state == "enabled" {
+                "启用"
+            } else {
+                "禁用"
+            }
+        );
+    }
+    if let Some(count) = text
+        .strip_prefix("updated ")
+        .and_then(|rest| rest.strip_suffix(" rule set(s)"))
+    {
+        return format!("已更新 {count} 个规则集");
+    }
+    if let Some(pid) = text
+        .strip_prefix("core started (pid ")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return format!("内核已启动（PID {pid}）");
+    }
+    if let Some(pid) = text
+        .strip_prefix("core restarted (pid ")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return format!("内核已重启（PID {pid}）");
+    }
+    if let Some(version) = text.strip_prefix("installed speedtest-go ") {
+        return format!("已安装 speedtest-go {version}");
+    }
+    if let Some(path) = text.strip_prefix("logs written to ") {
+        return format!("日志已写入 {path}");
+    }
+    if let Some(target) = text
+        .strip_prefix("opened ")
+        .and_then(|rest| rest.strip_suffix(" in $EDITOR"))
+    {
+        return format!("已在 $EDITOR 中打开 {target}");
+    }
+    if let Some(error) = text.strip_prefix("IP lookup failed: ") {
+        return format!("IP 查询失败：{error}");
+    }
+    if let Some(speed) = text.strip_prefix("current route: ") {
+        return format!("当前路由：{speed}");
+    }
+    if let Some(error) = text.strip_prefix("route speed: ") {
+        return format!("路由测速：{error}");
+    }
+    if let Some(mode) = text
+        .strip_prefix("measuring current route with ")
+        .and_then(|rest| rest.strip_suffix('…'))
+    {
+        return format!("正在用 {} 测量当前路由…", self::text(language, mode));
+    }
+    if let Some(name) = text
+        .strip_prefix("switched to `")
+        .and_then(|rest| rest.strip_suffix('`'))
+    {
+        return format!("已切换到“{name}”");
+    }
+    if let Some(name) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` is already current"))
+    {
+        return format!("“{name}”已是当前配置");
+    }
+    if let Some(name) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` is local; there is nothing to download"))
+    {
+        return format!("“{name}”是本地配置，无需下载");
+    }
+    if let Some(name) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` removed from the chain"))
+    {
+        return format!("已从配置链移除“{name}”");
+    }
+    if let Some(name) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` added to the chain"))
+    {
+        return format!("已将“{name}”加入配置链");
+    }
+    if let Some(name) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` has no members to show"))
+    {
+        return format!("“{name}”没有可显示的成员");
+    }
+    if let Some(name) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` is not a member of a group"))
+    {
+        return format!("“{name}”不属于任何代理组");
+    }
+    if let Some(name) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` is not part of a group"))
+    {
+        return format!("“{name}”不属于任何代理组");
+    }
+    if let Some(group) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` does not choose a node by hand"))
+    {
+        return format!("“{group}”不支持手动选择节点");
+    }
+    if let Some(label) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` has already run; press c to clear it"))
+    {
+        return format!("“{label}”已经运行；按 c 清空结果");
+    }
+    if let Some(key) = text
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix("` cannot be changed here"))
+    {
+        return format!("无法在这里修改“{key}”");
+    }
+    if let Some((label, count)) = text
+        .strip_prefix("queued `")
+        .and_then(|rest| rest.split_once("` ("))
+        && let Some(count) = count.strip_suffix(" in the batch)")
+    {
+        return format!("“{label}”已加入队列（本批共 {count} 项）");
+    }
+    if let Some(level) = text.strip_prefix("core log level is now ") {
+        return format!("内核日志级别已设为 {level}");
+    }
+    if let Some(level) = text
+        .strip_prefix("showing ")
+        .and_then(|rest| rest.strip_suffix(" and above; the core is not running"))
+    {
+        return format!("显示 {level} 及以上级别；内核未运行");
+    }
+    if let Some(name) = text
+        .strip_prefix("delete `")
+        .and_then(|rest| rest.strip_suffix("` and its document?"))
+    {
+        return format!("是否删除“{name}”及其配置文件？");
+    }
+    if let Some(count) = text
+        .strip_prefix("close all ")
+        .and_then(|rest| rest.strip_suffix(" connection(s)?"))
+    {
+        return format!("是否关闭全部 {count} 个连接？");
+    }
+
     text.to_owned()
 }
 
@@ -964,5 +1201,34 @@ mod tests {
             label(Language::Chinese, TextKey::ProxyUnavailable),
             "不可用"
         );
+    }
+
+    #[test]
+    fn common_interaction_statuses_are_localized() {
+        for english in [
+            "download and install the latest managed core?",
+            "following new lines",
+            "showing disabled rules",
+            "hiding disabled rules",
+            "no rule selected",
+            "no test batch is running",
+            "the log buffer is empty",
+            "rule 12 disabled",
+            "rule 12 enabled",
+            "closed 3 connection(s)",
+            "core started (pid 123)",
+            "core restarted (pid 123)",
+            "changing a rule needs a running core; press `s` on Home to start it",
+            "discarded 3 log line(s)",
+            "installed speedtest-go v1",
+            "delete `example` and its document?",
+            "close all 3 connection(s)?",
+        ] {
+            assert_ne!(
+                format_status(Language::Chinese, english),
+                english,
+                "{english}"
+            );
+        }
     }
 }

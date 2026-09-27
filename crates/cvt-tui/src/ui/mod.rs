@@ -179,11 +179,18 @@ pub(crate) fn tab_at(app: &App, column: u16, row: u16) -> Option<Screen> {
 /// The data cells in the current table, excluding its border and header.
 pub(crate) fn table_rows_area(app: &App) -> Option<Rect> {
     let detail_height = match app.screen {
-        Screen::Profiles | Screen::Tests => 9,
-        Screen::Proxies => 8,
-        Screen::Connections | Screen::Rules => 7,
-        Screen::Settings => 5,
-        Screen::Home | Screen::Logs | Screen::Help => return None,
+        Screen::Help => {
+            let content = Rect::new(0, 1, app.viewport.0, app.viewport.1.saturating_sub(2));
+            let (list, _) = w::list_and_detail(content, detail_height(Screen::Help));
+            return Some(Rect::new(
+                list.x.saturating_add(1),
+                list.y.saturating_add(2),
+                list.width.saturating_sub(2),
+                list.height.saturating_sub(3),
+            ));
+        }
+        Screen::Home | Screen::Logs => return None,
+        screen => detail_height(screen),
     };
     let content = Rect::new(0, 1, app.viewport.0, app.viewport.1.saturating_sub(2));
     let (list, _) = w::list_and_detail(content, detail_height);
@@ -193,6 +200,33 @@ pub(crate) fn table_rows_area(app: &App) -> Option<Rect> {
         list.width.saturating_sub(2),
         list.height.saturating_sub(3),
     ))
+}
+
+/// Shared pane height for rendering and mouse hit testing.
+pub(crate) const fn detail_height(screen: Screen) -> u16 {
+    match screen {
+        Screen::Profiles => 9,
+        Screen::Proxies => 10,
+        Screen::Connections | Screen::Rules => 7,
+        Screen::Tests | Screen::Settings => 6,
+        Screen::Help => 5,
+        Screen::Home | Screen::Logs => 0,
+    }
+}
+
+/// Split a screen using the same dimensions used by mouse hit testing.
+pub(crate) fn list_and_detail_for(area: Rect, screen: Screen) -> (Rect, Rect) {
+    w::list_and_detail(area, detail_height(screen))
+}
+
+/// The visible detail pane, when the terminal has room for one.
+pub(crate) fn detail_area(app: &App) -> Option<Rect> {
+    if detail_height(app.screen) == 0 {
+        return None;
+    }
+    let content = Rect::new(0, 1, app.viewport.0, app.viewport.1.saturating_sub(2));
+    let (_, detail) = list_and_detail_for(content, app.screen);
+    (!detail.is_empty()).then_some(detail)
 }
 
 /// How the core's state reads.
@@ -220,6 +254,24 @@ fn footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Line::default()
     };
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Resolve a click on the same hint spans that the footer renders.
+pub(crate) fn footer_action_at(app: &App, column: u16) -> Option<crate::Action> {
+    if app.current_status().is_some() || !app.settings.ui.show_footer {
+        return None;
+    }
+    let limit = usize::from((app.viewport.0 / 16).clamp(1, 8));
+    let mut start = 0usize;
+    for (key, action) in app.keymap.hint_bindings(app.screen, limit) {
+        let label = crate::i18n::action_label(app.language(), action);
+        let end = start + format!(" {key} {label} ").width();
+        if (start..end).contains(&usize::from(column)) && end <= usize::from(app.viewport.0) {
+            return Some(action.clone());
+        }
+        start = end;
+    }
+    None
 }
 
 /// Draw the modal layer on top of everything else.
@@ -359,6 +411,7 @@ pub(crate) fn prompt_choice_at(app: &App, column: u16, row: u16) -> Option<bool>
 
 /// A question about something destructive.
 fn confirm(frame: &mut Frame<'_>, area: Rect, app: &App, question: &str, action: &crate::Action) {
+    let question = app.format_status_text(question);
     let width = area.width.saturating_sub(4).clamp(12, 72);
     // Tall enough for the question at *this* width, because the question is
     // usually a name and names are as long as they are: the popup was five rows
@@ -366,22 +419,13 @@ fn confirm(frame: &mut Frame<'_>, area: Rect, app: &App, question: &str, action:
     // `[y] yes [n] no` off the bottom — a confirmation with nothing to confirm
     // with. `+ 4` is the two borders, the blank line and the button row.
     let inner = usize::from(width).saturating_sub(2).max(1);
-    let rows = wrapped_rows(question, inner) + 4;
+    let rows = wrapped_rows(&question, inner) + 4;
     let height = u16::try_from(rows)
         .unwrap_or(u16::MAX)
         .min(area.height)
         .max(5);
     let popup = w::centered(area, width, height);
     frame.render_widget(Clear, popup);
-    let body = Text::from(vec![
-        Line::from(Span::styled(question.to_owned(), app.theme.key_label())),
-        Line::default(),
-        Line::from(vec![
-            Span::styled(app.tr(" [y] yes "), app.theme.error()),
-            Span::styled("   ", app.theme.key_label()),
-            Span::styled(app.tr("[n] no "), app.theme.key_label()),
-        ]),
-    ]);
     let block = w::empty_panel(app.theme)
         .border_style(app.theme.error())
         .title(Line::from(format!(
@@ -389,9 +433,33 @@ fn confirm(frame: &mut Frame<'_>, area: Rect, app: &App, question: &str, action:
             crate::i18n::action_label(app.language(), action)
         )))
         .title_style(app.theme.error());
+    frame.render_widget(block, popup);
+    let inner = popup.inner(ratatui::layout::Margin::new(1, 1));
+    let question_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
     frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: true }).block(block),
-        popup,
+        Paragraph::new(question)
+            .style(app.theme.key_label())
+            .wrap(Wrap { trim: true }),
+        question_area,
+    );
+    let buttons = Line::from(vec![
+        Span::styled(app.tr(" [y] yes "), app.theme.error()),
+        Span::styled("   ", app.theme.key_label()),
+        Span::styled(app.tr("[n] no "), app.theme.key_label()),
+    ]);
+    frame.render_widget(
+        Paragraph::new(buttons),
+        Rect::new(
+            inner.x,
+            inner.y.saturating_add(inner.height.saturating_sub(1)),
+            inner.width,
+            1,
+        ),
     );
 }
 
@@ -400,18 +468,13 @@ pub(crate) fn confirm_choice_at(app: &App, question: &str, column: u16, row: u16
     let area = Rect::new(0, 0, app.viewport.0, app.viewport.1);
     let width = area.width.saturating_sub(4).clamp(12, 72);
     let inner = usize::from(width).saturating_sub(2).max(1);
-    let rows = wrapped_rows(question, inner);
+    let rows = wrapped_rows(&app.format_status_text(question), inner);
     let height = u16::try_from(rows.saturating_add(4))
         .unwrap_or(u16::MAX)
         .min(area.height)
         .max(5);
     let popup = w::centered(area, width, height);
-    if row
-        != popup
-            .y
-            .saturating_add(2)
-            .saturating_add(u16::try_from(rows).unwrap_or(u16::MAX))
-    {
+    if row != popup.y.saturating_add(popup.height.saturating_sub(2)) {
         return None;
     }
     let start = popup.x.saturating_add(1);
@@ -449,9 +512,19 @@ fn picker(
         .iter()
         .map(|item| Line::from(app.tr(item).to_owned()))
         .collect();
+    let display_title = title
+        .strip_prefix("setting:")
+        .and_then(|key| {
+            app.settings_rows
+                .items()
+                .iter()
+                .find(|row| row.key == key)
+                .map(|row| row.label)
+        })
+        .unwrap_or(title);
     let list = List::new(rows)
         .block(w::panel(
-            Line::from(format!(" {} ", app.tr(title))),
+            Line::from(format!(" {} ", app.tr(display_title))),
             app.theme,
         ))
         .highlight_style(app.theme.selection())
@@ -507,7 +580,16 @@ fn message_popup(
 }
 
 fn message_popup_rect(area: Rect, text: &str) -> Rect {
-    let width = area.width.saturating_sub(4).clamp(16, 100).min(area.width);
+    let max_width = (area.width.saturating_mul(75) / 100)
+        .max(16)
+        .min(area.width);
+    let max_height = (area.height.saturating_mul(70) / 100)
+        .max(4)
+        .min(area.height);
+    let content_width = text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0);
+    let width = u16::try_from(content_width.saturating_add(4))
+        .unwrap_or(u16::MAX)
+        .clamp(16.min(area.width), max_width);
     let inner_width = usize::from(width.saturating_sub(2)).max(1);
     let rows: usize = text
         .lines()
@@ -515,8 +597,7 @@ fn message_popup_rect(area: Rect, text: &str) -> Rect {
         .sum();
     let height = u16::try_from(rows.saturating_add(2))
         .unwrap_or(u16::MAX)
-        .clamp(4, area.height.saturating_sub(2).max(4))
-        .min(area.height);
+        .clamp(4.min(area.height), max_height);
     w::centered(area, width, height)
 }
 
@@ -565,11 +646,7 @@ fn preview(
     lines: &[String],
     scroll: usize,
 ) {
-    let popup = w::centered(
-        area,
-        area.width.saturating_sub(4),
-        area.height.saturating_sub(2),
-    );
+    let popup = preview_popup_rect(area, lines);
     frame.render_widget(Clear, popup);
     let text = Text::from(
         lines
@@ -592,6 +669,45 @@ fn preview(
             .scroll((offset, 0)),
         popup,
     );
+}
+
+fn preview_popup_rect(area: Rect, lines: &[String]) -> Rect {
+    let max_width = area.width.saturating_mul(75) / 100;
+    let max_height = area.height.saturating_mul(70) / 100;
+    let content_width = lines
+        .iter()
+        .map(|line| UnicodeWidthStr::width(line.as_str()))
+        .max()
+        .unwrap_or(0);
+    let width = u16::try_from(content_width.saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .clamp(12.min(area.width), max_width.max(12).min(area.width));
+    let inner_width = usize::from(width.saturating_sub(2)).max(1);
+    let rows: usize = lines
+        .iter()
+        .map(|line| wrapped_rows(line, inner_width))
+        .sum();
+    let height = u16::try_from(rows.saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .clamp(4.min(area.height), max_height.max(4).min(area.height));
+    w::centered(area, width, height)
+}
+
+/// Visible text rows in the preview panel.
+pub(crate) fn preview_page_rows(viewport: (u16, u16), lines: &[String]) -> usize {
+    let popup = preview_popup_rect(Rect::new(0, 0, viewport.0, viewport.1), lines);
+    usize::from(popup.height.saturating_sub(2)).max(1)
+}
+
+/// Maximum visual scroll after wrapping long fields, not merely line count.
+pub(crate) fn preview_scroll_limit(viewport: (u16, u16), lines: &[String]) -> usize {
+    let popup = preview_popup_rect(Rect::new(0, 0, viewport.0, viewport.1), lines);
+    let inner_width = usize::from(popup.width.saturating_sub(2)).max(1);
+    let rows: usize = lines
+        .iter()
+        .map(|line| wrapped_rows(line, inner_width))
+        .sum();
+    rows.saturating_sub(preview_page_rows(viewport, lines))
 }
 
 /// How many rows `text` needs at `width`, wrapped the way `Wrap` wraps it.

@@ -146,9 +146,10 @@ pub fn details(frame: &mut Frame<'_>, area: Rect, app: &App, title: &str, rows: 
             ])
         })
         .collect();
+    let block = panel(format!(" {} ", app.tr(title.trim())), theme);
     let paragraph = Paragraph::new(Text::from(lines))
         .wrap(Wrap { trim: false })
-        .block(panel(format!(" {} ", app.tr(title.trim())), theme));
+        .block(block);
     frame.render_widget(paragraph, area);
 }
 

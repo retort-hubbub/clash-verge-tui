@@ -13,7 +13,10 @@ $ clash-verge-tui doctor       # what is installed, what is missing, what the co
 
 In the TUI, each tab shows its direct key in brackets: `[1]` through `[9]`.
 Press that number to open the tab, or use Tab / Shift+Tab to move between tabs.
-With a mouse, click a tab, table row or dialog choice; scroll the wheel to move
+With a mouse, click a tab or table row to select it, double-click a row to run
+its Enter action, or click a proxy group's arrow to expand or collapse it.
+Right-click a row or click its detail pane to read every field in full; F1 does
+the same from the keyboard. Click dialog choices and scroll the wheel to move
 through tables, logs and scrollable dialogs. Keyboard shortcuts remain available
 for actions such as activating a profile or confirming a change. Press `m` to
 read the complete latest status message, including after its footer notice has
@@ -27,7 +30,13 @@ changes made this way last until the next core restart or profile apply.
 The Proxies tab also shows the selected profile's groups and declared members
 while the core is stopped; live health and provider membership appear after it
 starts.
-Press `?` for the full key reference. The interface supports English and
+Press `?` for the key reference. Its shortcuts are grouped in two columns when
+there is room, with the selected action's keys and explanation below. Use arrow
+keys or `j`/`k`, or click an entry to select it; Enter, F1 or right-click opens
+its full description. In Settings, Enter opens a picker for multi-value options
+and flips two-state switches. Disabled rules remain
+visible on the Rules tab so they can be enabled again; `h` toggles whether they
+are shown. The interface supports English and
 Simplified Chinese; change **language** on the Settings tab (key `8`) and press
 `s` to save it. The preference is stored as `ui.language: zh-CN` in `cvt.yaml`.
 Command-line output and configuration field names remain in English.
@@ -91,17 +100,33 @@ cannot disagree about what a profile chain means or how an apply is sequenced.
 | Profiles and subscriptions | List, switch, edit, update one or all due, import | The same, plus editing a subscription URL |
 | Configuration | Preview, apply, edit profiles and overrides | Generate, validate, diff, apply, roll back |
 | Running core | Nodes, connections, logs, rules, CONNECT/TCP/ICMP latency, current-route download speed, unlock checks and resource use | Node and group URL latency, DNS and named URL tests, plus core controls |
-| Diagnostics and maintenance | Core and Geo database updates | Doctor, media unlock (YouTube Premium, Netflix, ChatGPT, Disney+), exit IP/geolocation, local backup and restore |
+| Diagnostics and maintenance | Core and Geo database updates, login startup, TUN override | Doctor, media unlock (YouTube Premium, Netflix, ChatGPT, Disney+), exit IP/geolocation, local backup and restore |
 
 The TUI's **update all** action updates subscriptions that are due according to
 each profile's interval; `profiles update <uid>` explicitly updates one. The
-`core.auto_start` and `update.update_on_start` settings apply when the TUI
-launches. Neither setting installs a background system service.
+`core.auto_start` and `update.update_on_start` apply when the TUI launches.
+For login startup, set `core.login_autostart` in Settings to `systemd`, `KDE`,
+or `GNOME`, then press `s` to save. The systemd choice installs a **user**
+service that calls `core start` at login; KDE/GNOME install an XDG autostart
+entry for the matching desktop. `off` removes the project's startup entry.
+If the selected session manager is unavailable, saving reports that the
+session or architecture is unsupported. Login startup does not require root.
+
+The Settings page also offers `core.tun_enabled`: `profile` follows the active
+profile, `on` enables TUN, and `off` disables it. Turning it on asks for
+confirmation and, on Linux when needed, uses `pkexec` and the desktop's
+authentication agent to grant `CAP_NET_ADMIN` and `CAP_NET_RAW` to the selected
+Mihomo binary. The grant persists on that binary after TUN is turned off;
+replacing or updating the binary removes it. TUN can change system routes and
+requires `/dev/net/tun`. Saving regenerates the runtime configuration and
+restarts a running core when enabling TUN so the new process receives the
+capabilities. If no authentication agent is available, the operation fails
+with an explanation and the setting is not saved.
 
 This project does not execute JavaScript enhancement scripts. It uses
 [declarative overrides](docs/OVERRIDE-FORMAT.md); a subscription that requires
 its own script cannot be reproduced automatically. It does not manage the
-system proxy, PAC, the system resolver, privileged TUN setup, or WebDAV backup.
+system proxy, PAC, the system resolver, or WebDAV backup.
 Those desktop and remote-sync operations need external tools. `dialer-proxy`
 chains can be inspected and validated, but are not rewritten automatically.
 TLS, Unix-socket and Windows-pipe controller addresses are recognised; the

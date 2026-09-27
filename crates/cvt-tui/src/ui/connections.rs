@@ -15,7 +15,7 @@ use crate::ui::widgets as w;
 
 /// Draw the connections screen.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (list_area, detail_area) = w::list_and_detail(area, 7);
+    let (list_area, detail_area) = super::list_and_detail_for(area, crate::Screen::Connections);
     let rows: Vec<Row<'static>> = w::visible(&app.connections)
         .into_iter()
         .map(|connection| row(connection, app))

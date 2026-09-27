@@ -347,11 +347,14 @@ impl Executor {
                     }
                 });
             }
-            Effect::CloseConnection { id } => self.spawn_net(
-                sink,
-                move |client| async move { client.close_connection(&id).await },
-                |()| Event::Done(Done::ConnectionClosed),
-            ),
+            Effect::CloseConnection { id } => {
+                let completed_id = id.clone();
+                self.spawn_net(
+                    sink,
+                    move |client| async move { client.close_connection(&id).await },
+                    move |()| Event::Done(Done::ConnectionClosed { id: completed_id }),
+                );
+            }
             Effect::CloseAllConnections => self.spawn_net(
                 sink,
                 |client| async move {

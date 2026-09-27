@@ -16,7 +16,7 @@ use crate::ui::widgets as w;
 
 /// Draw the proxies screen.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (list_area, detail_area) = w::list_and_detail(area, 10);
+    let (list_area, detail_area) = super::list_and_detail_for(area, crate::Screen::Proxies);
     let rows: Vec<Row<'static>> = w::visible(&app.nodes)
         .into_iter()
         .map(|node| row(node, app))
@@ -127,15 +127,6 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             rows.push(("group", node.name.clone()));
             rows.push(("behaviour", app.tr(node.group_kind_label()).to_owned()));
             rows.push(("members", node.members.to_string()));
-            rows.push((
-                "expanded",
-                app.tr(if app.is_expanded(&node.name) {
-                    "yes — Enter collapses it"
-                } else {
-                    "no — Enter opens it"
-                })
-                .to_owned(),
-            ));
             rows.push((
                 "pinning",
                 if !app.core.is_running() {

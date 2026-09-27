@@ -18,7 +18,7 @@ const DEAD_AFTER: u64 = 1_000;
 
 /// Draw the rules screen.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (list_area, detail_area) = w::list_and_detail(area, 7);
+    let (list_area, detail_area) = super::list_and_detail_for(area, crate::Screen::Rules);
     let rows: Vec<Row<'static>> = w::visible(&app.rules)
         .into_iter()
         .map(|rule| row(rule, app))
@@ -47,7 +47,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Constraint::Length(10),
             ],
             rows,
-            empty: "no rules — apply a profile, or press h to include the disabled ones".to_owned(),
+            empty: "no rules — apply a profile, or press h to show hidden rules".to_owned(),
         },
     );
     detail(frame, detail_area, app);
@@ -113,7 +113,7 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         None => rows.push((
             "hint",
-            app.tr("Enter toggles the highlighted rule; h includes disabled rules")
+            app.tr("Enter toggles the highlighted rule; h shows or hides disabled rules")
                 .to_owned(),
         )),
     }

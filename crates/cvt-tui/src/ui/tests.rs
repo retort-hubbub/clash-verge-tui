@@ -60,6 +60,10 @@ fn row(check: &TestRow, app: &App) -> Row<'static> {
 /// What the highlighted check does, and how to run it.
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
+    rows.push((
+        "actions",
+        app.tr("Enter one · a all · c clear · s stop").to_owned(),
+    ));
     rows.push(("route", app.tr("current route").to_owned()));
     rows.push((
         "method",

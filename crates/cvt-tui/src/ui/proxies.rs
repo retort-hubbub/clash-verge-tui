@@ -106,6 +106,7 @@ fn row(node: &NodeRow, app: &App) -> Row<'static> {
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
     rows.push(("test mode", app.probe_mode.label().to_owned()));
+    rows.push(("bandwidth mode", app.tr(app.speed_mode.label()).to_owned()));
     rows.push((
         "route speed (b)",
         app.route_speed

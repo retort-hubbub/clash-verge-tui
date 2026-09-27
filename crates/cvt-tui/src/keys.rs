@@ -195,6 +195,7 @@ impl Keymap {
             Binding::new(K::Char('T'), none, A::TestGroup, C::Proxies, "T"),
             Binding::new(K::Char('a'), none, A::TestAllNodes, C::Proxies, "a"),
             Binding::new(K::Char('b'), none, A::TestRouteSpeed, C::Proxies, "b"),
+            Binding::new(K::Char('B'), none, A::InstallSpeedtestGo, C::Proxies, "B"),
             Binding::new(K::Char('v'), none, A::CycleTestMode, C::Proxies, "v"),
             Binding::new(K::Char('s'), none, A::CycleNodeSort, C::Proxies, "s"),
             Binding::new(K::Char('x'), none, A::ClearNodeSelection, C::Proxies, "x"),
@@ -238,6 +239,7 @@ impl Keymap {
             Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Rules, "M"),
             // -- tests -----------------------------------------------------
             Binding::new(K::Enter, none, A::RunTests, C::Tests, "Enter"),
+            Binding::new(K::Char('a'), none, A::RunAllTests, C::Tests, "a"),
             Binding::new(K::Char('s'), none, A::CancelTests, C::Tests, "s"),
             Binding::new(K::Char('c'), none, A::ClearTestResults, C::Tests, "c"),
             // -- settings --------------------------------------------------
@@ -514,6 +516,7 @@ mod tests {
             Action::TestGroup,
             Action::TestAllNodes,
             Action::TestRouteSpeed,
+            Action::InstallSpeedtestGo,
             Action::CycleTestMode,
             Action::ClearNodeSelection,
             Action::CloseConnection,
@@ -529,6 +532,7 @@ mod tests {
             Action::UpdateAllRuleProviders,
             Action::ToggleDisabledRules,
             Action::RunTests,
+            Action::RunAllTests,
             Action::CancelTests,
             Action::ClearTestResults,
             Action::SaveSettings,

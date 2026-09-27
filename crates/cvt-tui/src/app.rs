@@ -50,6 +50,7 @@ pub const STATUS_TTL: Duration = Duration::from_secs(4);
 
 /// How many ticks pass between background polls of the running core.
 pub const POLL_EVERY: u64 = 20;
+const NODE_HEALTH_TTL: Duration = Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
 // effects
@@ -75,6 +76,8 @@ pub enum Effect {
     Quit,
     /// Re-read everything a screen shows.
     Refresh(Screen),
+    /// Force a fresh exit-IP lookup from Home.
+    RefreshIp,
     /// Read the profile store into [`Data::Profiles`].
     LoadProfiles,
     /// Make a profile the base document and regenerate.
@@ -162,7 +165,12 @@ pub enum Effect {
         mode: ProbeMode,
     },
     /// Measure download speed through the currently active proxy route.
-    TestRouteSpeed,
+    TestRouteSpeed {
+        /// Which backend and sample size to use.
+        mode: SpeedMode,
+    },
+    /// Install speedtest-go after explicit confirmation.
+    InstallSpeedtestGo,
     /// Run one entry of the tests screen.
     RunTest {
         /// Which check to run.
@@ -251,6 +259,7 @@ impl Effect {
             Self::Startup => "startup",
             Self::Quit => "quit",
             Self::Refresh(_) => "refresh",
+            Self::RefreshIp => "refresh IP",
             Self::LoadProfiles => "load profiles",
             Self::SwitchProfile { .. } => "switch profile",
             Self::UpdateProfiles { .. } => "update profiles",
@@ -269,7 +278,8 @@ impl Effect {
             Self::TestNode { .. } => "test node",
             Self::TestGroup { .. } => "test group",
             Self::TestAllNodes { .. } => "test all nodes",
-            Self::TestRouteSpeed => "route speed",
+            Self::TestRouteSpeed { .. } => "route speed",
+            Self::InstallSpeedtestGo => "install speedtest-go",
             Self::RunTest { .. } => "run test",
             Self::CancelTests => "cancel tests",
             Self::ClearTestResults => "clear results",
@@ -408,6 +418,10 @@ pub enum Data {
     Version(String),
     /// Public exit IP, obtained through Mihomo.
     IpInfo(IpInfo),
+    /// The exit-IP lookup began.
+    IpLookupStarted,
+    /// Every configured exit-IP service failed.
+    IpLookupFailed(String),
     /// Settings read from disk.
     Settings(Box<Settings>),
     /// A preview of the generated configuration.
@@ -427,6 +441,8 @@ pub enum Data {
     },
     /// Current route throughput measurement finished.
     RouteSpeed(Result<String, String>),
+    /// Selected speedtest-go mode requires an installed backend.
+    SpeedtestMissing,
     /// A node probe completed; every visible occurrence of that node updates.
     NodeDelay {
         /// Probe semantics.
@@ -449,6 +465,60 @@ pub struct IpInfo {
     pub country: String,
     /// Network operator, if provided.
     pub organization: String,
+}
+
+/// A route throughput backend and its download size, if applicable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeedMode {
+    /// A small, low-data sample.
+    Sample4,
+    /// A medium sample.
+    Sample20,
+    /// A large sample.
+    Sample100,
+    /// The external speedtest-go backend.
+    Speedtest,
+}
+
+impl SpeedMode {
+    /// Labels are semantic keys translated by the TUI at display time.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Sample4 => "download sample · 4 MB",
+            Self::Sample20 => "download sample · 20 MB",
+            Self::Sample100 => "download sample · 100 MB",
+            Self::Speedtest => "speedtest-go",
+        }
+    }
+
+    /// Requested sample bytes. The external backend manages its own samples.
+    pub const fn sample_bytes(self) -> Option<usize> {
+        match self {
+            Self::Sample4 => Some(4_000_000),
+            Self::Sample20 => Some(20_000_000),
+            Self::Sample100 => Some(100_000_000),
+            Self::Speedtest => None,
+        }
+    }
+
+    const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Sample4),
+            1 => Some(Self::Sample20),
+            2 => Some(Self::Sample100),
+            3 => Some(Self::Speedtest),
+            _ => None,
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Sample4 => 0,
+            Self::Sample20 => 1,
+            Self::Sample100 => 2,
+            Self::Speedtest => 3,
+        }
+    }
 }
 
 /// Something the binary finished.
@@ -567,6 +637,11 @@ pub enum Done {
     /// A newer core was installed.
     CoreUpgraded {
         /// The new version string.
+        version: String,
+    },
+    /// Optional route speed backend was installed and verified.
+    SpeedtestInstalled {
+        /// Release tag reported by GitHub.
         version: String,
     },
     /// The geo databases were refreshed.
@@ -1529,8 +1604,16 @@ pub struct App {
     pub version: Option<String>,
     /// Exit IP information for the active route.
     pub ip_info: Option<IpInfo>,
+    /// Last lookup error, shown on Home instead of silently dropping it.
+    pub ip_error: Option<String>,
+    /// When the last successful lookup completed.
+    pub ip_updated_at: Option<Instant>,
+    /// Whether a lookup is still pending.
+    pub ip_refreshing: bool,
     /// Last throughput measurement for the current route.
     pub route_speed: Option<String>,
+    /// Last chosen route speed backend and size.
+    pub speed_mode: SpeedMode,
     /// The settings, with any unsaved edits.
     pub settings: Settings,
     /// Whether the settings differ from what is on disk.
@@ -1557,6 +1640,7 @@ pub struct App {
     chain: Vec<String>,
     all_nodes: Vec<NodeRow>,
     node_delays: HashMap<(ProbeMode, String), Option<u16>>,
+    node_health: HashMap<String, (bool, Instant)>,
     expanded: Vec<String>,
     all_rules: Vec<RuleRow>,
     rule_providers: Vec<String>,
@@ -1651,7 +1735,11 @@ impl App {
             core_mode: None,
             version: None,
             ip_info: None,
+            ip_error: None,
+            ip_updated_at: None,
+            ip_refreshing: false,
             route_speed: None,
+            speed_mode: SpeedMode::Sample4,
             settings,
             settings_dirty: false,
             log_level,
@@ -1668,6 +1756,7 @@ impl App {
             chain: Vec::new(),
             all_nodes: Vec::new(),
             node_delays: HashMap::new(),
+            node_health: HashMap::new(),
             expanded: Vec::new(),
             all_rules: Vec::new(),
             rule_providers: Vec::new(),
@@ -1695,6 +1784,13 @@ impl App {
         } else {
             selected.join(" · ")
         }
+    }
+
+    fn clear_ip(&mut self) {
+        self.ip_info = None;
+        self.ip_error = None;
+        self.ip_updated_at = None;
+        self.ip_refreshing = false;
     }
 
     // -- observable state ---------------------------------------------------
@@ -1829,6 +1925,12 @@ impl App {
     pub fn on_tick(&mut self) -> Vec<Effect> {
         self.ticks = self.ticks.wrapping_add(1);
         self.expire_status();
+        let before = self.node_health.len();
+        self.node_health
+            .retain(|_, (_, at)| at.elapsed() < NODE_HEALTH_TTL);
+        if self.node_health.len() != before {
+            self.rebuild_nodes();
+        }
         if self.core.is_running() && self.ticks.is_multiple_of(POLL_EVERY) {
             return Self::refresh_effects(self.screen);
         }
@@ -2318,6 +2420,9 @@ impl App {
                 "restore the previous generated configuration and restart the core?".to_owned()
             }
             Action::UpgradeCore => "download and install the latest managed core?".to_owned(),
+            Action::InstallSpeedtestGo => {
+                "download and install speedtest-go in the application directory?".to_owned()
+            }
             other => format!("{}?", other.label()),
         }
     }
@@ -2339,7 +2444,11 @@ impl App {
             Action::PreviousScreen => self.goto(self.screen.previous()),
             Action::Refresh => {
                 self.remember_loaded(self.screen);
-                Self::refresh_effects(self.screen)
+                if self.screen == Screen::Home {
+                    vec![Effect::RefreshIp]
+                } else {
+                    Self::refresh_effects(self.screen)
+                }
             }
             Action::Cancel => {
                 self.cancel_scope();
@@ -2413,8 +2522,23 @@ impl App {
                 if !self.require_core("measuring route speed") {
                     return Vec::new();
                 }
-                self.set_status(StatusKind::Info, "measuring current route download speed…");
-                vec![Effect::TestRouteSpeed]
+                self.overlay = Some(Overlay::Picker {
+                    title: "route bandwidth".to_owned(),
+                    items: [
+                        SpeedMode::Sample4,
+                        SpeedMode::Sample20,
+                        SpeedMode::Sample100,
+                        SpeedMode::Speedtest,
+                    ]
+                    .map(|mode| mode.label().to_owned())
+                    .to_vec(),
+                    selected: self.speed_mode.index(),
+                });
+                Vec::new()
+            }
+            Action::InstallSpeedtestGo => {
+                self.set_status(StatusKind::Info, "downloading speedtest-go…");
+                vec![Effect::InstallSpeedtestGo]
             }
             Action::TestAllNodes => {
                 if !self.require_core("testing nodes") {
@@ -2505,6 +2629,7 @@ impl App {
                 Vec::new()
             }
             Action::RunTests => self.run_tests(),
+            Action::RunAllTests => self.run_all_tests(),
             Action::CancelTests => self.cancel_tests(),
             Action::ClearTestResults => {
                 self.clear_test_results();
@@ -2562,7 +2687,7 @@ impl App {
             self.rebuild_tests();
         }
         self.sync_scroll();
-        if self.loaded.contains(&screen) {
+        if self.loaded.contains(&screen) && screen != Screen::Home {
             return Vec::new();
         }
         self.remember_loaded(screen);
@@ -2754,6 +2879,18 @@ impl App {
                 source: PathBuf::from(item),
             }],
             "update rule set" => vec![Effect::UpdateRuleProviders { names: vec![item] }],
+            "route bandwidth" => {
+                let Some(mode) = SpeedMode::from_index(selected) else {
+                    return Vec::new();
+                };
+                self.speed_mode = mode;
+                self.route_speed = None;
+                self.set_status(
+                    StatusKind::Info,
+                    format!("measuring current route with {}…", mode.label()),
+                );
+                vec![Effect::TestRouteSpeed { mode }]
+            }
             other => {
                 self.set_status(
                     StatusKind::Info,
@@ -3140,6 +3277,29 @@ impl App {
         }]
     }
 
+    fn run_all_tests(&mut self) -> Vec<Effect> {
+        if !self.require_core("running unlock checks") {
+            return Vec::new();
+        }
+        if self.tests.items().is_empty() {
+            self.refuse("no unlock checks are available");
+            return Vec::new();
+        }
+        self.clear_test_results();
+        self.queue = (1..self.tests.items().len()).collect();
+        self.in_flight = Some(0);
+        self.set_test_result(0, TestResult::Running);
+        let first = &self.tests.items()[0];
+        vec![
+            Effect::CancelTests,
+            Effect::RunTest {
+                kind: first.kind,
+                target: first.target.clone(),
+                mode: self.probe_mode,
+            },
+        ]
+    }
+
     fn cancel_tests(&mut self) -> Vec<Effect> {
         if self.in_flight.is_none() && self.queue.is_empty() {
             self.refuse("no test batch is running");
@@ -3190,6 +3350,7 @@ impl App {
     }
 
     fn on_test_result(&mut self, kind: TestKind, target: &str, result: TestResult) -> Vec<Effect> {
+        let started = matches!(result, TestResult::Running);
         let index = self
             .tests
             .items()
@@ -3197,6 +3358,9 @@ impl App {
             .position(|row| row.kind == kind && row.target == target);
         if let Some(index) = index {
             self.set_test_result(index, result);
+            if started {
+                return Vec::new();
+            }
             self.queue.retain(|queued| *queued != index);
             if self.in_flight == Some(index) {
                 self.in_flight = None;
@@ -3297,7 +3461,7 @@ impl App {
                     // Nothing can be running against a core that is gone.
                     self.abandon_tests();
                     self.core_mode = None;
-                    self.ip_info = None;
+                    self.clear_ip();
                     self.route_speed = None;
                     self.invalidate_controller_views();
                     return vec![Effect::Refresh(Screen::Proxies)];
@@ -3313,7 +3477,18 @@ impl App {
             }
             Data::CoreMode(mode) => self.core_mode = Some(mode),
             Data::Version(version) => self.version = Some(version),
-            Data::IpInfo(info) => self.ip_info = Some(info),
+            Data::IpInfo(info) => {
+                self.ip_info = Some(info);
+                self.ip_error = None;
+                self.ip_updated_at = Some(Instant::now());
+                self.ip_refreshing = false;
+            }
+            Data::IpLookupStarted => self.ip_refreshing = true,
+            Data::IpLookupFailed(error) => {
+                self.set_status(StatusKind::Warning, format!("IP lookup failed: {error}"));
+                self.ip_error = Some(error);
+                self.ip_refreshing = false;
+            }
             Data::RouteSpeed(result) => match result {
                 Ok(value) => {
                     self.route_speed = Some(value.clone());
@@ -3321,6 +3496,12 @@ impl App {
                 }
                 Err(error) => self.set_status(StatusKind::Warning, format!("route speed: {error}")),
             },
+            Data::SpeedtestMissing => {
+                self.overlay = Some(Overlay::Confirm {
+                    question: self.confirm_question(&Action::InstallSpeedtestGo),
+                    action: Action::InstallSpeedtestGo,
+                });
+            }
             Data::Settings(settings) => self.set_settings(*settings),
             Data::Preview(preview) => {
                 let lines = preview.lines();
@@ -3343,8 +3524,12 @@ impl App {
                 }
             }
             Data::NodeDelay { mode, name, delay } => {
+                if mode == ProbeMode::Connect {
+                    self.node_health
+                        .insert(name.clone(), (delay.is_some(), Instant::now()));
+                }
                 self.node_delays.insert((mode, name), delay);
-                if mode == self.probe_mode {
+                if mode == self.probe_mode || mode == ProbeMode::Connect {
                     self.rebuild_nodes();
                 }
             }
@@ -3407,6 +3592,7 @@ impl App {
     fn invalidate_controller_views(&mut self) {
         self.all_nodes.clear();
         self.node_delays.clear();
+        self.node_health.clear();
         self.nodes.set_items(Vec::new());
         self.expanded.clear();
         self.connections.set_items(Vec::new());
@@ -3442,6 +3628,12 @@ impl App {
             })
             .cloned()
             .map(|mut row| {
+                if !row.is_group
+                    && let Some((alive, at)) = self.node_health.get(&row.name)
+                    && at.elapsed() < NODE_HEALTH_TTL
+                {
+                    row.alive = *alive;
+                }
                 if self.probe_mode != ProbeMode::Connect {
                     row.delay = None;
                 }
@@ -3555,7 +3747,7 @@ impl App {
         match done {
             Done::ProfilesLoaded => self.set_status(StatusKind::Success, "profiles loaded"),
             Done::ProfileSwitched { name } => {
-                self.ip_info = None;
+                self.clear_ip();
                 self.route_speed = None;
                 self.set_status(StatusKind::Success, format!("switched to `{name}`"));
                 self.invalidate_controller_views();
@@ -3584,7 +3776,7 @@ impl App {
             }
             Done::ChainSaved => self.set_status(StatusKind::Success, "chain saved"),
             Done::ConfigApplied { reload, changed } => {
-                self.ip_info = None;
+                self.clear_ip();
                 self.route_speed = None;
                 match reload {
                     Some(outcome) if outcome.succeeded() => self.set_status(
@@ -3648,6 +3840,8 @@ impl App {
                 return vec![Effect::LoadProfiles];
             }
             Done::NodeSelected { group, member } => {
+                self.clear_ip();
+                self.route_speed = None;
                 for row in &mut self.all_nodes {
                     if row.group.as_deref() == Some(group.as_str()) {
                         row.active = row.name == member;
@@ -3658,9 +3852,11 @@ impl App {
                     StatusKind::Success,
                     format!("`{group}` now uses `{member}`"),
                 );
-                return vec![Effect::Refresh(Screen::Proxies)];
+                return vec![Effect::Refresh(Screen::Proxies), Effect::RefreshIp];
             }
             Done::NodeCleared { group } => {
+                self.clear_ip();
+                self.route_speed = None;
                 for row in &mut self.all_nodes {
                     if row.group.as_deref() == Some(group.as_str()) {
                         row.active = false;
@@ -3671,7 +3867,7 @@ impl App {
                     StatusKind::Success,
                     format!("`{group}` chooses automatically again"),
                 );
-                return vec![Effect::Refresh(Screen::Proxies)];
+                return vec![Effect::Refresh(Screen::Proxies), Effect::RefreshIp];
             }
             Done::NodeTestsFinished { tested } => {
                 self.set_status(StatusKind::Success, format!("measured {tested} node(s)"));
@@ -3710,7 +3906,7 @@ impl App {
                 ];
             }
             Done::CoreModeChanged { mode } => {
-                self.ip_info = None;
+                self.clear_ip();
                 self.route_speed = None;
                 self.core_mode = Some(mode.clone());
                 self.set_status(StatusKind::Success, format!("routing mode: {mode}"));
@@ -3725,6 +3921,17 @@ impl App {
                     format!("installed mihomo {version} (managed)"),
                 );
                 return vec![Effect::Refresh(Screen::Home)];
+            }
+            Done::SpeedtestInstalled { version } => {
+                self.set_status(
+                    StatusKind::Success,
+                    format!("installed speedtest-go {version}"),
+                );
+                if self.core.is_running() && self.speed_mode == SpeedMode::Speedtest {
+                    return vec![Effect::TestRouteSpeed {
+                        mode: SpeedMode::Speedtest,
+                    }];
+                }
             }
             Done::GeoUpdated => self.set_status(StatusKind::Success, "geo databases updated"),
             Done::CachesFlushed => self.set_status(StatusKind::Success, "caches flushed"),
@@ -4639,7 +4846,10 @@ mod tests {
             group: "PROXY".to_owned(),
             member: "US 01".to_owned(),
         }));
-        assert_eq!(effects, vec![Effect::Refresh(Screen::Proxies)]);
+        assert_eq!(
+            effects,
+            vec![Effect::Refresh(Screen::Proxies), Effect::RefreshIp]
+        );
         assert!(
             a.nodes
                 .items()
@@ -4864,9 +5074,13 @@ mod tests {
         let mut app = loaded();
         goto(&mut app, Screen::Proxies);
         let before = app.nodes.selected_item().map(|row| row.name.clone());
+        assert!(press(&mut app, KeyCode::Char('b')).is_empty());
+        assert!(matches!(app.overlay, Some(Overlay::Picker { .. })));
         assert_eq!(
-            press(&mut app, KeyCode::Char('b')),
-            vec![Effect::TestRouteSpeed]
+            press(&mut app, KeyCode::Enter),
+            vec![Effect::TestRouteSpeed {
+                mode: SpeedMode::Sample4
+            }]
         );
         let _ = app.on_event(Event::Data(Data::RouteSpeed(Ok(
             "42.0 Mbit/s (speedtest-go)".to_owned(),
@@ -4878,6 +5092,118 @@ mod tests {
         assert_eq!(
             app.nodes.selected_item().map(|row| row.name.clone()),
             before
+        );
+    }
+
+    #[test]
+    fn bandwidth_picker_remembers_size_and_asks_before_installing_backend() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Proxies);
+        assert!(press(&mut app, KeyCode::Char('b')).is_empty());
+        let _ = press(&mut app, KeyCode::Down);
+        let _ = press(&mut app, KeyCode::Down);
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            vec![Effect::TestRouteSpeed {
+                mode: SpeedMode::Sample100
+            }]
+        );
+        assert_eq!(app.speed_mode, SpeedMode::Sample100);
+        let _ = press(&mut app, KeyCode::Char('b'));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Picker { selected: 2, .. })
+        ));
+        let _ = press(&mut app, KeyCode::Down);
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            vec![Effect::TestRouteSpeed {
+                mode: SpeedMode::Speedtest
+            }]
+        );
+        assert!(app.on_event(Event::Data(Data::SpeedtestMissing)).is_empty());
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm {
+                action: Action::InstallSpeedtestGo,
+                ..
+            })
+        ));
+        assert_eq!(press(&mut app, KeyCode::Char('n')), Vec::new());
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn connect_result_changes_unavailable_node_health_until_it_expires() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Proxies);
+        let mut rows = app.all_nodes.clone();
+        rows[1].alive = false;
+        let _ = app.on_event(Event::Data(Data::Nodes(rows.clone())));
+        app.expanded.push("PROXY".to_owned());
+        app.rebuild_nodes();
+        assert!(
+            !app.nodes
+                .items()
+                .iter()
+                .find(|row| row.name == "JP 01")
+                .unwrap()
+                .alive
+        );
+        let _ = app.on_event(Event::Data(Data::NodeDelay {
+            mode: ProbeMode::Connect,
+            name: "JP 01".to_owned(),
+            delay: Some(42),
+        }));
+        assert!(
+            app.nodes
+                .items()
+                .iter()
+                .find(|row| row.name == "JP 01")
+                .unwrap()
+                .alive
+        );
+        let _ = app.on_event(Event::Data(Data::Nodes(rows)));
+        assert!(
+            app.nodes
+                .items()
+                .iter()
+                .find(|row| row.name == "JP 01")
+                .unwrap()
+                .alive
+        );
+        app.node_health.insert(
+            "JP 01".to_owned(),
+            (true, Instant::now().checked_sub(NODE_HEALTH_TTL).unwrap()),
+        );
+        let _ = app.on_tick();
+        assert!(
+            !app.nodes
+                .items()
+                .iter()
+                .find(|row| row.name == "JP 01")
+                .unwrap()
+                .alive
+        );
+    }
+
+    #[test]
+    fn home_refresh_and_lookup_failure_have_visible_state() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Home);
+        assert_eq!(press(&mut app, KeyCode::Char('r')), vec![Effect::RefreshIp]);
+        let _ = app.on_event(Event::Data(Data::IpLookupStarted));
+        assert!(app.ip_refreshing);
+        let _ = app.on_event(Event::Data(Data::IpLookupFailed(
+            "service unavailable".to_owned(),
+        )));
+        assert!(!app.ip_refreshing);
+        assert_eq!(app.ip_error.as_deref(), Some("service unavailable"));
+        assert!(
+            app.current_status()
+                .unwrap()
+                .text
+                .contains("service unavailable")
         );
     }
 
@@ -4921,6 +5247,49 @@ mod tests {
         assert_eq!(press(&mut a, KeyCode::Char('s')), vec![Effect::CancelTests]);
         assert_eq!(a.queued_tests(), 0);
         assert_eq!(a.current_status().unwrap().kind, StatusKind::Warning);
+    }
+
+    #[test]
+    fn run_all_waits_for_completion_and_clear_resets_every_row() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Tests);
+        assert!(matches!(
+            press(&mut app, KeyCode::Char('a')).as_slice(),
+            [Effect::CancelTests, Effect::RunTest { .. }]
+        ));
+        assert_eq!(app.queued_tests(), 12);
+        let first = app.tests.items()[0].clone();
+        assert!(
+            app.on_event(Event::Data(Data::TestResult {
+                mode: ProbeMode::Connect,
+                kind: first.kind,
+                target: first.target.clone(),
+                result: TestResult::Running
+            }))
+            .is_empty()
+        );
+        assert_eq!(app.queued_tests(), 12);
+        assert!(matches!(
+            app.on_event(Event::Data(Data::TestResult {
+                mode: ProbeMode::Connect,
+                kind: first.kind,
+                target: first.target,
+                result: TestResult::Passed("ok".to_owned())
+            }))
+            .as_slice(),
+            [Effect::RunTest { .. }]
+        ));
+        assert_eq!(app.queued_tests(), 11);
+        assert_eq!(
+            press(&mut app, KeyCode::Char('c')),
+            vec![Effect::ClearTestResults]
+        );
+        assert!(
+            app.tests
+                .items()
+                .iter()
+                .all(|row| row.result == TestResult::Pending)
+        );
     }
 
     #[test]

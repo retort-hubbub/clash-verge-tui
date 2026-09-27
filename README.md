@@ -66,16 +66,18 @@ use CONNECT. CONNECT makes a warm-up request before reporting a reading; a
 local TUN may intercept direct TCP connections, in which case the TCP test
 reports that interception instead of a misleading local handshake time.
 Press `s` to cycle source, fastest and slowest member order; group headings
-always keep their source order. Press `b` for a current-route download test.
-If `speedtest-go` is installed, it is used through Mihomo with saving mode and
-upload disabled; otherwise a bounded 4 MB download sample is used. The result
+always keep their source order. Press `b` to choose a current-route bandwidth
+test: a 4 MB, 20 MB or 100 MB download sample, or `speedtest-go`. The latter
+uses Mihomo with saving mode and upload disabled. If it is missing, the TUI
+asks before downloading a verified release into the application directory;
+`B` offers the same installation command directly. The result
 measures the current routing policy, not necessarily the highlighted node.
 ICMP requires the system `ping` command and may be blocked by a network.
 
 The **Tests** tab runs 12 streaming and AI availability checks, including
 Netflix, Disney+, YouTube Premium, ChatGPT, Claude and Gemini. Requests use the
-local Mihomo proxy and the current route; Enter runs one check, `s` cancels a
-batch, and `c` clears results. The checks use service responses and regional
+local Mihomo proxy and the current route; Enter runs one check, `a` runs all
+checks in sequence, `s` cancels a batch, and `c` clears all results. The checks use service responses and regional
 hints, which can change when providers update their sites.
 
 **Two front ends, one implementation.** The interactive interface and the

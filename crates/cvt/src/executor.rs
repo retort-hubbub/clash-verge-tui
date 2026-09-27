@@ -36,7 +36,7 @@ use cvt_core::profile::source::{SubscriptionFetcher, is_due};
 use cvt_core::settings::TestSettings;
 use cvt_core::validate::Severity;
 use cvt_core::{AppPaths, Error, Service};
-use cvt_tui::app::{IpInfo, Preview, PreviewChange, PreviewFinding};
+use cvt_tui::app::{IpInfo, Preview, PreviewChange, PreviewFinding, SpeedMode};
 use cvt_tui::row::{
     ConnectionRow, LogRow, NodeRow, ProbeMode, ProfileRow, RuleRow, TestKind, TestResult,
 };
@@ -217,6 +217,14 @@ impl Executor {
 
             // ---- refresh, which fans out per screen
             Effect::Refresh(screen) => self.refresh(screen, sink),
+            Effect::RefreshIp => {
+                self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                *self
+                    .ip_last_fetch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                self.refresh(Screen::Home, sink);
+            }
             Effect::StartCore | Effect::RestartCore => {
                 self.ip_epoch.fetch_add(1, Ordering::SeqCst);
                 *self
@@ -480,7 +488,21 @@ impl Executor {
                 self.spawn_test(TestKind::GroupLatency, group, mode, sink);
             }
             Effect::RunTest { kind, target, mode } => self.spawn_test(kind, target, mode, sink),
-            Effect::TestRouteSpeed => self.spawn_route_speed(sink),
+            Effect::TestRouteSpeed { mode } => self.spawn_route_speed(mode, sink),
+            Effect::InstallSpeedtestGo => {
+                let home = self.with_service(|service| service.paths().home().to_path_buf());
+                let sink = sink.clone();
+                tokio::spawn(async move {
+                    match crate::speedtest::install(&home).await {
+                        Ok(version) => {
+                            let _ = sink.send(Event::Done(Done::SpeedtestInstalled { version }));
+                        }
+                        Err(error) => {
+                            let _ = sink.send(Event::Failed(error));
+                        }
+                    }
+                });
+            }
             Effect::TestAllNodes { mode } => self.spawn_all_tests(mode, sink),
             Effect::CancelTests | Effect::ClearTestResults => {
                 self.test_epoch.fetch_add(1, Ordering::SeqCst);
@@ -774,8 +796,8 @@ impl Executor {
                             }
                         };
                         if should_fetch {
+                            Self::emit(sink, Event::Data(Data::IpLookupStarted));
                             let sink = sink.clone();
-                            let last = Arc::clone(&self.ip_last_fetch);
                             let current = Arc::clone(&self.ip_epoch);
                             let epoch = current.load(Ordering::SeqCst);
                             tokio::spawn(async move {
@@ -783,13 +805,10 @@ impl Executor {
                                     Ok(info) if current.load(Ordering::SeqCst) == epoch => {
                                         let _ = sink.send(Event::Data(Data::IpInfo(info)));
                                     }
-                                    Ok(_) => {}
-                                    Err(_) => {
-                                        *last
-                                            .lock()
-                                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                            None;
+                                    Err(error) if current.load(Ordering::SeqCst) == epoch => {
+                                        let _ = sink.send(Event::Data(Data::IpLookupFailed(error)));
                                     }
+                                    Ok(_) | Err(_) => {}
                                 }
                             });
                         }
@@ -1056,8 +1075,8 @@ impl Executor {
         });
     }
 
-    /// Run the optional speedtest-go backend, falling back to a bounded download.
-    fn spawn_route_speed(&self, sink: &EventSink) {
+    /// Run the selected route throughput backend.
+    fn spawn_route_speed(&self, mode: SpeedMode, sink: &EventSink) {
         let Some(address) = self.with_service(|service| service.proxy_addr()) else {
             Self::emit(
                 sink,
@@ -1067,9 +1086,14 @@ impl Executor {
             );
             return;
         };
+        let home = self.with_service(|service| service.paths().home().to_path_buf());
+        if mode == SpeedMode::Speedtest && crate::speedtest::find_binary(&home).is_none() {
+            Self::emit(sink, Event::Data(Data::SpeedtestMissing));
+            return;
+        }
         let sink = sink.clone();
         tokio::spawn(async move {
-            let result = measure_route_speed(&address).await;
+            let result = measure_route_speed(&address, mode, &home).await;
             let _ = sink.send(Event::Data(Data::RouteSpeed(result)));
         });
     }
@@ -1474,35 +1498,72 @@ async fn fetch_exit_ip(address: &str) -> Result<IpInfo, String> {
     let client = reqwest::Client::builder()
         .proxy(proxy)
         .timeout(Duration::from_secs(8))
+        .user_agent("clash-verge-tui/0.5")
         .build()
         .map_err(|error| error.to_string())?;
-    let response: serde_json::Value = client
-        .get("https://ipapi.co/json/")
-        .send()
-        .await
-        .map_err(|error| error.to_string())?
-        .error_for_status()
-        .map_err(|error| error.to_string())?
-        .json()
-        .await
-        .map_err(|error| error.to_string())?;
+    let mut errors = Vec::new();
+    for (name, url) in [
+        ("ipapi.co", "https://ipapi.co/json/"),
+        ("ip.sb", "https://api.ip.sb/geoip"),
+    ] {
+        let result = async {
+            let response = client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .error_for_status()
+                .map_err(|e| e.to_string())?
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|e| e.to_string())?;
+            parse_exit_ip(&response)
+        }
+        .await;
+        match result {
+            Ok(info) => return Ok(info),
+            Err(error) => errors.push(format!("{name}: {error}")),
+        }
+    }
+    Err(errors.join("; "))
+}
+
+fn parse_exit_ip(response: &serde_json::Value) -> Result<IpInfo, String> {
     let ip = response["ip"]
         .as_str()
-        .filter(|ip| !ip.is_empty())
+        .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
         .ok_or_else(|| "IP lookup did not return an address".to_owned())?;
     Ok(IpInfo {
         ip: ip.to_owned(),
-        country: response["country_name"].as_str().unwrap_or("-").to_owned(),
-        organization: response["org"].as_str().unwrap_or("-").to_owned(),
+        country: response["country_name"]
+            .as_str()
+            .or_else(|| response["country"].as_str())
+            .unwrap_or("-")
+            .to_owned(),
+        organization: response["org"]
+            .as_str()
+            .or_else(|| response["organization"].as_str())
+            .unwrap_or("-")
+            .to_owned(),
     })
 }
 
-/// Prefer speedtest-go when installed; keep a small built-in measurement for
-/// installations without it. Both paths use the active Mihomo route.
-async fn measure_route_speed(address: &str) -> Result<String, String> {
+/// The chosen backend always uses the active Mihomo route.
+async fn measure_route_speed(
+    address: &str,
+    mode: SpeedMode,
+    home: &std::path::Path,
+) -> Result<String, String> {
+    if let Some(bytes) = mode.sample_bytes() {
+        return download_speed(Some(address), bytes)
+            .await
+            .map(|rate| format!("{rate:.1} Mbit/s ({} MB sample)", bytes / 1_000_000));
+    }
+    let binary = crate::speedtest::find_binary(home)
+        .ok_or_else(|| "speedtest-go is not installed".to_owned())?;
     let output = tokio::time::timeout(
         Duration::from_secs(45),
-        tokio::process::Command::new("speedtest-go")
+        tokio::process::Command::new(binary)
             .arg("--proxy")
             .arg(format!("http://{address}"))
             .arg("--saving-mode")
@@ -1514,15 +1575,20 @@ async fn measure_route_speed(address: &str) -> Result<String, String> {
             .output(),
     )
     .await;
-    if let Ok(Ok(output)) = output
-        && output.status.success()
-        && let Some(rate) = speedtest_download_mbps(&output.stdout)
-    {
-        return Ok(format!("{rate:.1} Mbit/s (speedtest-go)"));
+    let output = output
+        .map_err(|_| "speedtest-go timed out".to_owned())?
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            format!("speedtest-go exited with {}", output.status)
+        } else {
+            detail
+        });
     }
-    download_speed(Some(address))
-        .await
-        .map(|rate| format!("{rate:.1} Mbit/s (4 MB sample)"))
+    let rate = speedtest_download_mbps(&output.stdout)
+        .ok_or_else(|| "speedtest-go returned no download rate".to_owned())?;
+    Ok(format!("{rate:.1} Mbit/s (speedtest-go)"))
 }
 
 /// `speedtest-go` JSON stores `dl_speed` as bytes per second.
@@ -1535,19 +1601,25 @@ fn speedtest_download_mbps(stdout: &[u8]) -> Option<f64> {
 
 /// A bounded download through the deployed HTTP/mixed listener. The current
 /// routing mode and selected policy determine the exit; no group is mutated.
-async fn download_speed(proxy_addr: Option<&str>) -> Result<f64, String> {
+async fn download_speed(proxy_addr: Option<&str>, sample_bytes: usize) -> Result<f64, String> {
     let address =
         proxy_addr.ok_or_else(|| "no HTTP or mixed proxy listener is deployed".to_owned())?;
     let proxy =
         reqwest::Proxy::all(format!("http://{address}")).map_err(|error| error.to_string())?;
     let client = reqwest::Client::builder()
         .proxy(proxy)
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(match sample_bytes {
+            0..=4_000_000 => 20,
+            4_000_001..=20_000_000 => 60,
+            _ => 180,
+        }))
         .build()
         .map_err(|error| error.to_string())?;
     let began = Instant::now();
     let response = client
-        .get("https://speed.cloudflare.com/__down?bytes=4000000")
+        .get(format!(
+            "https://speed.cloudflare.com/__down?bytes={sample_bytes}"
+        ))
         .send()
         .await
         .map_err(|error| error.to_string())?
@@ -1557,11 +1629,11 @@ async fn download_speed(proxy_addr: Option<&str>) -> Result<f64, String> {
     let mut bytes = 0_usize;
     while let Some(chunk) = stream.next().await {
         bytes += chunk.map_err(|error| error.to_string())?.len();
-        if bytes >= 4_000_000 {
+        if bytes >= sample_bytes {
             break;
         }
     }
-    if bytes < 1_000_000 {
+    if bytes < sample_bytes / 2 {
         return Err(format!("speed test returned only {bytes} bytes"));
     }
     Ok((bytes as f64 * 8.0) / began.elapsed().as_secs_f64() / 1_000_000.0)
@@ -1757,7 +1829,7 @@ fn open_editor(path: &std::path::Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod speedtest_contract_tests {
-    use super::speedtest_download_mbps;
+    use super::{parse_exit_ip, speedtest_download_mbps};
 
     #[test]
     fn speedtest_go_reports_bytes_per_second() {
@@ -1768,6 +1840,21 @@ mod speedtest_contract_tests {
             speedtest_download_mbps(br#"{"servers":[{"dl_speed":-1}]}"#),
             None
         );
+    }
+
+    #[test]
+    fn exit_ip_parses_both_providers_and_rejects_error_objects() {
+        let ipapi = serde_json::json!({"ip":"203.0.113.7","country_name":"Example","org":"Net"});
+        let ipsb = serde_json::json!({"ip":"2001:db8::7","country":"Example","organization":"Net"});
+        assert_eq!(
+            parse_exit_ip(&ipapi).map(|info| info.organization),
+            Ok("Net".to_owned())
+        );
+        assert_eq!(
+            parse_exit_ip(&ipsb).map(|info| info.ip),
+            Ok("2001:db8::7".to_owned())
+        );
+        assert!(parse_exit_ip(&serde_json::json!({"ip":"rate limited"})).is_err());
     }
 }
 

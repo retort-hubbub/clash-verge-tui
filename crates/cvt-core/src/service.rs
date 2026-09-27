@@ -1069,7 +1069,16 @@ rules:
             .pipeline()
             .commit(&f.service.generate().unwrap(), false)
             .unwrap();
-        // Nothing listens on 127.0.0.1:9090 in the test environment.
+        // Reserve a private port for the whole wait. A fixed 9090 can belong
+        // to a real Mihomo process on the developer's machine, making this
+        // test pass or fail depending on unrelated local state.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let runtime = f.service.paths().runtime_config();
+        let document = f.service.paths().read(&runtime).unwrap();
+        assert!(document.contains("127.0.0.1:9090"));
+        let document =
+            document.replace("127.0.0.1:9090", &silent.local_addr().unwrap().to_string());
+        f.service.paths().write_atomic(&runtime, &document).unwrap();
         let err = f.service.wait_until_ready().await.unwrap_err();
         assert!(
             matches!(err, Error::ControllerUnreachable { .. }),

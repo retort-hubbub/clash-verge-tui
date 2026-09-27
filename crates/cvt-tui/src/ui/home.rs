@@ -163,6 +163,15 @@ fn information(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
     let live = app.metrics.latest.unwrap_or_default();
     let ip = app.ip_info.as_ref();
+    let ip_status = if app.ip_refreshing {
+        app.tr("refreshing IP…").to_owned()
+    } else if app.ip_error.is_some() {
+        app.tr("IP lookup failed · r to retry").to_owned()
+    } else if let Some(updated) = app.ip_updated_at {
+        format!("{} {}s · r", app.tr("updated"), updated.elapsed().as_secs())
+    } else {
+        app.tr("r to refresh IP").to_owned()
+    };
     if area.height >= 12 {
         let left = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(columns[0]);
@@ -186,6 +195,7 @@ fn information(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     "network",
                     ip.map_or_else(|| "-".to_owned(), |value| value.organization.clone()),
                 ),
+                ("status", ip_status),
             ],
         );
         w::details(
@@ -252,6 +262,7 @@ fn information(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     "country",
                     ip.map_or_else(|| "-".to_owned(), |value| value.country.clone()),
                 ),
+                ("status", ip_status),
                 (
                     "platform",
                     format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),

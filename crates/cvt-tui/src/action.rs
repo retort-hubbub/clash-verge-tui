@@ -169,6 +169,8 @@ pub enum Action {
     TestAllNodes,
     /// Measure throughput through the currently active route.
     TestRouteSpeed,
+    /// Install the optional speedtest-go backend in application home.
+    InstallSpeedtestGo,
     /// Cycle CONNECT, TCP and ICMP probe methods.
     CycleTestMode,
     /// Cycle the order of members within each proxy group.
@@ -207,6 +209,8 @@ pub enum Action {
     // -- tests ------------------------------------------------------------
     /// Run the selected test suite.
     RunTests,
+    /// Run every unlock check in one batch.
+    RunAllTests,
     /// Cancel a running test batch.
     CancelTests,
     /// Clear cached results.
@@ -277,6 +281,7 @@ impl Action {
             Self::TestNode => "test node",
             Self::TestAllNodes => "test all",
             Self::TestRouteSpeed => "route speed",
+            Self::InstallSpeedtestGo => "install speedtest-go",
             Self::CycleTestMode => "test mode",
             Self::ClearNodeSelection => "unpin",
             Self::CloseConnection => "close",
@@ -291,6 +296,7 @@ impl Action {
             Self::UpdateAllRuleProviders => "update sets",
             Self::ToggleDisabledRules => "show disabled",
             Self::RunTests => "run",
+            Self::RunAllTests => "run all",
             Self::CancelTests => "stop tests",
             Self::ClearTestResults => "clear results",
             Self::StartCore => "start core",
@@ -352,6 +358,7 @@ impl Action {
             Self::TestNode => "measure this node",
             Self::TestAllNodes => "measure every node the core knows about",
             Self::TestRouteSpeed => "measure current-route download through Mihomo",
+            Self::InstallSpeedtestGo => "download speedtest-go into the application directory",
             Self::CycleTestMode => "change between proxy URL, direct TCP and direct ICMP probes",
             Self::CycleNodeSort => {
                 "order members within each group by source order or measured latency"
@@ -369,6 +376,7 @@ impl Action {
             Self::UpdateAllRuleProviders => "download every rule set again",
             Self::ToggleDisabledRules => "include disabled rules in the list",
             Self::RunTests => "run the highlighted test",
+            Self::RunAllTests => "run all unlock checks",
             Self::CancelTests => "stop the running batch",
             Self::ClearTestResults => "clear unlock check results",
             Self::StartCore => "launch the core with the generated configuration",
@@ -394,6 +402,7 @@ impl Action {
                 | Self::StopCore
                 | Self::RollbackConfig
                 | Self::UpgradeCore
+                | Self::InstallSpeedtestGo
         )
     }
 
@@ -433,6 +442,7 @@ impl Action {
             | Self::TestNode
             | Self::TestAllNodes
             | Self::TestRouteSpeed
+            | Self::InstallSpeedtestGo
             | Self::CycleTestMode
             | Self::CycleNodeSort
             | Self::ClearNodeSelection => "Proxies",
@@ -446,7 +456,9 @@ impl Action {
             | Self::UpdateRuleProvider
             | Self::UpdateAllRuleProviders
             | Self::ToggleDisabledRules => "Rules",
-            Self::RunTests | Self::CancelTests | Self::ClearTestResults => "Tests",
+            Self::RunTests | Self::RunAllTests | Self::CancelTests | Self::ClearTestResults => {
+                "Tests"
+            }
             Self::StartCore
             | Self::StopCore
             | Self::RestartCore
@@ -566,6 +578,7 @@ mod tests {
             Action::TestNode,
             Action::TestAllNodes,
             Action::TestRouteSpeed,
+            Action::InstallSpeedtestGo,
             Action::CycleTestMode,
             Action::ClearNodeSelection,
             Action::CloseConnection,
@@ -580,6 +593,7 @@ mod tests {
             Action::UpdateAllRuleProviders,
             Action::ToggleDisabledRules,
             Action::RunTests,
+            Action::RunAllTests,
             Action::CancelTests,
             Action::ClearTestResults,
             Action::StartCore,

@@ -15,12 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests now offers 12 streaming and AI availability checks through Mihomo.
 - Home shows separate download and upload trends, exit IP, core and system
   information, and selected proxy group members.
+- Tests can run every unlock check in sequence with `a`, or clear the batch
+  with `c`. Proxies offers 4, 20 and 100 MB download samples or speedtest-go;
+  missing speedtest-go can be installed after confirmation.
 
 ### Fixed
 
 - Latency results update matching proxy rows as they arrive. Sorting now keeps
   each group heading attached to its members, preserves the chosen row, and
   survives inventory refreshes; changing probe methods restores source order.
+- Successful CONNECT probes update a node's availability immediately, even if
+  the next controller inventory still reports the previous health value.
+- Home shows IP lookup progress, last update age and retry state. `r` bypasses
+  the lookup cache; changing the selected route also refreshes the IP.
+- Batch unlock checks wait for each result before starting the next check.
+- The controller readiness regression test reserves its own silent port, so a
+  real controller on port 9090 cannot make the test pass or fail by chance.
 - Starting or restarting the core waits for its controller before refreshing
   live views, avoiding a transient connection error. The routing mode appears
   immediately from the live controller or deployed configuration.

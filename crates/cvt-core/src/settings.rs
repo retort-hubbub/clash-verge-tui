@@ -63,6 +63,49 @@ pub struct CoreSettings {
     /// Prefer the managed core in the application data directory over local/system binaries.
     #[serde(default = "default_true")]
     pub use_managed: bool,
+    /// Start the core after login using the selected user session manager.
+    pub login_autostart: LoginAutostart,
+    /// Override the selected profile's TUN switch. `None` follows the profile.
+    pub tun_enabled: Option<bool>,
+}
+
+/// Supported login startup managers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LoginAutostart {
+    /// Do not register a login startup entry.
+    #[default]
+    Off,
+    /// A systemd user service.
+    Systemd,
+    /// XDG desktop autostart, limited to KDE Plasma.
+    Kde,
+    /// XDG desktop autostart, limited to GNOME.
+    Gnome,
+}
+
+impl LoginAutostart {
+    /// Stable setting value shown in the terminal.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Systemd => "systemd",
+            Self::Kde => "KDE",
+            Self::Gnome => "GNOME",
+        }
+    }
+
+    /// Cycle through supported choices; validation happens at installation.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Systemd,
+            Self::Systemd => Self::Kde,
+            Self::Kde => Self::Gnome,
+            Self::Gnome => Self::Off,
+        }
+    }
 }
 
 const fn default_true() -> bool {
@@ -78,6 +121,8 @@ impl Default for CoreSettings {
             auto_start: false,
             rollback_on_failure: true,
             use_managed: true,
+            login_autostart: LoginAutostart::Off,
+            tun_enabled: None,
         }
     }
 }

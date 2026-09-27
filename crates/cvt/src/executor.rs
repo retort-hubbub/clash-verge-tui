@@ -635,7 +635,7 @@ impl Executor {
     }
 
     /// Effects that only touch local state.
-    fn local(&self, effect: Effect, _sink: &EventSink) -> Result<Event, Error> {
+    fn local(&self, effect: Effect, sink: &EventSink) -> Result<Event, Error> {
         match effect {
             Effect::LoadProfiles => self.with_service(|service| {
                 let store = service.store()?;
@@ -735,16 +735,91 @@ impl Executor {
                 service.stop_core()?;
                 Ok(Event::Done(Done::CoreStopped))
             }),
-            Effect::SaveSettings { settings } => self.with_service(|service| {
-                service.set_settings(settings);
-                service.save_settings()?;
-                // `Done::SettingsSaved`, not a notice: it is the variant that
-                // clears the interface's dirty flag, and nothing produced it, so
-                // the flag stayed set after a successful save. The status line
-                // and the flag are two different things, and only one of them
-                // was being sent.
-                Ok(Event::Done(Done::SettingsSaved))
-            }),
+            Effect::SaveSettings { settings } => {
+                let service = Arc::clone(&self.service);
+                let sink = sink.clone();
+                tokio::spawn(async move {
+                    let prepared = tokio::task::spawn_blocking(move || {
+                        let mut service = service
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let previous = service.settings().core.clone();
+                        let requested = &settings.core;
+                        if requested.tun_enabled == Some(true) && previous.tun_enabled != Some(true)
+                        {
+                            let binary = service.core_binary().ok_or_else(|| {
+                                Error::Unsupported(
+                                    "install or select a Mihomo core before enabling TUN"
+                                        .to_owned(),
+                                )
+                            })?;
+                            crate::tun::authorize(&binary)
+                                .map_err(|error| Error::Unsupported(error.to_string()))?;
+                        }
+                        if previous.login_autostart != requested.login_autostart {
+                            let exe = std::env::current_exe()
+                                .map_err(|error| Error::Unsupported(error.to_string()))?;
+                            crate::autostart::apply(
+                                requested.login_autostart,
+                                service.paths().home(),
+                                &exe,
+                            )
+                            .map_err(|error| Error::Unsupported(error.to_string()))?;
+                        }
+                        settings.save(service.paths())?;
+                        let tun_changed = previous.tun_enabled != requested.tun_enabled;
+                        let tun_enabled = requested.tun_enabled == Some(true);
+                        let paths = service.paths().clone();
+                        service.set_settings(settings);
+                        drop(service);
+                        Ok::<_, Error>((tun_changed, tun_enabled, paths))
+                    })
+                    .await;
+                    match prepared {
+                        Ok(Ok((tun_changed, tun_enabled, paths))) => {
+                            Self::emit(&sink, Event::Done(Done::SettingsSaved));
+                            if tun_changed {
+                                let outcome = async {
+                                    let service = Service::open(paths)?;
+                                    if service.store()?.current().is_none() {
+                                        return Ok::<_, Error>(());
+                                    }
+                                    if service.core_status().is_running() {
+                                        let mode = if tun_enabled {
+                                            cvt_core::ReloadMode::Restart
+                                        } else {
+                                            cvt_core::ReloadMode::Auto
+                                        };
+                                        service.apply(false, mode).await?;
+                                    } else {
+                                        let generated = service.generate()?;
+                                        service.pipeline().commit(&generated, false)?;
+                                    }
+                                    Ok(())
+                                }
+                                .await;
+                                match outcome {
+                                    Ok(()) => Self::emit(
+                                        &sink,
+                                        Event::Data(Data::Notice(
+                                            "TUN configuration applied".to_owned(),
+                                        )),
+                                    ),
+                                    Err(error) => Self::emit(
+                                        &sink,
+                                        Event::Failed(format!(
+                                            "settings saved; TUN could not be applied: {error}"
+                                        )),
+                                    ),
+                                }
+                            }
+                        }
+                        Ok(Err(error)) => Self::emit(&sink, Event::Failed(error.to_string())),
+                        Err(error) => Self::emit(&sink, Event::Failed(error.to_string())),
+                    }
+                });
+                Ok(Event::Data(Data::Notice("saving settings…".to_owned())))
+            }
             other => Err(Error::Unsupported(format!(
                 "the interactive interface does not perform {other:?} yet"
             ))),

@@ -20,6 +20,7 @@
 // meant to be read.
 #![allow(unreachable_pub)]
 
+mod autostart;
 mod cli;
 mod commands;
 mod context;
@@ -29,6 +30,7 @@ mod media_unlock;
 mod output;
 mod speedtest;
 mod tui;
+mod tun;
 
 use std::io::IsTerminal as _;
 use std::process::ExitCode as ProcessExit;

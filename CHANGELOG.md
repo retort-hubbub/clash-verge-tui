@@ -9,16 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Proxies and Tests can cycle CONNECT, direct TCP and direct ICMP latency
-  probes with `v`. Tests also offers a bounded download speed measurement for
-  the current route.
+- Proxies can cycle CONNECT, direct TCP and direct ICMP latency probes with
+  `v`, and run a current-route download speed test with `b` using optional
+  `speedtest-go` or a bounded download sample.
+- Tests now offers 12 streaming and AI availability checks through Mihomo.
+- Home shows separate download and upload trends, exit IP, core and system
+  information, and selected proxy group members.
 
 ### Fixed
 
 - Latency results update matching proxy rows as they arrive. Sorting now keeps
   each group heading attached to its members, preserves the chosen row, and
-  survives inventory refreshes; clearing results restores the original order.
-- The Tests tab finds a node even when its group is collapsed.
+  survives inventory refreshes; changing probe methods restores source order.
 - Starting or restarting the core waits for its controller before refreshing
   live views, avoiding a transient connection error. The routing mode appears
   immediately from the live controller or deployed configuration.

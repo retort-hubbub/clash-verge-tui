@@ -555,24 +555,27 @@ pub enum TestKind {
     GroupLatency,
     /// Measure one node.
     NodeLatency,
-    /// Re-read the core's version and capabilities.
-    CoreHealth,
-    /// Resolve a name through the core's own resolver.
-    DnsLookup,
-    /// Download a bounded sample through the currently selected route.
-    Bandwidth,
+    /// Check whether a streaming or AI service is available through Mihomo.
+    Unlock(&'static str),
 }
 
 impl TestKind {
     /// Every kind, in the order the screen lists them.
     #[must_use]
-    pub fn all() -> [Self; 5] {
+    pub fn all() -> [Self; 12] {
         [
-            Self::GroupLatency,
-            Self::NodeLatency,
-            Self::CoreHealth,
-            Self::DnsLookup,
-            Self::Bandwidth,
+            Self::Unlock("哔哩哔哩大陆"),
+            Self::Unlock("哔哩哔哩港澳台"),
+            Self::Unlock("ChatGPT Web"),
+            Self::Unlock("Claude"),
+            Self::Unlock("Gemini"),
+            Self::Unlock("YouTube Premium"),
+            Self::Unlock("Bahamut Anime"),
+            Self::Unlock("Netflix"),
+            Self::Unlock("Disney+"),
+            Self::Unlock("Prime Video"),
+            Self::Unlock("Spotify"),
+            Self::Unlock("TikTok"),
         ]
     }
 
@@ -582,9 +585,7 @@ impl TestKind {
         match self {
             Self::GroupLatency => "group latency",
             Self::NodeLatency => "node latency",
-            Self::CoreHealth => "core health",
-            Self::DnsLookup => "dns lookup",
-            Self::Bandwidth => "download speed",
+            Self::Unlock(name) => name,
         }
     }
 
@@ -596,13 +597,7 @@ impl TestKind {
                 "tests each member with the selected probe method and updates results as they arrive"
             }
             Self::NodeLatency => "measures one node with the selected probe method",
-            Self::CoreHealth => "reads the core's version and reports which optional routes exist",
-            Self::DnsLookup => {
-                "resolves a name through the core's resolver, so fake-IP mode shows the synthetic address"
-            }
-            Self::Bandwidth => {
-                "downloads up to 4 MB through the current route; this does not measure an individual node"
-            }
+            Self::Unlock(_) => "checks regional availability through the current Mihomo route",
         }
     }
 }
@@ -1044,7 +1039,7 @@ rules: [MATCH,PROXY]
             assert!(!kind.label().is_empty());
             assert!(!kind.description().is_empty());
         }
-        assert_eq!(TestKind::all().len(), 5);
+        assert_eq!(TestKind::all().len(), 12);
     }
 
     #[test]

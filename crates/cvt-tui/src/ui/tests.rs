@@ -1,4 +1,4 @@
-//! Latency tests.
+//! Streaming and AI availability checks.
 //!
 //! The screen is a queue rather than a set of independent buttons: a batch
 //! runs one check at a time, and the title says how many are still waiting, so
@@ -29,15 +29,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         w::ListSpec {
             state: w::state_of(&app.tests),
             title,
-            header: vec!["check", "target", "result"],
+            header: vec!["check", "route", "result"],
             widths: vec![
-                Constraint::Length(14),
+                Constraint::Length(20),
                 Constraint::Min(20),
                 Constraint::Min(14),
             ],
             rows,
-            empty: "no checks are available yet — load a profile so there is something to test"
-                .to_owned(),
+            empty: "no unlock checks are available".to_owned(),
         },
     );
     detail(frame, detail_area, app);
@@ -48,8 +47,8 @@ fn row(check: &TestRow, app: &App) -> Row<'static> {
     let (value, style) = match &check.result {
         TestResult::Pending => (app.tr("pending").to_owned(), theme.dim()),
         TestResult::Running => (app.tr("running…").to_owned(), theme.warn()),
-        TestResult::Passed(value) => (format!("{} — {value}", app.tr("ok")), theme.ok()),
-        TestResult::Failed(reason) => (format!("{} — {reason}", app.tr("failed")), theme.error()),
+        TestResult::Passed(value) => (value.clone(), theme.ok()),
+        TestResult::Failed(reason) => (reason.clone(), theme.error()),
     };
     Row::new(vec![
         Cell::from(app.tr(check.kind.label()).to_owned()).style(theme.key_label()),
@@ -61,10 +60,10 @@ fn row(check: &TestRow, app: &App) -> Row<'static> {
 /// What the highlighted check does, and how to run it.
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
-    rows.push(("test mode", app.probe_mode.label().to_owned()));
+    rows.push(("route", app.tr("current route").to_owned()));
     rows.push((
         "method",
-        app.tr("v cycles CONNECT, TCP and ICMP; speed uses the current route")
+        app.tr("requests go through Mihomo’s local proxy")
             .to_owned(),
     ));
     match app.tests.selected_item() {
@@ -72,7 +71,15 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             rows.push(("check", app.tr(test.kind.label()).to_owned()));
             rows.push(("target", test.target.clone()));
             rows.push(("what it does", app.tr(test.kind.description()).to_owned()));
-            rows.push(("result", test.result.label()));
+            let result = match &test.result {
+                TestResult::Failed(reason)
+                    if matches!(test.kind, crate::row::TestKind::Unlock(_)) =>
+                {
+                    reason.clone()
+                }
+                other => other.label(),
+            };
+            rows.push(("result", result));
         }
         None => rows.push((
             "hint",
@@ -95,7 +102,7 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         rows.push((
             "core",
-            app.tr("not running; latency checks need it, so start it from Home")
+            app.tr("start the core from Home to check service availability")
                 .to_owned(),
         ));
     }

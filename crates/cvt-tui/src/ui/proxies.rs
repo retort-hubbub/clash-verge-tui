@@ -107,6 +107,12 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
     rows.push(("test mode", app.probe_mode.label().to_owned()));
     rows.push((
+        "route speed (b)",
+        app.route_speed
+            .clone()
+            .unwrap_or_else(|| app.tr("not tested").to_owned()),
+    ));
+    rows.push((
         "method",
         app.tr(if app.probe_mode == crate::row::ProbeMode::Connect {
             "CONNECT uses the named proxy; v cycles test methods"

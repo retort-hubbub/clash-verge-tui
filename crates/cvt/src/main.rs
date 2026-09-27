@@ -25,6 +25,7 @@ mod commands;
 mod context;
 mod executor;
 mod exit;
+mod media_unlock;
 mod output;
 mod tui;
 

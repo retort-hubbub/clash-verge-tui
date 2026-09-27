@@ -232,8 +232,8 @@ fn sample_data() -> Vec<Data> {
         )),
         Data::TestResult {
             mode: crate::row::ProbeMode::Connect,
-            kind: crate::row::TestKind::CoreHealth,
-            target: "core".to_owned(),
+            kind: crate::row::TestKind::Unlock("ChatGPT Web"),
+            target: "current route".to_owned(),
             result: crate::row::TestResult::Passed("v1.19.11".to_owned()),
         },
     ]
@@ -374,6 +374,22 @@ fn a_core_with_no_binary_says_so() {
 }
 
 #[test]
+fn home_cards_show_exit_ip_and_route_at_compact_and_full_sizes() {
+    let mut app = ready(Screen::Home);
+    let _ = app.on_event(Event::Data(Data::IpInfo(crate::app::IpInfo {
+        ip: "203.0.113.7".to_owned(),
+        country: "Exampleland".to_owned(),
+        organization: "Example Network".to_owned(),
+    })));
+    for (width, height) in [(80, 24), (160, 48)] {
+        let text = flat(&draw(&app, width, height));
+        assert!(text.contains("203.0.113.7"), "{width}x{height}: {text}");
+        assert!(text.contains("Clash"), "{width}x{height}: {text}");
+        assert!(text.contains("system"), "{width}x{height}: {text}");
+    }
+}
+
+#[test]
 fn a_populated_screen_shows_its_rows() {
     let checks: [(Screen, &str); 6] = [
         (Screen::Profiles, "Tokyo subscription"),
@@ -381,7 +397,7 @@ fn a_populated_screen_shows_its_rows() {
         (Screen::Connections, "example.com:443"),
         (Screen::Rules, "example.com"),
         (Screen::Logs, "dial failed"),
-        (Screen::Tests, "core health"),
+        (Screen::Tests, "ChatGPT Web"),
     ];
     for (screen, expected) in checks {
         let app = ready(screen);

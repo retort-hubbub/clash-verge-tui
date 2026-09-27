@@ -167,6 +167,8 @@ pub enum Action {
     TestNode,
     /// Latency-test every node.
     TestAllNodes,
+    /// Measure throughput through the currently active route.
+    TestRouteSpeed,
     /// Cycle CONNECT, TCP and ICMP probe methods.
     CycleTestMode,
     /// Cycle the order of members within each proxy group.
@@ -274,6 +276,7 @@ impl Action {
             Self::TestGroup => "test group",
             Self::TestNode => "test node",
             Self::TestAllNodes => "test all",
+            Self::TestRouteSpeed => "route speed",
             Self::CycleTestMode => "test mode",
             Self::ClearNodeSelection => "unpin",
             Self::CloseConnection => "close",
@@ -315,7 +318,7 @@ impl Action {
                 Screen::Connections => "connections the core is currently proxying",
                 Screen::Logs => "live log stream from the core",
                 Screen::Rules => "routing rules and rule providers",
-                Screen::Tests => "latency tests",
+                Screen::Tests => "unlock tests",
                 Screen::Settings => "application and core settings",
                 Screen::Help => "this reference",
             },
@@ -348,6 +351,7 @@ impl Action {
             Self::TestGroup => "measure every member of this group",
             Self::TestNode => "measure this node",
             Self::TestAllNodes => "measure every node the core knows about",
+            Self::TestRouteSpeed => "measure current-route download through Mihomo",
             Self::CycleTestMode => "change between proxy URL, direct TCP and direct ICMP probes",
             Self::CycleNodeSort => {
                 "order members within each group by source order or measured latency"
@@ -366,7 +370,7 @@ impl Action {
             Self::ToggleDisabledRules => "include disabled rules in the list",
             Self::RunTests => "run the highlighted test",
             Self::CancelTests => "stop the running batch",
-            Self::ClearTestResults => "forget cached latency results",
+            Self::ClearTestResults => "clear unlock check results",
             Self::StartCore => "launch the core with the generated configuration",
             Self::StopCore => "stop the core process",
             Self::RestartCore => "stop and start the core",
@@ -428,6 +432,7 @@ impl Action {
             | Self::TestGroup
             | Self::TestNode
             | Self::TestAllNodes
+            | Self::TestRouteSpeed
             | Self::CycleTestMode
             | Self::CycleNodeSort
             | Self::ClearNodeSelection => "Proxies",
@@ -560,6 +565,7 @@ mod tests {
             Action::TestGroup,
             Action::TestNode,
             Action::TestAllNodes,
+            Action::TestRouteSpeed,
             Action::CycleTestMode,
             Action::ClearNodeSelection,
             Action::CloseConnection,

@@ -57,7 +57,7 @@ DNS tests, list and close connections, watch traffic and memory, follow the
 log stream, toggle rules, update rule providers, switch mode, and start, stop,
 restart, upgrade or garbage-collect the core itself.
 
-On **Proxies** and **Tests**, press `v` to cycle latency methods. CONNECT uses
+On **Proxies**, press `v` to cycle latency methods. CONNECT uses
 Mihomo's named-proxy URL test and measures the working proxy path. TCP opens a
 direct connection to the node server and ICMP sends a direct echo to that
 server; these two measure server reachability, not proxy throughput. Nodes
@@ -65,12 +65,18 @@ whose server address is unavailable in the deployed configuration can still
 use CONNECT. CONNECT makes a warm-up request before reporting a reading; a
 local TUN may intercept direct TCP connections, in which case the TCP test
 reports that interception instead of a misleading local handshake time.
-On **Proxies**, press `s` to cycle source, fastest and slowest member order;
-group headings always keep their source order. The Tests tab also offers a
-bounded download test (up to 4 MB, 15 seconds) through the currently selected
-route; it does not measure an
-individual node or change the selected node. ICMP requires the system `ping`
-command and may be blocked by a server or network.
+Press `s` to cycle source, fastest and slowest member order; group headings
+always keep their source order. Press `b` for a current-route download test.
+If `speedtest-go` is installed, it is used through Mihomo with saving mode and
+upload disabled; otherwise a bounded 4 MB download sample is used. The result
+measures the current routing policy, not necessarily the highlighted node.
+ICMP requires the system `ping` command and may be blocked by a network.
+
+The **Tests** tab runs 12 streaming and AI availability checks, including
+Netflix, Disney+, YouTube Premium, ChatGPT, Claude and Gemini. Requests use the
+local Mihomo proxy and the current route; Enter runs one check, `s` cancels a
+batch, and `c` clears results. The checks use service responses and regional
+hints, which can change when providers update their sites.
 
 **Two front ends, one implementation.** The interactive interface and the
 command line are both thin shells over the same `Service` facade, so they
@@ -82,7 +88,7 @@ cannot disagree about what a profile chain means or how an apply is sequenced.
 |---|---|---|
 | Profiles and subscriptions | List, switch, edit, update one or all due, import | The same, plus editing a subscription URL |
 | Configuration | Preview, apply, edit profiles and overrides | Generate, validate, diff, apply, roll back |
-| Running core | Nodes, connections, logs, rules, CONNECT/TCP/ICMP latency, current-route download speed and resource use | Node and group URL latency, DNS and named URL tests, plus core controls |
+| Running core | Nodes, connections, logs, rules, CONNECT/TCP/ICMP latency, current-route download speed, unlock checks and resource use | Node and group URL latency, DNS and named URL tests, plus core controls |
 | Diagnostics and maintenance | Core and Geo database updates | Doctor, media unlock (YouTube Premium, Netflix, ChatGPT, Disney+), exit IP/geolocation, local backup and restore |
 
 The TUI's **update all** action updates subscriptions that are due according to
@@ -97,8 +103,7 @@ system proxy, PAC, the system resolver, privileged TUN setup, or WebDAV backup.
 Those desktop and remote-sync operations need external tools. `dialer-proxy`
 chains can be inspected and validated, but are not rewritten automatically.
 TLS, Unix-socket and Windows-pipe controller addresses are recognised; the
-pipe transport depends on Windows. The command line's unlock checks cover four
-services, not every service offered by `clash-verge-rev`.
+pipe transport depends on Windows. The command line's unlock checks cover four services; the TUI presents 12.
 
 ## Requirements
 
@@ -197,6 +202,12 @@ shows which area each file covers.
 
 ## Relationship to other projects
 
+The TUI's 12 unlock probes in `crates/cvt/src/media_unlock/` adapt the
+`clash-verge-media-unlock` crate from
+[clash-verge-rev at `897a117dc5fc`](https://github.com/clash-verge-rev/clash-verge-rev/tree/897a117dc5fc), licensed
+GPL-3.0-or-later like this project. The adaptation replaces its logging and
+country-code registry integrations and connects individual probes to the TUI.
+
 [clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev) is a
 Tauri desktop application for the same core, and this project borrows its
 profile model and file layout on purpose — being able to point at an existing
@@ -205,8 +216,8 @@ profile model and file layout on purpose — being able to point at an existing
 same problem; its existence is why this one is written as a library with a
 thin TUI over it rather than as a TUI with logic inside it.
 
-This is an **independent implementation**, not a fork of either, and it shares
-no code with them.
+This is an **independent implementation**, not a fork. The unlock probe
+module is the code adaptation described above.
 
 ## Licence
 

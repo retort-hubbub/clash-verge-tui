@@ -36,7 +36,7 @@ use cvt_core::profile::source::{SubscriptionFetcher, is_due};
 use cvt_core::settings::TestSettings;
 use cvt_core::validate::Severity;
 use cvt_core::{AppPaths, Error, Service};
-use cvt_tui::app::{Preview, PreviewChange, PreviewFinding};
+use cvt_tui::app::{IpInfo, Preview, PreviewChange, PreviewFinding};
 use cvt_tui::row::{
     ConnectionRow, LogRow, NodeRow, ProbeMode, ProfileRow, RuleRow, TestKind, TestResult,
 };
@@ -54,6 +54,10 @@ pub struct Executor {
     /// Whether the live stream has been started, so it starts once rather than
     /// once per refresh.
     streaming: Arc<AtomicBool>,
+    /// Last public-IP request, to avoid polling an external service each UI tick.
+    ip_last_fetch: Arc<Mutex<Option<Instant>>>,
+    /// Discard IP lookups started before a routing change.
+    ip_epoch: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for Executor {
@@ -71,6 +75,8 @@ impl Executor {
             starting: Arc::new(AtomicBool::new(false)),
             test_epoch: Arc::new(AtomicU64::new(0)),
             streaming: Arc::new(AtomicBool::new(false)),
+            ip_last_fetch: Arc::new(Mutex::new(None)),
+            ip_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -212,6 +218,11 @@ impl Executor {
             // ---- refresh, which fans out per screen
             Effect::Refresh(screen) => self.refresh(screen, sink),
             Effect::StartCore | Effect::RestartCore => {
+                self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                *self
+                    .ip_last_fetch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 let service = Arc::clone(&self.service);
                 let starting = Arc::clone(&self.starting);
                 let sink = sink.clone();
@@ -383,20 +394,27 @@ impl Executor {
                     )))
                 },
             ),
-            Effect::SetCoreMode { mode } => self.spawn_net(
-                sink,
-                {
-                    let mode = mode.clone();
-                    move |client| async move {
-                        let patch = ConfigPatch {
-                            mode: Some(mode),
-                            ..ConfigPatch::default()
-                        };
-                        client.patch_configs(&patch).await
-                    }
-                },
-                move |()| Event::Done(Done::CoreModeChanged { mode }),
-            ),
+            Effect::SetCoreMode { mode } => {
+                self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                *self
+                    .ip_last_fetch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                self.spawn_net(
+                    sink,
+                    {
+                        let mode = mode.clone();
+                        move |client| async move {
+                            let patch = ConfigPatch {
+                                mode: Some(mode),
+                                ..ConfigPatch::default()
+                            };
+                            client.patch_configs(&patch).await
+                        }
+                    },
+                    move |()| Event::Done(Done::CoreModeChanged { mode }),
+                );
+            }
             Effect::UpgradeCore => {
                 let service = Arc::clone(&self.service);
                 let sink = sink.clone();
@@ -462,6 +480,7 @@ impl Executor {
                 self.spawn_test(TestKind::GroupLatency, group, mode, sink);
             }
             Effect::RunTest { kind, target, mode } => self.spawn_test(kind, target, mode, sink),
+            Effect::TestRouteSpeed => self.spawn_route_speed(sink),
             Effect::TestAllNodes { mode } => self.spawn_all_tests(mode, sink),
             Effect::CancelTests | Effect::ClearTestResults => {
                 self.test_epoch.fetch_add(1, Ordering::SeqCst);
@@ -500,6 +519,11 @@ impl Executor {
 
             // ---- applying runs on a blocking thread, and reports once
             Effect::ApplyConfig { mode } => {
+                self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                *self
+                    .ip_last_fetch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 let service = Arc::clone(&self.service);
                 let sink = sink.clone();
                 tokio::task::spawn_blocking(move || {
@@ -565,6 +589,9 @@ impl Executor {
 
             // ---- everything else is local and answers immediately
             other => {
+                if matches!(other, Effect::StopCore) {
+                    self.ip_epoch.fetch_add(1, Ordering::SeqCst);
+                }
                 let event = match self.local(other, sink) {
                     Ok(event) => event,
                     Err(error) => Event::Failed(error.to_string()),
@@ -733,6 +760,40 @@ impl Executor {
                 let status = self.with_service(|service| service.core_status());
                 Self::emit(sink, Event::Data(Data::Core(status)));
                 if self.has_controller_endpoint(sink) {
+                    if let Some(address) = self.with_service(|service| service.proxy_addr()) {
+                        let should_fetch = {
+                            let mut last = self
+                                .ip_last_fetch
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if last.is_none_or(|time| time.elapsed() >= Duration::from_secs(60)) {
+                                *last = Some(Instant::now());
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if should_fetch {
+                            let sink = sink.clone();
+                            let last = Arc::clone(&self.ip_last_fetch);
+                            let current = Arc::clone(&self.ip_epoch);
+                            let epoch = current.load(Ordering::SeqCst);
+                            tokio::spawn(async move {
+                                match fetch_exit_ip(&address).await {
+                                    Ok(info) if current.load(Ordering::SeqCst) == epoch => {
+                                        let _ = sink.send(Event::Data(Data::IpInfo(info)));
+                                    }
+                                    Ok(_) => {}
+                                    Err(_) => {
+                                        *last
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                            None;
+                                    }
+                                }
+                            });
+                        }
+                    }
                     self.spawn_net(
                         sink,
                         |client| async move { client.version().await },
@@ -989,7 +1050,27 @@ impl Executor {
                 target,
                 result,
             }));
-            let _ = sink.send(Event::Done(Done::NodeTestsFinished { tested }));
+            if !matches!(kind, TestKind::Unlock(_)) {
+                let _ = sink.send(Event::Done(Done::NodeTestsFinished { tested }));
+            }
+        });
+    }
+
+    /// Run the optional speedtest-go backend, falling back to a bounded download.
+    fn spawn_route_speed(&self, sink: &EventSink) {
+        let Some(address) = self.with_service(|service| service.proxy_addr()) else {
+            Self::emit(
+                sink,
+                Event::Data(Data::RouteSpeed(Err(
+                    "no HTTP or mixed proxy listener is deployed".to_owned(),
+                ))),
+            );
+            return;
+        };
+        let sink = sink.clone();
+        tokio::spawn(async move {
+            let result = measure_route_speed(&address).await;
+            let _ = sink.send(Event::Data(Data::RouteSpeed(result)));
         });
     }
 
@@ -1348,30 +1429,108 @@ async fn run_one(probe: &ProbeRun<'_>, kind: TestKind, target: &str) -> (TestRes
                 count,
             )
         }
-        TestKind::CoreHealth => (
-            match probe.client.version().await {
-                Ok(version) => TestResult::Passed(version.trimmed().to_owned()),
-                Err(error) => TestResult::Failed(error.to_string()),
-            },
-            1,
-        ),
-        TestKind::DnsLookup => (
-            match probe.client.dns_query(target, "A").await {
-                Ok(answer) => {
-                    TestResult::Passed(format!("answer of {} bytes", answer.to_string().len()))
+        TestKind::Unlock(name) => {
+            let Some(address) = probe.proxy_addr else {
+                return (
+                    TestResult::Failed("no HTTP or mixed proxy listener is deployed".to_owned()),
+                    1,
+                );
+            };
+            let result = async {
+                let proxy = reqwest::Proxy::all(format!("http://{address}"))
+                    .map_err(|error| error.to_string())?;
+                let client = reqwest::Client::builder()
+                    .proxy(proxy)
+                    .timeout(Duration::from_secs(15))
+                    .build()
+                    .map_err(|error| error.to_string())?;
+                let item = crate::media_unlock::check_media_unlock_item(&client, name).await?;
+                let detail = match item.region {
+                    Some(region) => format!("{} · {region}", item.status),
+                    None => item.status,
+                };
+                if detail.starts_with("Yes") {
+                    Ok(detail)
+                } else {
+                    Err(detail)
                 }
-                Err(error) => TestResult::Failed(error.to_string()),
-            },
-            1,
-        ),
-        TestKind::Bandwidth => (
-            match download_speed(probe.proxy_addr).await {
-                Ok(mbps) => TestResult::Passed(format!("{mbps:.1} Mbit/s")),
-                Err(error) => TestResult::Failed(error),
-            },
-            1,
-        ),
+            }
+            .await;
+            (
+                match result {
+                    Ok(detail) => TestResult::Passed(detail),
+                    Err(error) => TestResult::Failed(error),
+                },
+                1,
+            )
+        }
     }
+}
+
+/// Query the public exit from the same local proxy used by unlock checks.
+async fn fetch_exit_ip(address: &str) -> Result<IpInfo, String> {
+    let proxy =
+        reqwest::Proxy::all(format!("http://{address}")).map_err(|error| error.to_string())?;
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response: serde_json::Value = client
+        .get("https://ipapi.co/json/")
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    let ip = response["ip"]
+        .as_str()
+        .filter(|ip| !ip.is_empty())
+        .ok_or_else(|| "IP lookup did not return an address".to_owned())?;
+    Ok(IpInfo {
+        ip: ip.to_owned(),
+        country: response["country_name"].as_str().unwrap_or("-").to_owned(),
+        organization: response["org"].as_str().unwrap_or("-").to_owned(),
+    })
+}
+
+/// Prefer speedtest-go when installed; keep a small built-in measurement for
+/// installations without it. Both paths use the active Mihomo route.
+async fn measure_route_speed(address: &str) -> Result<String, String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(45),
+        tokio::process::Command::new("speedtest-go")
+            .arg("--proxy")
+            .arg(format!("http://{address}"))
+            .arg("--saving-mode")
+            .arg("--no-upload")
+            .arg("--json")
+            .arg("--thread")
+            .arg("2")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    if let Ok(Ok(output)) = output
+        && output.status.success()
+        && let Some(rate) = speedtest_download_mbps(&output.stdout)
+    {
+        return Ok(format!("{rate:.1} Mbit/s (speedtest-go)"));
+    }
+    download_speed(Some(address))
+        .await
+        .map(|rate| format!("{rate:.1} Mbit/s (4 MB sample)"))
+}
+
+/// `speedtest-go` JSON stores `dl_speed` as bytes per second.
+fn speedtest_download_mbps(stdout: &[u8]) -> Option<f64> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    let bytes_per_second = value["servers"][0]["dl_speed"].as_f64()?;
+    (bytes_per_second.is_finite() && bytes_per_second > 0.0)
+        .then_some(bytes_per_second * 8.0 / 1_000_000.0)
 }
 
 /// A bounded download through the deployed HTTP/mixed listener. The current
@@ -1593,6 +1752,22 @@ fn open_editor(path: &std::path::Path) -> Result<(), Error> {
             status: status.to_string(),
             stderr: String::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod speedtest_contract_tests {
+    use super::speedtest_download_mbps;
+
+    #[test]
+    fn speedtest_go_reports_bytes_per_second() {
+        let sample = br#"{"servers":[{"dl_speed":12500000.0}]}"#;
+        assert_eq!(speedtest_download_mbps(sample), Some(100.0));
+        assert_eq!(speedtest_download_mbps(b"{}"), None);
+        assert_eq!(
+            speedtest_download_mbps(br#"{"servers":[{"dl_speed":-1}]}"#),
+            None
+        );
     }
 }
 

@@ -161,6 +161,8 @@ pub enum Effect {
         /// Probe semantics.
         mode: ProbeMode,
     },
+    /// Measure download speed through the currently active proxy route.
+    TestRouteSpeed,
     /// Run one entry of the tests screen.
     RunTest {
         /// Which check to run.
@@ -172,7 +174,7 @@ pub enum Effect {
     },
     /// Abandon the running test batch.
     CancelTests,
-    /// Forget cached latency results.
+    /// Clear cached unlock-check results.
     ClearTestResults,
     /// Drop one connection.
     CloseConnection {
@@ -267,6 +269,7 @@ impl Effect {
             Self::TestNode { .. } => "test node",
             Self::TestGroup { .. } => "test group",
             Self::TestAllNodes { .. } => "test all nodes",
+            Self::TestRouteSpeed => "route speed",
             Self::RunTest { .. } => "run test",
             Self::CancelTests => "cancel tests",
             Self::ClearTestResults => "clear results",
@@ -403,6 +406,8 @@ pub enum Data {
     CoreMode(String),
     /// The core's version string.
     Version(String),
+    /// Public exit IP, obtained through Mihomo.
+    IpInfo(IpInfo),
     /// Settings read from disk.
     Settings(Box<Settings>),
     /// A preview of the generated configuration.
@@ -420,6 +425,8 @@ pub enum Data {
         /// How it ended.
         result: TestResult,
     },
+    /// Current route throughput measurement finished.
+    RouteSpeed(Result<String, String>),
     /// A node probe completed; every visible occurrence of that node updates.
     NodeDelay {
         /// Probe semantics.
@@ -431,6 +438,17 @@ pub enum Data {
     },
     /// A note from the binary that is worth showing but is not a failure.
     Notice(String),
+}
+
+/// Exit IP information returned through the running proxy route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpInfo {
+    /// Public IP of the current route.
+    pub ip: String,
+    /// Country or region reported by the lookup service.
+    pub country: String,
+    /// Network operator, if provided.
+    pub organization: String,
 }
 
 /// Something the binary finished.
@@ -1509,6 +1527,10 @@ pub struct App {
     pub core_mode: Option<String>,
     /// The core's version, once the binary has read it.
     pub version: Option<String>,
+    /// Exit IP information for the active route.
+    pub ip_info: Option<IpInfo>,
+    /// Last throughput measurement for the current route.
+    pub route_speed: Option<String>,
     /// The settings, with any unsaved edits.
     pub settings: Settings,
     /// Whether the settings differ from what is on disk.
@@ -1628,6 +1650,8 @@ impl App {
             core: CoreStatus::Stopped,
             core_mode: None,
             version: None,
+            ip_info: None,
+            route_speed: None,
             settings,
             settings_dirty: false,
             log_level,
@@ -1654,6 +1678,23 @@ impl App {
         };
         app.rebuild_tests();
         app
+    }
+
+    /// A summary of group selections; rules may choose among these per connection.
+    #[must_use]
+    pub fn selected_proxy_summary(&self) -> String {
+        let selected: Vec<_> = self
+            .all_nodes
+            .iter()
+            .filter(|row| row.active && row.group.is_some())
+            .take(2)
+            .map(|row| format!("{}: {}", row.group.as_deref().unwrap_or_default(), row.name))
+            .collect();
+        if selected.is_empty() {
+            "-".to_owned()
+        } else {
+            selected.join(" · ")
+        }
     }
 
     // -- observable state ---------------------------------------------------
@@ -2359,12 +2400,21 @@ impl App {
             Action::TestNode => self.test_node(),
             Action::CycleTestMode => {
                 self.probe_mode = self.probe_mode.next();
-                self.clear_test_results();
+                self.node_delays.clear();
+                self.node_sort = SortOrder::Natural;
+                self.rebuild_nodes();
                 self.set_status(
                     StatusKind::Info,
                     format!("{}: {}", self.tr("test mode"), self.probe_mode.label()),
                 );
-                vec![Effect::CancelTests, Effect::Refresh(Screen::Proxies)]
+                vec![Effect::Refresh(Screen::Proxies)]
+            }
+            Action::TestRouteSpeed => {
+                if !self.require_core("measuring route speed") {
+                    return Vec::new();
+                }
+                self.set_status(StatusKind::Info, "measuring current route download speed…");
+                vec![Effect::TestRouteSpeed]
             }
             Action::TestAllNodes => {
                 if !self.require_core("testing nodes") {
@@ -3014,28 +3064,7 @@ impl App {
     /// Results are kept for a target that has not changed: re-entering the
     /// screen must not wipe a measurement the user just waited for.
     fn rebuild_tests(&mut self) {
-        let group = self
-            .all_nodes
-            .iter()
-            .find(|row| row.is_group)
-            .map_or_else(|| "-".to_owned(), |row| row.name.clone());
-        let node = self
-            .all_nodes
-            .iter()
-            .find(|row| row.group.is_some() && row.is_proxy)
-            .map_or_else(|| "-".to_owned(), |row| row.name.clone());
-        let host = self
-            .connections
-            .items()
-            .first()
-            .map_or_else(|| "-".to_owned(), |row| row.destination.clone());
-        let targets = [
-            (TestKind::GroupLatency, group),
-            (TestKind::NodeLatency, node),
-            (TestKind::CoreHealth, "core".to_owned()),
-            (TestKind::DnsLookup, host),
-            (TestKind::Bandwidth, "current route".to_owned()),
-        ];
+        let targets = TestKind::all().map(|kind| (kind, "current route".to_owned()));
         let selected = self
             .tests
             .selected_item()
@@ -3135,9 +3164,6 @@ impl App {
         for index in 0..self.tests.items().len() {
             self.set_test_result(index, TestResult::Pending);
         }
-        self.node_delays.clear();
-        self.node_sort = SortOrder::Natural;
-        self.rebuild_nodes();
     }
 
     /// Set one test's result, keeping the cursor on the row it was on.
@@ -3271,6 +3297,8 @@ impl App {
                     // Nothing can be running against a core that is gone.
                     self.abandon_tests();
                     self.core_mode = None;
+                    self.ip_info = None;
+                    self.route_speed = None;
                     self.invalidate_controller_views();
                     return vec![Effect::Refresh(Screen::Proxies)];
                 }
@@ -3285,6 +3313,14 @@ impl App {
             }
             Data::CoreMode(mode) => self.core_mode = Some(mode),
             Data::Version(version) => self.version = Some(version),
+            Data::IpInfo(info) => self.ip_info = Some(info),
+            Data::RouteSpeed(result) => match result {
+                Ok(value) => {
+                    self.route_speed = Some(value.clone());
+                    self.set_status(StatusKind::Success, format!("current route: {value}"));
+                }
+                Err(error) => self.set_status(StatusKind::Warning, format!("route speed: {error}")),
+            },
             Data::Settings(settings) => self.set_settings(*settings),
             Data::Preview(preview) => {
                 let lines = preview.lines();
@@ -3302,7 +3338,7 @@ impl App {
                 target,
                 result,
             } => {
-                if mode == self.probe_mode {
+                if mode == self.probe_mode || matches!(kind, TestKind::Unlock(_)) {
                     return self.on_test_result(kind, &target, result);
                 }
             }
@@ -3519,6 +3555,8 @@ impl App {
         match done {
             Done::ProfilesLoaded => self.set_status(StatusKind::Success, "profiles loaded"),
             Done::ProfileSwitched { name } => {
+                self.ip_info = None;
+                self.route_speed = None;
                 self.set_status(StatusKind::Success, format!("switched to `{name}`"));
                 self.invalidate_controller_views();
                 return vec![
@@ -3546,6 +3584,8 @@ impl App {
             }
             Done::ChainSaved => self.set_status(StatusKind::Success, "chain saved"),
             Done::ConfigApplied { reload, changed } => {
+                self.ip_info = None;
+                self.route_speed = None;
                 match reload {
                     Some(outcome) if outcome.succeeded() => self.set_status(
                         StatusKind::Success,
@@ -3670,9 +3710,14 @@ impl App {
                 ];
             }
             Done::CoreModeChanged { mode } => {
+                self.ip_info = None;
+                self.route_speed = None;
                 self.core_mode = Some(mode.clone());
                 self.set_status(StatusKind::Success, format!("routing mode: {mode}"));
-                return vec![Effect::Refresh(Screen::Proxies)];
+                return vec![
+                    Effect::Refresh(Screen::Proxies),
+                    Effect::Refresh(Screen::Home),
+                ];
             }
             Done::CoreUpgraded { version } => {
                 self.set_status(
@@ -4814,13 +4859,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proxy_speed_key_reports_the_current_route_without_changing_selection() {
+        let mut app = loaded();
+        goto(&mut app, Screen::Proxies);
+        let before = app.nodes.selected_item().map(|row| row.name.clone());
+        assert_eq!(
+            press(&mut app, KeyCode::Char('b')),
+            vec![Effect::TestRouteSpeed]
+        );
+        let _ = app.on_event(Event::Data(Data::RouteSpeed(Ok(
+            "42.0 Mbit/s (speedtest-go)".to_owned(),
+        ))));
+        assert_eq!(
+            app.route_speed.as_deref(),
+            Some("42.0 Mbit/s (speedtest-go)")
+        );
+        assert_eq!(
+            app.nodes.selected_item().map(|row| row.name.clone()),
+            before
+        );
+    }
+
     // -- tests screen -------------------------------------------------------
 
     #[test]
     fn the_test_queue_runs_one_at_a_time_and_cancels_as_a_batch() {
         let mut a = loaded();
         goto(&mut a, Screen::Tests);
-        assert_eq!(a.tests.len(), 5, "one row per kind of check");
+        assert_eq!(a.tests.len(), 12, "one row per unlock service");
 
         let first = press(&mut a, KeyCode::Enter);
         assert_eq!(a.queued_tests(), 1);
@@ -4829,7 +4896,7 @@ mod tests {
         assert_eq!(
             first,
             vec![Effect::RunTest {
-                kind: TestKind::GroupLatency,
+                kind: TestKind::Unlock("哔哩哔哩大陆"),
                 target,
                 mode: ProbeMode::Connect,
             }]
@@ -4844,7 +4911,7 @@ mod tests {
         // The answer to the first starts the second.
         let effects = a.on_event(Event::Data(Data::TestResult {
             mode: ProbeMode::Connect,
-            kind: TestKind::GroupLatency,
+            kind: TestKind::Unlock("哔哩哔哩大陆"),
             target: a.tests.items()[0].target.clone(),
             result: TestResult::Passed("42 ms".to_owned()),
         }));
@@ -4863,7 +4930,7 @@ mod tests {
         let _ = press(&mut a, KeyCode::Enter);
         let _ = a.on_event(Event::Data(Data::TestResult {
             mode: ProbeMode::Connect,
-            kind: TestKind::GroupLatency,
+            kind: TestKind::Unlock("哔哩哔哩大陆"),
             target: a.tests.items()[0].target.clone(),
             result: TestResult::Passed("12 ms".to_owned()),
         }));
@@ -4944,25 +5011,24 @@ mod tests {
         assert_eq!(a.nodes.items()[1].delay, Some(1));
         assert_eq!(
             press(&mut a, KeyCode::Char('v')),
-            vec![Effect::CancelTests, Effect::Refresh(Screen::Proxies)]
+            vec![Effect::Refresh(Screen::Proxies)]
         );
         assert_eq!(a.probe_mode, ProbeMode::Tcp);
         assert_eq!(a.nodes.items()[1].delay, None);
     }
 
     #[test]
-    fn tests_choose_a_concrete_node_even_when_groups_are_collapsed() {
+    fn unlock_targets_remain_the_current_route_when_proxy_groups_change() {
         let mut a = loaded();
-        let mut nested = node("nested", Some("A"), false, None);
-        nested.kind = "Selector".to_owned();
-        nested.is_proxy = false;
-        let _ = a.on_event(Event::Data(Data::Nodes(vec![
-            node("A", None, true, None),
-            nested,
-            node("real", Some("A"), false, None),
-        ])));
         goto(&mut a, Screen::Tests);
-        assert_eq!(a.tests.items()[1].target, "real");
+        let _ = a.on_event(Event::Data(Data::Nodes(vec![node("A", None, true, None)])));
+        assert!(
+            a.tests
+                .items()
+                .iter()
+                .all(|row| row.target == "current route")
+        );
+        assert_eq!(a.tests.items().len(), 12);
     }
 
     // -- settings -----------------------------------------------------------
@@ -5730,23 +5796,23 @@ mod tests {
     }
 
     #[test]
-    fn the_test_targets_follow_the_data_and_keep_the_cursor() {
+    fn unlock_checks_keep_the_cursor_when_proxy_data_refreshes() {
         let mut a = loaded();
         goto(&mut a, Screen::Tests);
-        assert_eq!(a.tests.items()[0].target, "PROXY");
+        assert_eq!(a.tests.items()[0].target, "current route");
         let _ = press(&mut a, KeyCode::Down);
         let _ = press(&mut a, KeyCode::Down);
-        assert_eq!(a.tests.selected_item().unwrap().kind, TestKind::CoreHealth);
-
-        // A refreshed proxy list lands while the screen is open.
+        assert_eq!(
+            a.tests.selected_item().unwrap().kind,
+            TestKind::Unlock("ChatGPT Web")
+        );
         let _ = a.on_event(Event::Data(Data::Nodes(vec![node(
             "OFFICE", None, true, None,
         )])));
-        assert_eq!(a.tests.items()[0].target, "OFFICE");
+        assert_eq!(a.tests.items()[0].target, "current route");
         assert_eq!(
             a.tests.selected_item().unwrap().kind,
-            TestKind::CoreHealth,
-            "a refresh must not move the cursor"
+            TestKind::Unlock("ChatGPT Web")
         );
     }
 

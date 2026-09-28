@@ -11,10 +11,11 @@ cargo test --workspace --all-features --locked
 RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --all-features --locked
 ```
 
-CI runs these checks on Linux and macOS. It also checks all targets with the
-minimum Rust version declared in `Cargo.toml` and audits dependencies with
-`cargo deny check advisories bans licenses sources`. Keep `Cargo.lock` committed;
-use `--locked` for verification so an out-of-date lockfile fails visibly.
+The checked-in GitHub workflow builds Linux release artifacts on tags or manual
+runs. It does not currently run the full checks above, an MSRV matrix or a
+dependency audit. Run `cargo deny check advisories bans licenses sources` when
+reviewing dependency changes. Keep `Cargo.lock` committed; use `--locked` for
+verification so an out-of-date lockfile fails visibly.
 
 The default suite does not start a real mihomo instance. For controller changes,
 run `crates/cvt-core/tests/live_controller.rs` against a disposable core using

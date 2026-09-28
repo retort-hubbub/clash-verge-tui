@@ -26,8 +26,8 @@ diverges, and is then debugged twice.
 `cvt_core::Service` owns the operations, and both front ends are thin shells
 over it.
 
-- `Service` holds the resolved paths, the loaded settings, the profile store
-  and the supervisor, and exposes the operations as async methods with
+- `Service` holds resolved paths and loaded settings, constructs the profile
+  store and supervisor as needed, and exposes sync and async operations with
   outcomes rather than raw effects: `ApplyReport`, `ReloadOutcome`
   (`HotReloaded`, `Restarted { pid }`, `RolledBack { reason, snapshot }`),
   and diagnostics a user can read.
@@ -38,15 +38,15 @@ over it.
 - The CLI is parse, dispatch, and map an error onto an exit code. The
   interface's effect executor is the same thing with events instead of exit
   codes.
-- The sequencing is exercised in tests through a small injection point, so the
-  rollback path is covered without a real core.
+- The sequencing is exercised with fake controllers and disposable application
+  homes; live-core integration coverage complements those checks.
 
 ## Consequences
 
-- The two front ends cannot disagree about what an operation means, because
-  neither of them implements an operation.
-- The dangerous ordering is tested once, in one place, and its tests are unit
-  tests rather than end-to-end tests.
+- Shared apply and reload decisions belong in the facade. Front-end adapters
+  still own event sequencing and must not duplicate the reload policy.
+- Shared ordering is covered at the service boundary; front-end and live-core
+  checks cover integration behavior.
 - `Service` is a large surface, and it is the crate's centre of gravity. A
   change to how an operation is sequenced touches every front end at once,
   which is a feature here and would be a problem in a larger program.

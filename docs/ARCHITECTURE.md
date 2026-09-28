@@ -30,7 +30,8 @@ Dependencies point toward `cvt-core`. Shared application operations belong in
 | `profile::source` | Yes | Subscription fetching, decoding and update scheduling |
 | `enhance::pipeline` | Yes | Read the profile chain, generate, commit and snapshot configuration |
 | `mihomo` | Yes | Controller client, event streams and process supervisor |
-| `service` | Yes | Coordinate application operations |
+| `service` | Yes | Public application facade, paths, settings and adapter construction |
+| `service::{deployment,lifecycle,selection}` (private) | Yes | Apply/reload/rollback, process lifecycle and bounded selection replay |
 | `service::backup` (private) | Yes | Backup copying, restore and retention behind the `Service` API |
 
 Pure transformations accept values. Adapters own filesystem, network,
@@ -129,7 +130,12 @@ backup available for recovery.
 
 ## TUI and effect execution
 
-`App` is a state machine with no I/O:
+`App` separates interaction state from effect execution. State transitions do
+not perform filesystem, network or process I/O. The binary loads settings through
+`Service`, injects them with `App::with_settings`, and starts `run::run_app`.
+The compatibility constructor `App::new` still reads settings from its home and
+falls back to defaults; callers that need explicit error handling should load
+settings themselves and use `with_settings`.
 
 ```text
 App::on_event(Event) -> Vec<Effect>
@@ -150,9 +156,56 @@ restoration; renderers consume state.
 | `theme` | Semantic color roles and monochrome rendering |
 | `state` | Tables, sorting, filtering, log buffers and metrics |
 | `row` | Convert model values into display rows |
-| `app` | State transitions, effects and overlays |
+| `app` | State container, initialization, observable state and event entry point |
+| `app::protocol` | Typed effect commands and result events; re-exported through `app` |
+| `app::{input,actions}` | Modal input handling and action dispatch |
+| `app::{navigation,details}` | Selection, filtering and complete detail views |
+| `app::settings` | Validated setting edits and selection dialogs |
+| `app::settings::catalog` | Setting labels, editable values and allowed choices |
+| `app::{profiles,proxies,lists,testing}` | Domain actions and test queue state |
+| `app::updates` | Reduce incoming data and operation results into state |
+| `app::overlay` | Modal and status data types |
 | `ui` | Screen renderers |
 | `run` | Terminal lifecycle and event loop |
+
+### Executor boundaries
+
+`cvt::executor::Executor` owns shared services and task coordination. Its main
+`Effect` match is exhaustive: adding a command requires choosing its handler.
+The private modules keep these responsibilities together:
+
+| Module | Responsibility |
+|---|---|
+| `configuration` | Generate/commit and apply the chosen reload policy |
+| `lifecycle` | Startup actions, core launch/readiness and managed core updates |
+| `settings` | Authorization and persistence, followed by the requested runtime change |
+| `selection`, `profiles` | Node choice persistence and subscription downloads |
+| `refresh`, `streams` | Screen reads and long-lived controller subscriptions |
+| `inventory`, `adapters` | Model-to-view conversions and editor integration |
+| `probes`, `diagnostics` | Probe scheduling, direct node probes, exit IP and bandwidth |
+
+This uses a facade (`Service`), typed commands (`Effect`) and event reducers
+(`App`), with adapters for external I/O. Internal modules use explicit imports
+and keep helper functions private unless another module needs them. Existing
+public import paths are preserved. `App::with_settings` and `run_app` let the
+caller supply initialized state. Internal splits do not require new public traits.
+
+When extending these layers:
+
+- Add command and result data to the protocol. Keep application I/O in the
+  executor and terminal I/O in `run`.
+- Put domain behavior in its owning module; keep dispatch focused on routing.
+- Keep public re-exports stable and expose internal helpers only to modules
+  that need them.
+- Prefer an explicit input or shared workflow over another global dependency
+  or a duplicate sequence of persistence steps.
+- Keep tests beside their owning layer, grouped by behavior. Moving code also
+  requires updating source fixtures and architecture references.
+
+The service mutex protects shared settings and profile operations. Network
+jobs generally copy their inputs before awaiting. Configuration application
+and settings persistence still hold the mutex on a blocking worker while they
+perform their serialized work; they are not lock-free transactions.
 
 An open prompt consumes input before the screen key map, so `q` can be entered
 as text. Refreshes preserve table selection by identity rather than row index.
@@ -183,9 +236,9 @@ client setup and limits live in `commands/mod.rs`.
 |---|---|---|
 | Unit and property tests | Module tests and `cvt-core/tests/invariants.rs` | Local behavior and generated-input invariants |
 | API contracts | `cvt-core/tests/client_contract.rs` | Controller request and response contracts |
-| State-machine tests | `cvt-tui/src/app.rs` | Interaction and effect sequencing without a terminal |
+| State-machine tests | `cvt-tui/src/app/tests/` | Interaction and effect sequencing without a terminal |
 | User-flow rendering | `cvt-tui/src/ui/render_tests.rs` | Profile metadata, page transitions, live refresh, sorting, logs and CJK text drawn into a terminal buffer |
-| Runtime ordering | `cvt/src/executor.rs` | Reconcile controller inventory with generated configuration order |
+| Runtime ordering | `cvt/src/executor/tests.rs` | Reconcile controller inventory with generated configuration order |
 | Live core checks | `cvt-core/tests/live_controller.rs` | Verify assumptions against a real, disposable core |
 | Regression tests | `regression_*.rs` in both libraries | Reproduce previously found failures |
 

@@ -15,7 +15,7 @@ use crate::ui::widgets as w;
 
 /// Draw the profiles screen.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (list_area, detail_area) = w::list_and_detail(area, 9);
+    let (list_area, detail_area) = super::list_and_detail_for(area, crate::Screen::Profiles);
     let rows: Vec<Row<'static>> = w::visible(&app.profiles)
         .into_iter()
         .map(|profile| row(profile, app))
@@ -77,12 +77,10 @@ fn role_label(profile: &ProfileRow, app: &App) -> String {
 
 /// What will be generated, and everything odd about the selected profile.
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let chain = if app.chain().is_empty() {
-        app.tr("base only (no patches are chained)").to_owned()
-    } else {
-        app.chain().join(" → ")
-    };
-    let mut rows = vec![("chain", chain)];
+    let mut rows = Vec::new();
+    if !app.chain().is_empty() {
+        rows.push(("chain", app.chain().join(" → ")));
+    }
     if let Some(profile) = app.profiles.selected_item() {
         rows.push(("profile", profile.name.clone()));
         rows.push(("uid", profile.uid.clone()));
@@ -107,7 +105,7 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .to_owned(),
         ));
     }
-    w::details(frame, area, app, " chain and selection ", &rows);
+    w::details(frame, area, app, " selected profile ", &rows);
 }
 
 /// Seconds since the epoch, for the update ages.

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-28
+
+### Added
+
+- Settings can register the core for user login startup through systemd, KDE,
+  or GNOME, and override the active profile's TUN switch. Enabling TUN asks
+  for confirmation and uses desktop authentication to grant network
+  capabilities (`cap_net_admin,cap_net_bind_service`) to the selected Mihomo
+  binary when needed.
+- Multi-value settings now use an interactive picker modal for fast selection.
+- Full row details can be inspected directly via F1, right-click, or the
+  bottom detail pane across screens, with content-adaptive popup sizing.
+
+### Changed
+
+- Help presents a two-column grouped key reference with the selected action's
+  detailed description displayed in a dedicated bottom pane.
+- Settings uses a dual-column layout with the selected setting's explanation
+  shown in the lower pane, removing redundant table columns.
+- Disabled rules remain visible by default and can be re-enabled. Closing a
+  connection or modifying a rule reflects immediately in the UI.
+- Mouse interaction is unified across tables: double-click activates or toggles
+  the selected row, single-click expands or collapses proxy group trees, and
+  right-click opens full row details.
+- Cleaned up redundant UI text and repetitive count indicators across tabs.
+- Split application state, effect executor, and service implementation into
+  modular domain components while keeping external contracts stable.
+
+### Fixed
+
+- Forward mouse right-click events from the terminal input stream to the TUI.
+- Confirmation buttons stay at a fixed clickable position when questions wrap,
+  and confirmation dialogs and headings are localized.
+- Allowed long wrapped text in detail popups to scroll to the end.
+
 ## [0.6.0] - 2026-09-27
 
 ### Added
@@ -781,7 +816,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.6.0...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.7.0...develop
+[0.7.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.5.0
 [0.4.1]: https://github.com/retort-hubbub/clash-verge-tui/releases/tag/v0.4.1

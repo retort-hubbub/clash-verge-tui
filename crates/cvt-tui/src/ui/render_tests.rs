@@ -430,12 +430,39 @@ fn the_proxies_screen_shows_members_only_when_the_group_is_open() {
 }
 
 #[test]
-fn a_disabled_rule_is_hidden_until_it_is_asked_for() {
+fn a_disabled_rule_stays_visible_so_it_can_be_reenabled() {
     let app = ready(Screen::Rules);
-    let hidden = flat(&draw(&app, 200, 60));
-    assert!(hidden.contains("example.com"));
-    assert!(!hidden.contains("MATCH"), "the disabled rule is hidden");
-    assert!(hidden.contains("disabled hidden"), "{hidden}");
+    let visible = flat(&draw(&app, 200, 60));
+    assert!(visible.contains("example.com"));
+    assert!(
+        visible.contains("MATCH"),
+        "the disabled rule remains reachable"
+    );
+    assert!(visible.contains("rules (2 shown)"), "{visible}");
+}
+
+#[test]
+fn dynamic_confirmation_is_translated_without_losing_mouse_button_alignment() {
+    let mut app = ready(Screen::Connections);
+    app.settings.ui.language = cvt_core::settings::Language::Chinese;
+    app.viewport = (48, 14);
+    let question = "close all 12 connection(s)?";
+    app.overlay = Some(Overlay::Confirm {
+        question: question.to_owned(),
+        action: crate::Action::CloseAllConnections,
+    });
+    let frame = flat(&draw(&app, 48, 14));
+    assert!(
+        frame.replace(' ', "").contains("是否关闭全部12个连接？"),
+        "{frame}"
+    );
+    let yes = (0..14)
+        .flat_map(|row| (0..48).map(move |column| (column, row)))
+        .find(|&(column, row)| super::confirm_choice_at(&app, question, column, row) == Some(true));
+    assert!(
+        yes.is_some(),
+        "the visible translated dialog must be clickable"
+    );
 }
 
 #[test]
@@ -539,6 +566,23 @@ fn overlays_are_drawn_on_top() {
 }
 
 #[test]
+fn managed_core_confirmation_is_translated_and_keeps_both_buttons_visible() {
+    let mut app = empty(Screen::Home);
+    app.settings.ui.language = cvt_core::settings::Language::Chinese;
+    app.overlay = Some(Overlay::Confirm {
+        question: "download and install the latest managed core?".to_owned(),
+        action: crate::Action::UpgradeCore,
+    });
+    let text = flat(&draw(&app, 80, 24));
+    assert!(
+        text.replace(' ', "")
+            .contains("是否下载并安装最新的托管内核？"),
+        "{text}"
+    );
+    assert!(text.contains("[y]") && text.contains("[n]"), "{text}");
+}
+
+#[test]
 fn an_overlay_is_still_safe_at_a_degenerate_size() {
     let mut app = app_with(Theme::default());
     app.overlay = Some(Overlay::Preview {
@@ -591,6 +635,24 @@ fn the_help_screen_is_generated_from_the_key_map() {
     assert!(text.contains("what it does"), "{text}");
     assert!(text.contains("leave clash-verge-tui"), "{text}");
     assert!(text.contains('q'), "{text}");
+}
+
+#[test]
+fn chinese_help_and_profile_detail_titles_are_localized() {
+    let mut app = populated();
+    app.settings.ui.language = cvt_core::settings::Language::Chinese;
+    app.screen = Screen::Help;
+    let help = flat(&draw(&app, 200, 60));
+    let compact_help: String = help.chars().filter(|ch| !ch.is_whitespace()).collect();
+    assert!(compact_help.contains("当前操作"), "{help}");
+    assert!(compact_help.contains("按键"), "{help}");
+    assert!(compact_help.contains("作用"), "{help}");
+    assert!(!help.contains("selected action"), "{help}");
+    app.screen = Screen::Profiles;
+    let profiles = flat(&draw(&app, 120, 40));
+    let compact_profiles: String = profiles.chars().filter(|ch| !ch.is_whitespace()).collect();
+    assert!(compact_profiles.contains("当前配置"), "{profiles}");
+    assert!(!profiles.contains("selected profile"), "{profiles}");
 }
 
 #[test]
@@ -670,6 +732,34 @@ fn a_preview_overlay_scrolls_with_its_lines() {
     }
     let scrolled = flat(&draw(&app, 200, 60));
     assert_ne!(first, scrolled, "scrolling should move the text");
+}
+
+#[test]
+fn a_single_wrapped_detail_can_be_scrolled_to_its_end() {
+    let mut app = empty(Screen::Settings);
+    app.viewport = (40, 10);
+    app.overlay = Some(Overlay::Preview {
+        title: "full details".to_owned(),
+        lines: vec![format!("{}END_MARKER", "longfield".repeat(40))],
+        scroll: 0,
+    });
+    let _ = app.on_event(Event::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::End,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    let text = flat(&draw(&app, 40, 10));
+    assert!(text.contains("END_") && text.contains("MARKER"), "{text}");
+}
+
+#[test]
+fn detail_popups_fit_content_and_stay_within_the_viewport_cap() {
+    let area = ratatui::layout::Rect::new(0, 0, 120, 50);
+    let short = super::preview_popup_rect(area, &["short text".to_owned()]);
+    assert!(short.width < 40 && short.height <= 4);
+    let long = super::preview_popup_rect(area, &["word ".repeat(500)]);
+    assert!(long.width <= 90 && long.height <= 35);
+    let message = super::message_popup_rect(area, &"word ".repeat(500));
+    assert!(message.width <= 90 && message.height <= 35);
 }
 
 #[test]

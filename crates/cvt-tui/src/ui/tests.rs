@@ -9,13 +9,13 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::widgets::{Cell, Row};
 
-use crate::app::{App, StatusKind};
+use crate::app::App;
 use crate::row::{TestResult, TestRow};
 use crate::ui::widgets as w;
 
 /// Draw the tests screen.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (list_area, detail_area) = w::list_and_detail(area, 11);
+    let (list_area, detail_area) = super::list_and_detail_for(area, crate::Screen::Tests);
     let rows: Vec<Row<'static>> = w::visible(&app.tests)
         .into_iter()
         .map(|check| row(check, app))
@@ -60,16 +60,6 @@ fn row(check: &TestRow, app: &App) -> Row<'static> {
 /// What the highlighted check does, and how to run it.
 fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut rows: Vec<(&str, String)> = Vec::new();
-    rows.push((
-        "actions",
-        app.tr("Enter one · a all · c clear · s stop").to_owned(),
-    ));
-    rows.push(("route", app.tr("current route").to_owned()));
-    rows.push((
-        "method",
-        app.tr("requests go through Mihomo’s local proxy")
-            .to_owned(),
-    ));
     match app.tests.selected_item() {
         Some(test) => {
             rows.push(("check", app.tr(test.kind.label()).to_owned()));
@@ -89,31 +79,6 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "hint",
             app.tr("Enter runs the highlighted check").to_owned(),
         )),
-    }
-    rows.push((
-        "batch",
-        if app.queued_tests() == 0 {
-            app.tr("nothing running").to_owned()
-        } else {
-            crate::i18n::message(
-                app.language(),
-                crate::i18n::Message::QueuedTestsHint(app.queued_tests()),
-            )
-        },
-    ));
-    if app.core.is_running() {
-        rows.push(("core", crate::i18n::core_status(app.language(), &app.core)));
-    } else {
-        rows.push((
-            "core",
-            app.tr("start the core from Home to check service availability")
-                .to_owned(),
-        ));
-    }
-    if let Some(status) = app.current_status()
-        && status.kind == StatusKind::Warning
-    {
-        rows.push(("note", status.text.clone()));
     }
     w::details(frame, area, app, " selected check ", &rows);
 }

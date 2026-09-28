@@ -152,6 +152,7 @@ impl Outcome {
 #[derive(Debug, Clone)]
 pub struct Pipeline {
     paths: AppPaths,
+    tun_enabled: Option<bool>,
     /// The control plane the application itself insists on, if the user set
     /// one. It wins over every profile.
     control_plane: Vec<(&'static str, Value)>,
@@ -171,9 +172,17 @@ impl Pipeline {
     pub fn new(paths: AppPaths) -> Self {
         Self {
             paths,
+            tun_enabled: None,
             control_plane: Vec::new(),
             protected: Vec::new(),
         }
+    }
+
+    /// Force the TUN switch after profile enhancements have been applied.
+    #[must_use]
+    pub fn with_tun_enabled(mut self, enabled: Option<bool>) -> Self {
+        self.tun_enabled = enabled;
+        self
     }
 
     /// Keys the base declared and an enhancement must not change.
@@ -521,6 +530,26 @@ impl Pipeline {
             ));
         }
 
+        if let Some(enabled) = self.tun_enabled
+            && let Some(root) = config.as_object_mut()
+        {
+            let tun = root
+                .entry("tun")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(tun) = tun.as_object_mut() {
+                tun.insert("enable".to_owned(), Value::Bool(enabled));
+                if enabled {
+                    tun.entry("stack")
+                        .or_insert_with(|| Value::String("mixed".to_owned()));
+                    tun.entry("auto-route").or_insert(Value::Bool(true));
+                    tun.entry("auto-detect-interface")
+                        .or_insert(Value::Bool(true));
+                }
+            } else {
+                return Err(Error::invalid("tun", "TUN settings must be a mapping"));
+            }
+        }
+
         let config = Config::from_value(config)?;
         let report = validate::check(&config);
         let yaml = config.to_yaml()?;
@@ -762,6 +791,45 @@ rules:
         fn generate(&self) -> Outcome {
             self.pipeline.generate(&self.store).unwrap()
         }
+    }
+
+    #[test]
+    fn tun_override_is_applied_after_profiles_and_preserves_other_tun_options() {
+        let mut fixture = fixture();
+        let uid = fixture.add(
+            PrfItem::local("L1", "base"),
+            &format!("{BASE}tun:\n  enable: false\n  stack: system\n  auto-route: false\n"),
+        );
+        fixture.store.set_current(&uid).unwrap();
+        fixture.pipeline = fixture.pipeline.with_tun_enabled(Some(true));
+        let outcome = fixture.generate();
+        assert!(outcome.config.tun_enabled());
+        let tun = outcome.config.tun().unwrap();
+        assert_eq!(tun["stack"], "system");
+        assert_eq!(tun["auto-route"], false);
+
+        fixture.pipeline = fixture.pipeline.with_tun_enabled(Some(false));
+        assert!(!fixture.generate().config.tun_enabled());
+    }
+
+    #[test]
+    fn enabling_tun_creates_working_route_defaults_without_changing_the_profile() {
+        let mut fixture = fixture();
+        fixture.base();
+        fixture.pipeline = fixture.pipeline.with_tun_enabled(Some(true));
+        let outcome = fixture.generate();
+        let tun = outcome.config.tun().unwrap();
+        assert_eq!(tun["enable"], true);
+        assert_eq!(tun["stack"], "mixed");
+        assert_eq!(tun["auto-route"], true);
+        assert_eq!(tun["auto-detect-interface"], true);
+        assert!(
+            !fixture
+                .store
+                .read_document(fixture.store.current().unwrap())
+                .unwrap()
+                .contains("tun:")
+        );
     }
 
     /// A base that ships a DNS block usually ships one tuned to its own

@@ -438,14 +438,7 @@ fn terminal_input() -> impl Stream<Item = Event> {
     EventStream::new().filter_map(|event| async move {
         match event {
             Ok(crossterm::event::Event::Key(key)) => Some(Event::Key(key)),
-            Ok(crossterm::event::Event::Mouse(mouse))
-                if matches!(
-                    mouse.kind,
-                    MouseEventKind::Down(MouseButton::Left)
-                        | MouseEventKind::ScrollUp
-                        | MouseEventKind::ScrollDown
-                ) =>
-            {
+            Ok(crossterm::event::Event::Mouse(mouse)) if mouse_supported(mouse.kind) => {
                 Some(Event::Mouse(mouse))
             }
             Ok(crossterm::event::Event::Resize(width, height)) => {
@@ -455,6 +448,15 @@ fn terminal_input() -> impl Stream<Item = Event> {
             _ => None,
         }
     })
+}
+
+fn mouse_supported(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::Down(MouseButton::Left | MouseButton::Right)
+            | MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+    )
 }
 
 /// Run the interactive interface.
@@ -479,7 +481,21 @@ where
     if !io::stdout().is_terminal() {
         return Err(RunError::NotATerminal);
     }
-    let app = App::new(home, theme);
+    run_app(App::new(home, theme), executor).await
+}
+
+/// Run an application initialized by the caller, preserving its initial settings.
+///
+/// # Errors
+/// Returns [`RunError::NotATerminal`] for redirected output, or
+/// [`RunError::Terminal`] if terminal setup or rendering fails.
+pub async fn run_app<E>(app: App, executor: E) -> Result<(), RunError>
+where
+    E: Fn(Effect, EventSink) -> EffectFuture + Send + Sync + 'static,
+{
+    if !io::stdout().is_terminal() {
+        return Err(RunError::NotATerminal);
+    }
     let (reports, inbox) = mpsc::channel(REPORT_QUEUE);
     let mut scope = TerminalScope::enter()?;
     let mut terminal =
@@ -737,4 +753,9 @@ mod tests {
         let effects = app.on_event(Event::Key(key));
         assert_eq!(effects, vec![Effect::RefreshIp]);
     }
+}
+#[test]
+fn terminal_input_accepts_right_clicks_for_details() {
+    assert!(mouse_supported(MouseEventKind::Down(MouseButton::Right)));
+    assert!(mouse_supported(MouseEventKind::Down(MouseButton::Left)));
 }

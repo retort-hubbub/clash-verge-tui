@@ -33,8 +33,9 @@ The body is not decoration. A commit that fixes a defect says what the defect
 was, how it was reproduced, and why this fix rather than another. A commit
 that introduces a limitation says so.
 
-CI runs on `main`, `develop` and every branch prefix, on Linux and macOS, plus
-a job that builds against the declared MSRV and a dependency audit.
+Validation requirements are documented in `CONTRIBUTING.md`. The current
+workflow builds Linux release artifacts; branch checks, an MSRV matrix and
+dependency audits are not currently automated by the repository.
 
 ## Consequences
 

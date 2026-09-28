@@ -794,9 +794,9 @@ fn confirmed_11_the_interface_waits_for_a_save_completion_the_binary_sends() {
 /// interface waits for and the event the binary sends live in different crates,
 /// and nothing else makes them agree.
 fn what_a_finished_save_reports() -> Event {
-    let source = include_str!("../../cvt/src/executor.rs");
+    let source = include_str!("../../cvt/src/executor/settings.rs");
     let at = source
-        .find("Effect::SaveSettings")
+        .find("fn save_settings(")
         .expect("the executor has an arm for a save; point this test at it");
     let mut arm = &source[at..];
     // Up to the next arm, so a `Data::Notice` from somewhere else cannot be

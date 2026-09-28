@@ -28,31 +28,29 @@ manifest:
 cvt (binary)  ->  cvt-tui  ->  cvt-core
 ```
 
-- `cvt-core` is the library. The parts that reason about configuration —
-  `model`, `enhance`, `validate`, `profile` — perform no I/O at all: no file
-  system, no environment variables, no network, no printing. They take values
-  and return values. Where the real world is involved it is confined to
-  `mihomo` and `paths`, and the `Service` facade is what sequences it.
-- `cvt-tui` depends on `cvt-core` and adds only presentation and interaction.
-  Its `App` performs no I/O (see [0005](0005-pure-state-machine-with-effects.md)).
-- `cvt` depends on both and holds only argument parsing, output formatting and
-  the one place where an effect becomes a real call.
+- `cvt-core` owns configuration and shared application operations. Models,
+  validators and document transformations operate on values. Filesystem and
+  network adapters include `paths`, `settings`, `profile::{store,source}`,
+  `enhance::pipeline` and `mihomo`; `Service` coordinates them.
+- `cvt-tui` owns interaction state and rendering. State transitions return
+  effects. `App::with_settings` accepts initialized settings without I/O;
+  `App::new` is a convenience loader. See [0005](0005-pure-state-machine-with-effects.md).
+- `cvt` owns CLI parsing, output and the adapters that execute TUI effects.
 
 A crate that needs something from a layer above it does not get a dependency
 edge; the thing moves down.
 
 ## Consequences
 
-- The tests that matter most run in milliseconds and need nothing installed. A
-  merge test cannot accidentally read `$HOME`, because the crate has no way to.
+- Pure transformations can be tested without a terminal or core. The crate
+  also contains I/O adapters, so explicit paths and fixtures remain necessary.
 - The layering is visible in `cargo tree` and in any diff, so a violation is
   caught in review rather than discovered later.
 - A change to the library's public API touches all three crates, and an
   internal refactor sometimes needs a matching visibility change. This is the
   cost, and it is paid deliberately.
-- Cross-crate integration is not typechecked. `cvt` and `cvt-tui` are only
-  proven to agree by tests at their boundary, which is why the effect contract
-  has its own test with a fake executor.
+- Rust typechecks the shared protocol across crates. Event ordering, I/O
+  behavior and rendering still require verification at those boundaries.
 
 ## Alternatives considered
 

@@ -34,10 +34,11 @@ pub async fn run(paths: &AppPaths, out: Output) -> Result<()> {
     // place a user cannot pipe somewhere else.
     let theme = Theme::from_settings(service.settings().ui.color && out.color());
     let home = paths.home().to_path_buf();
+    let app = cvt_tui::App::with_settings(home, theme, service.settings().clone());
     let executor = Executor::new(service).into_executor();
 
     out.note("starting the interactive interface; press ? for help, q to quit");
-    cvt_tui::run::run(home, theme, executor).await?;
+    cvt_tui::run::run_app(app, executor).await?;
     Ok(())
 }
 

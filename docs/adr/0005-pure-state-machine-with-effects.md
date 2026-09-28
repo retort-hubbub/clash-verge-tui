@@ -24,8 +24,11 @@ roll back — that logic exists twice and will diverge.
 
 ## Decision
 
-`App` is a state machine and performs no I/O. It does not read a file, open a
-socket, spawn a process or print. Interaction is expressed as a fold:
+`App` state transitions perform no filesystem, network or process I/O.
+The binary constructs state with `App::with_settings` and settings already
+loaded by `Service`. The compatibility constructor `App::new` reads settings
+from disk; it is not part of the pure transition boundary. Interaction is
+expressed as a fold:
 
 ```
 App::on_event(Event) -> Vec<Effect>
@@ -33,29 +36,28 @@ App::on_tick()        -> Vec<Effect>
 ```
 
 `Event` is what happened (`Key`, `Tick`, `Resize`, `Data`, `Done`, `Failed`).
-`Effect` is what should happen as a result (~36 variants: `Refresh(screen)`,
+`Effect` is what should happen as a result (for example `Refresh(screen)`,
 `ApplyConfig { mode }`, `RunTest { kind, target }`, `ExportLogs { path, .. }`).
 Rendering is the same idea from the other side: `ui::render(frame, &app)` and
 one module per screen, each a pure function from application state into a
 frame.
 
-Everything I/O-shaped lives in the binary's effect executor, which turns an
-`Effect` into a `cvt_core::Service` call and feeds the outcome back as
-`Event::Data` / `Done` / `Failed`. Errors come back as events and surface in
+The binary's effect executor performs application I/O and turns an `Effect`
+into a `cvt_core::Service` call, then feeds the outcome back as `Event::Data` /
+`Done` / `Failed`. The TUI `run` module owns terminal I/O and editor handoff. Errors come back as events and surface in
 the status line; they never unwind the loop.
 
 ## Consequences
 
-- The interaction logic is testable without a terminal. That is what makes 67
-  state-machine tests and 23 render tests — over a `TestBackend`, at several
-  screen sizes — possible at all.
+- Interaction logic can be checked without a terminal. Rendering checks use
+  `TestBackend` at multiple screen sizes; neither replaces a real terminal run.
 - The `q` problem is solved structurally rather than per-screen: the overlay
   stack takes key precedence, so an open prompt consumes input and `q` is a
   character.
-- An operation cannot be sequenced differently in the two front ends, because
-  the interface has no way to sequence anything — it can only ask.
-- Adding a feature costs an `Effect` variant, a `Done` variant and one arm in
-  the executor. This is real ceremony, and it is the price of the property.
+- The interface requests operations through effects. Shared reload and
+  rollback decisions belong to `Service`; adapters must preserve their order.
+- Adding an I/O action costs an `Effect` variant, an executor arm and an
+  appropriate result event. This is real ceremony, and it is the price of the property.
 - Exhaustiveness is load-bearing: the executor matches every `Effect` with no
   catch-all arm, so a new variant is a compile error rather than a feature
   that silently does nothing.

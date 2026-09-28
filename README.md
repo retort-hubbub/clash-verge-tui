@@ -134,8 +134,8 @@ pipe transport depends on Windows. The command line's unlock checks cover four s
 
 ## Requirements
 
-- Rust **1.88** or newer. This is not a guess: it is the floor `ratatui 0.30`
-  declares, and CI builds the workspace against exactly that version.
+- Rust **1.88** or newer, as declared by the workspace. The release workflow
+  uses stable Rust; it does not independently verify the minimum version.
 - The [mihomo](https://github.com/MetaCubeX/mihomo) core, somewhere on `PATH`,
   at `<home>/core/mihomo`, or named by `CVT_CORE` or by the `core.binary`
   setting. Only mihomo is supported — the Clash and Clash Premium cores are

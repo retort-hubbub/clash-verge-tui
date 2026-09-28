@@ -481,7 +481,21 @@ where
     if !io::stdout().is_terminal() {
         return Err(RunError::NotATerminal);
     }
-    let app = App::new(home, theme);
+    run_app(App::new(home, theme), executor).await
+}
+
+/// Run an application initialized by the caller, preserving its initial settings.
+///
+/// # Errors
+/// Returns [`RunError::NotATerminal`] for redirected output, or
+/// [`RunError::Terminal`] if terminal setup or rendering fails.
+pub async fn run_app<E>(app: App, executor: E) -> Result<(), RunError>
+where
+    E: Fn(Effect, EventSink) -> EffectFuture + Send + Sync + 'static,
+{
+    if !io::stdout().is_terminal() {
+        return Err(RunError::NotATerminal);
+    }
     let (reports, inbox) = mpsc::channel(REPORT_QUEUE);
     let mut scope = TerminalScope::enter()?;
     let mut terminal =

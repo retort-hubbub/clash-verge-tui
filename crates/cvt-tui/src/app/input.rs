@@ -517,6 +517,35 @@ impl App {
                     url: None,
                 }]
             }
+            PromptKind::ProfileUrl => {
+                let url = value.trim();
+                if !(url.starts_with("https://") || url.starts_with("http://")) {
+                    self.reopen_prompt(
+                        kind,
+                        value,
+                        "a subscription URL must start with http:// or https://",
+                    );
+                    return Vec::new();
+                }
+                let Some(uid) = self.pending_profile_source.take() else {
+                    self.refuse("no profile selected");
+                    return Vec::new();
+                };
+                vec![Effect::EditProfileSource {
+                    uid,
+                    url: url.to_owned(),
+                }]
+            }
+            PromptKind::Rule => {
+                let rule = value.trim();
+                if cvt_core::model::rule::Rule::parse(rule).is_none() {
+                    self.reopen_prompt(kind, value, "invalid rule; use TYPE,payload,policy");
+                    return Vec::new();
+                }
+                vec![Effect::AddProfileRule {
+                    rule: rule.to_owned(),
+                }]
+            }
             PromptKind::Text => self.commit_text_setting(value),
         }
     }

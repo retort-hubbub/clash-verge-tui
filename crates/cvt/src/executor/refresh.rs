@@ -167,7 +167,27 @@ impl Executor {
             }
             Screen::Rules => {
                 if !self.has_controller_endpoint(sink) {
-                    Self::emit(sink, Event::Data(Data::Rules(Vec::new())));
+                    let rows = self.with_service(|service| -> cvt_core::Result<_> {
+                        if service.store()?.current().is_none() {
+                            return Ok(Vec::new());
+                        }
+                        let config = service.generate()?.config;
+                        Ok(config
+                            .rules()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, rule)| {
+                                u32::try_from(index)
+                                    .ok()
+                                    .map(|index| RuleRow::from_config_rule(rule, index))
+                            })
+                            .collect())
+                    });
+                    match rows {
+                        Ok(rows) => Self::emit(sink, Event::Data(Data::Rules(rows))),
+                        Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
+                    }
+
                     Self::emit(sink, Event::Data(Data::RuleProviders(Vec::new())));
                     return;
                 }

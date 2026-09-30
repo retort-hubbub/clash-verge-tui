@@ -178,8 +178,10 @@ The private modules keep these responsibilities together:
 |---|---|
 | `configuration` | Generate/commit and apply the chosen reload policy |
 | `lifecycle` | Startup actions, core launch/readiness and managed core updates |
-| `settings` | Authorization and persistence, followed by the requested runtime change |
-| `selection`, `profiles` | Node choice persistence and subscription downloads |
+| `settings` | Persistence followed by the requested runtime change; authorization is checked before saving |
+| `selection`, `profiles` | Node choice persistence, subscription downloads and active-input change events |
+| `profile_editing` | Source URL transactions and per-subscription override edits |
+| `permissions` | Capability preflight and explicit authentication requests |
 | `refresh`, `streams` | Screen reads and long-lived controller subscriptions |
 | `inventory`, `adapters` | Model-to-view conversions and editor integration |
 | `probes`, `diagnostics` | Probe scheduling, direct node probes, exit IP and bandwidth |

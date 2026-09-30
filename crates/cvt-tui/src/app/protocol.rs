@@ -64,6 +64,8 @@ pub enum Effect {
     },
     /// Generate the selected profile without starting the core.
     PrepareConfig,
+    /// Regenerate the active profile after startup, reloading a running core.
+    SynchronizeConfig,
     /// Restore the most recent snapshot.
     RollbackConfig,
     /// Delete a profile and its document.
@@ -208,6 +210,32 @@ pub enum Effect {
         /// Profile uid.
         uid: String,
     },
+    /// Replace a remote source and download its configuration.
+    EditProfileSource {
+        /// Stable profile identifier.
+        uid: String,
+        /// New subscription URL.
+        url: String,
+    },
+    /// Open a base's private override, or the current base if uid is absent.
+    EditProfileOverride {
+        /// Base profile uid; absent means the active profile.
+        uid: Option<String>,
+    },
+    /// Persist a rule in the current base's override.
+    AddProfileRule {
+        /// Complete Mihomo rule text.
+        rule: String,
+    },
+    /// Authenticate while the terminal is released, then retry the operation.
+    AuthorizeCore {
+        /// Core binary receiving the grant.
+        binary: PathBuf,
+        /// Comma-separated network capabilities.
+        capabilities: String,
+        /// Operation to retry after authorization.
+        next: Box<Effect>,
+    },
 }
 
 impl Effect {
@@ -226,6 +254,7 @@ impl Effect {
             Self::PreviewConfig => "preview config",
             Self::ApplyConfig { .. } => "apply config",
             Self::PrepareConfig => "prepare config",
+            Self::SynchronizeConfig => "synchronize config",
             Self::RollbackConfig => "roll back",
             Self::DeleteProfile { .. } => "delete profile",
             Self::RenameProfile { .. } => "rename profile",
@@ -258,6 +287,10 @@ impl Effect {
             Self::ExportLogs { .. } => "export logs",
             Self::OpenEditor { .. } => "open editor",
             Self::EditProfile { .. } => "edit profile",
+            Self::EditProfileSource { .. } => "edit subscription source",
+            Self::EditProfileOverride { .. } => "edit profile override",
+            Self::AddProfileRule { .. } => "add profile rule",
+            Self::AuthorizeCore { .. } => "authorize core",
         }
     }
 }
@@ -353,6 +386,20 @@ impl Preview {
 /// test without a core.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Data {
+    /// Resume an approved operation after authentication or a core replacement.
+    CoreAuthorized {
+        /// Operation to retry.
+        next: Box<Effect>,
+    },
+    /// An explicit capability grant must be approved before retrying.
+    CoreAuthorization {
+        /// Core binary receiving the grant.
+        binary: PathBuf,
+        /// Comma-separated network capabilities.
+        capabilities: String,
+        /// Operation to retry after authorization.
+        next: Box<Effect>,
+    },
     /// The profile store.
     Profiles(Vec<ProfileRow>),
     /// The proxy tree: group rows followed by their members.
@@ -486,6 +533,8 @@ impl SpeedMode {
 /// that takes a second or more actually completed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Done {
+    /// Content contributing to the active configuration changed.
+    ProfileContentChanged,
     /// The profile list was re-read.
     ProfilesLoaded,
     /// A profile became the base document.

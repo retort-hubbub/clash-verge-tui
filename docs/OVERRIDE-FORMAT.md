@@ -37,6 +37,20 @@ is in it. Without an explicit chain, the base profile's `option` fields decide
 what follows it — which is how an imported `clash-verge-rev` installation keeps
 the enhancements a user had bound to each subscription.
 
+## Per-subscription overrides in the TUI
+
+Press `o` on a base profile in Profiles, or on Rules/Proxies for the active
+subscription. The editor opens a declarative override under `<home>/profiles/`.
+The index records its owner in `option: {cvt-base: <base-uid>}`. It is applied
+after the global chain, including when that chain is explicit, and is excluded
+when another subscription is selected. It does not need to be manually chained.
+Deleting the base also removes its private patches.
+
+On Rules, `a` collects a complete Mihomo rule, validates its syntax and policy
+against the generated configuration, and prepends it to the owner's override.
+The source subscription is preserved. Repeatedly adding the same rule does not
+create duplicates. Use `o` to edit or remove these additions.
+
 ## Override
 
 An override names what to change and leaves everything else alone. Every one of

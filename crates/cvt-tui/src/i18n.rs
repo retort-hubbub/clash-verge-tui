@@ -14,6 +14,10 @@ use crate::row::ProfileRow;
 /// Messages whose values are supplied by the running application.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Message<'a> {
+    CoreAuthorization {
+        capabilities: &'a str,
+        binary: &'a str,
+    },
     ProfilesTitle {
         shown: usize,
         total: usize,
@@ -58,6 +62,24 @@ pub(crate) enum Message<'a> {
 #[must_use]
 pub(crate) fn message(language: Language, message: Message<'_>) -> String {
     match (language, message) {
+        (
+            Language::English,
+            Message::CoreAuthorization {
+                capabilities,
+                binary,
+            },
+        ) => format!(
+            "grant {capabilities} to {binary}? authentication is required; permissions persist on this binary"
+        ),
+        (
+            Language::Chinese,
+            Message::CoreAuthorization {
+                capabilities,
+                binary,
+            },
+        ) => {
+            format!("为 {binary} 授予 {capabilities} 权限？需要认证，授权会保留在当前内核文件上。")
+        }
         (Language::English, Message::ProfilesTitle { shown, total }) => {
             if shown == total {
                 " profiles ".to_owned()
@@ -227,6 +249,13 @@ pub(crate) const fn short_tab(language: Language, screen: Screen) -> &'static st
 /// A profile's role, preserving its type and chain state as separate data.
 #[must_use]
 pub(crate) fn profile_role(language: Language, profile: &ProfileRow) -> String {
+    if profile.base_scope.is_some() {
+        return match language {
+            Language::English => "override · per-profile",
+            Language::Chinese => "覆写 · 订阅专属",
+        }
+        .to_owned();
+    }
     if language == Language::English {
         return profile.role_label();
     }
@@ -323,6 +352,10 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::RenameProfile => "重命名",
         Action::ImportProfiles => "导入",
         Action::EditProfile => "编辑",
+        Action::EditProfileSource => "编辑来源",
+        Action::EditProfileOverride => "订阅覆写",
+        Action::AddRule => "添加规则",
+        Action::AuthorizeCore => "授权内核",
         Action::ToggleInChain => "配置链",
         Action::PreviewConfig => "预览",
         Action::ApplyConfig => "应用",
@@ -449,6 +482,28 @@ pub fn text(language: Language, english: &str) -> &str {
         "Core" | "core" => "内核",
         "anywhere" | "global" => "全局",
         "lists" | "table" => "列表",
+        "edit source" => "编辑来源",
+        "profile override" => "订阅覆写",
+        "add rule" => "添加规则",
+        "authorize core" => "授权内核",
+        "edit the subscription source URL and download it" => "修改订阅来源 URL 并下载配置",
+        "edit the override for this profile in $EDITOR" => "在编辑器中修改此订阅专属的覆写",
+        "prepend a rule to the current profile override" => "为当前订阅添加优先匹配的覆写规则",
+        "grant only the network capabilities required by the core" => {
+            "认证并授予内核所需的网络权限"
+        }
+        "new rule (TYPE,payload,policy)" => "新增规则（类型,匹配内容,策略）",
+        "invalid rule; use TYPE,payload,policy" => "规则格式无效，请输入 类型,匹配内容,策略",
+        "a local profile has no subscription URL" => "本地配置没有订阅 URL",
+        "select a base profile first" => "请先选择一个基础配置",
+        "profile override saved" => "订阅覆写已保存",
+        "core startup timed out before configuration synchronization" => {
+            "等待内核启动超时，配置尚未同步"
+        }
+        "belongs to" => "所属订阅",
+        "this override follows its subscription automatically" => {
+            "此覆写随所属订阅自动启用，无需加入全局配置链"
+        }
         // Action descriptions.
         "leave clash-verge-tui (the core keeps running)" => "退出界面（内核继续运行）",
         "dashboard: core status, throughput, quick actions" => "查看内核状态、流量和快捷操作",

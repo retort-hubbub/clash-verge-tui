@@ -60,6 +60,7 @@ impl Report for CoreActionReport {
 }
 
 fn start(ctx: &Ctx) -> Result<()> {
+    authorize_listeners(ctx)?;
     let pid = ctx.service().start_core()?;
     ctx.out().emit(&CoreActionReport {
         action: "started",
@@ -86,6 +87,7 @@ fn stop(ctx: &Ctx) -> Result<()> {
 }
 
 fn restart(ctx: &Ctx) -> Result<()> {
+    authorize_listeners(ctx)?;
     let pid = ctx.service().restart_core()?;
     ctx.out().emit(&CoreActionReport {
         action: "restarted",
@@ -337,4 +339,30 @@ mod tests {
         assert!(text.contains("no binary was found"), "{text}");
         assert!(!text.contains("controller"), "{text}");
     }
+}
+
+/// Authenticate on the command-line terminal before launching listeners.
+fn authorize_listeners(ctx: &Ctx) -> Result<()> {
+    let path = ctx.paths().runtime_config();
+    let config = if path.is_file() {
+        cvt_core::model::config::Config::from_yaml(&ctx.paths().read(&path)?)?
+    } else {
+        ctx.service().generate()?.config
+    };
+    let capabilities = crate::tun::required_capabilities(&config);
+    if capabilities.is_empty() {
+        return Ok(());
+    }
+    let binary = ctx
+        .service()
+        .core_binary()
+        .ok_or_else(|| anyhow::anyhow!("install or select a Mihomo core before starting it"))?;
+    if !crate::tun::has_capabilities(&binary, &capabilities)? {
+        ctx.out().note(format!(
+            "core listeners require {capabilities}; authenticating to grant capabilities on {}",
+            binary.display()
+        ));
+        crate::tun::authorize_capabilities(&binary, &capabilities)?;
+    }
+    Ok(())
 }

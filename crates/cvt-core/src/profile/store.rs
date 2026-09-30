@@ -211,6 +211,17 @@ impl ProfileStore {
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
         }
+        if item.kind.is_base() {
+            let children: Vec<String> = self
+                .items()
+                .iter()
+                .filter(|patch| patch.base_scope() == Some(uid))
+                .map(|patch| patch.uid.clone())
+                .collect();
+            for child in children {
+                self.remove(&child)?;
+            }
+        }
         Ok(Some(item))
     }
 
@@ -349,7 +360,8 @@ impl ProfileStore {
     /// 2. the explicit `chain`, when set;
     /// 3. otherwise the current profile's `option` references, followed by
     ///    every other patch profile in type order — which is how an imported
-    ///    `clash-verge-rev` index behaves.
+    ///    `clash-verge-rev` index behaves;
+    /// 4. private patches owned by the current base, after the global chain.
     ///
     /// # Errors
     /// [`Error::MissingField`] when nothing is current, and
@@ -365,6 +377,17 @@ impl ProfileStore {
             self.append_automatic(&mut chain)?;
         } else {
             self.append_explicit(&mut chain)?;
+        }
+
+        chain.retain(|item| item.kind.is_base() || item.base_scope().is_none());
+        // Private patches follow the global chain, including an explicit chain.
+        for item in &self.index.items {
+            if item.kind.is_patch()
+                && item.base_scope() == Some(base.uid.as_str())
+                && !chain.contains(&item)
+            {
+                chain.push(item);
+            }
         }
 
         // A profile that appears twice would be applied twice, and a patch
@@ -386,7 +409,11 @@ impl ProfileStore {
             let item = self.get(uid).ok_or_else(|| Error::InvalidChain {
                 reason: format!("chain references `{uid}`, which does not exist"),
             })?;
-            chain.push(item);
+            if item.base_scope().is_none()
+                || item.base_scope() == chain.first().map(|base| base.uid.as_str())
+            {
+                chain.push(item);
+            }
         }
         Ok(())
     }
@@ -418,7 +445,9 @@ impl ProfileStore {
             .index
             .items
             .iter()
-            .filter(|i| i.kind.is_patch() && !taken.contains(i.uid.as_str()))
+            .filter(|i| {
+                i.kind.is_patch() && i.base_scope().is_none() && !taken.contains(i.uid.as_str())
+            })
             .collect();
         rest.sort_by_key(|i| (i.kind.order(), i.uid.clone()));
         chain.extend(rest);

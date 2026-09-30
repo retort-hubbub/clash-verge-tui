@@ -51,6 +51,9 @@ impl App {
                         row.updated_label(chrono::Local::now().timestamp()),
                     ),
                 ];
+                if let Some(base) = &row.base_scope {
+                    fields.push(("belongs to", base.clone()));
+                }
                 if let Some(quota) = row.quota_label() {
                     fields.push(("remaining", quota));
                 }

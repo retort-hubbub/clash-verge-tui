@@ -99,6 +99,12 @@ pub struct EventSink {
 }
 
 impl EventSink {
+    /// Wrap a bounded report queue for an effect executor or headless adapter.
+    #[must_use]
+    pub fn new(reports: mpsc::Sender<Event>) -> Self {
+        Self { reports }
+    }
+
     /// Report one event.
     ///
     /// `false` means the interface is behind and the event was dropped, which
@@ -118,7 +124,7 @@ type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Sync + Send + 'static>;
 
 /// The two states a terminal can be in.
 ///
-/// The loop needs this for `$EDITOR` and for nothing else, and the indirection
+/// The loop uses this for editor sessions and interactive authorization, and the indirection
 /// is what lets the loop be tested against a backend that has no terminal at
 /// all.
 trait TerminalModes {
@@ -126,6 +132,10 @@ trait TerminalModes {
     fn suspend(&mut self);
     /// Take it over again.
     fn resume(&mut self);
+    /// Whether input must be recreated after a terminal handoff.
+    fn owns_input(&self) -> bool {
+        false
+    }
 }
 
 /// The real terminal, and the promise that it is given back.
@@ -171,6 +181,9 @@ impl TerminalScope {
 }
 
 impl TerminalModes for TerminalScope {
+    fn owns_input(&self) -> bool {
+        true
+    }
     fn suspend(&mut self) {
         if self.active {
             self.active = false;
@@ -362,8 +375,8 @@ where
 
     /// Start every effect the machine asked for.
     ///
-    /// The two editor effects are the exception to the no-await rule, and
-    /// deliberately so: `$EDITOR` needs the real screen, so the loop gives it
+    /// Editor and authorization effects are awaited with the terminal released,
+    /// because external programs need the real screen. The loop gives it
     /// back, waits for the editor to exit, and takes the screen over again.
     /// Holding the loop for the duration of an editor session is what a user
     /// expects from a program that opened one.
@@ -373,10 +386,22 @@ where
                 // The loop stops on `App::is_quit`, which the machine sets in
                 // the same step as this effect; there is nothing to perform.
                 Effect::Quit => {}
-                Effect::OpenEditor { .. } | Effect::EditProfile { .. } => {
+                Effect::OpenEditor { .. }
+                | Effect::EditProfile { .. }
+                | Effect::EditProfileOverride { .. }
+                | Effect::AuthorizeCore { .. } => {
+                    let owns_input = self.modes.owns_input();
+                    if owns_input {
+                        // Drop Crossterm's reader before sudo or the editor owns stdin.
+                        self.input = Box::pin(futures_util::stream::empty());
+                    }
                     self.modes.suspend();
                     (self.executor)(effect, self.sink.clone()).await;
                     self.modes.resume();
+                    if owns_input {
+                        self.input = Box::pin(terminal_input());
+                        self.input_ended = false;
+                    }
                     // The editor wrote all over the screen: ratatui's buffers
                     // no longer describe what is on it, so the next frame has
                     // to repaint every cell.
@@ -506,7 +531,7 @@ where
         app,
         executor,
         input: Box::pin(terminal_input()),
-        sink: EventSink { reports },
+        sink: EventSink::new(reports),
         reports: inbox,
         running: FuturesUnordered::new(),
         input_ended: false,
@@ -609,7 +634,7 @@ mod tests {
             app,
             executor,
             input: Box::pin(stream::iter(input)),
-            sink: EventSink { reports },
+            sink: EventSink::new(reports),
             reports: inbox,
             running: FuturesUnordered::new(),
             input_ended: false,
@@ -641,6 +666,7 @@ mod tests {
             quota: cvt_core::profile::item::UserInfo::default(),
             unsupported: None,
             edits: None,
+            base_scope: None,
         }
     }
 

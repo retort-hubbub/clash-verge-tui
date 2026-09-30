@@ -23,7 +23,9 @@ mod configuration;
 mod diagnostics;
 mod inventory;
 mod lifecycle;
+mod permissions;
 mod probes;
+mod profile_editing;
 mod profiles;
 mod refresh;
 mod selection;
@@ -44,6 +46,7 @@ use profiles::due_remote_uids;
 use profiles::update_profiles;
 
 /// Performs effects against a service.
+#[derive(Clone)]
 pub struct Executor {
     service: Arc<Mutex<Service>>,
     /// Suppress controller reads between process launch and API readiness.
@@ -91,7 +94,16 @@ impl Executor {
         move |effect, sink| {
             let this = Arc::clone(&this);
             Box::pin(async move {
-                this.perform(effect, &sink);
+                if matches!(effect, Effect::AuthorizeCore { .. }) {
+                    let failure_sink = sink.clone();
+                    if let Err(error) =
+                        tokio::task::spawn_blocking(move || this.perform(effect, &sink)).await
+                    {
+                        Self::emit(&failure_sink, Event::Failed(error.to_string()));
+                    }
+                } else {
+                    this.perform(effect, &sink);
+                }
             })
         }
     }
@@ -169,7 +181,31 @@ impl Executor {
 
     /// Do one effect.
     fn perform(&self, effect: Effect, sink: &EventSink) {
+        if matches!(
+            effect,
+            Effect::StartCore
+                | Effect::RestartCore
+                | Effect::ApplyConfig { .. }
+                | Effect::SaveSettings { .. }
+        ) && self.request_permissions(&effect, sink)
+        {
+            return;
+        }
         match effect {
+            Effect::AuthorizeCore {
+                binary,
+                capabilities,
+                next,
+            } => {
+                let event = match crate::tun::authorize_capabilities(&binary, &capabilities) {
+                    Ok(()) => Event::Data(Data::CoreAuthorized { next }),
+                    Err(error) => Event::Failed(error.to_string()),
+                };
+                Self::emit(sink, event);
+            }
+            Effect::EditProfileSource { uid, url } => self.edit_profile_source(uid, url, sink),
+            Effect::EditProfileOverride { uid } => self.edit_profile_override(uid.as_deref(), sink),
+            Effect::AddProfileRule { rule } => self.add_profile_rule(&rule, sink),
             // The loop stops on `App::is_quit`; there is nothing to perform.
             Effect::Quit => {}
 
@@ -327,13 +363,7 @@ impl Executor {
                 ),
                 Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
             },
-            Effect::EditProfile { uid } => match self.profile_path(&uid) {
-                Ok(path) => match open_editor(&path) {
-                    Ok(()) => Self::emit(sink, Event::Data(Data::Notice(format!("edited {uid}")))),
-                    Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
-                },
-                Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
-            },
+            Effect::EditProfile { uid } => self.edit_profile_document(&uid, sink),
 
             Effect::ExportLogs { path, contents } => match std::fs::write(&path, contents) {
                 Ok(()) => Self::emit(
@@ -346,6 +376,7 @@ impl Executor {
             // ---- applying runs on a blocking thread, and reports once
             Effect::ApplyConfig { mode } => self.apply_config(mode, sink),
             Effect::PrepareConfig => self.prepare_config(sink),
+            Effect::SynchronizeConfig => self.synchronize_config(sink),
 
             // Enumerate local commands so adding an effect requires a handler.
             other @ (Effect::LoadProfiles

@@ -128,6 +128,8 @@ fn title(app: &App) -> String {
             crate::i18n::Message::LogDropped(app.logs.dropped()),
         ));
     }
-    // The filter is reported by the list widget, so it is not repeated here.
+    if !app.logs.filter().is_empty() {
+        parts.push(format!("{}: {}", app.tr("filter"), app.logs.filter()));
+    }
     format!(" {} ", parts.join(" · "))
 }

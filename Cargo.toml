@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/cvt-core", "crates/cvt-tui", "crates/cvt"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 # Not a guess: ratatui 0.30 declares 1.88, and it is the highest floor in the
 # dependency graph. The CI `msrv` job builds the workspace against exactly this

@@ -67,6 +67,10 @@ pub enum PromptKind {
     Name,
     /// A new value for the highlighted setting.
     Text,
+    /// Replacement URL for the selected subscription.
+    ProfileUrl,
+    /// A full Mihomo rule for the active profile.
+    Rule,
 }
 
 impl PromptKind {
@@ -79,6 +83,8 @@ impl PromptKind {
             Self::Url => "subscription URL",
             Self::Name => "profile name",
             Self::Text => "value",
+            Self::ProfileUrl => "subscription URL",
+            Self::Rule => "new rule (TYPE,payload,policy)",
         }
     }
 }

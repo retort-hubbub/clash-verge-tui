@@ -66,6 +66,10 @@ impl App {
             self.refuse("no profile selected");
             return Vec::new();
         };
+        if row.base_scope.is_some() {
+            self.refuse("this override follows its subscription automatically");
+            return Vec::new();
+        }
         if row.kind.is_base() {
             self.refuse(format!(
                 "`{}` supplies the base document, so it is always applied; only patches can be chained",

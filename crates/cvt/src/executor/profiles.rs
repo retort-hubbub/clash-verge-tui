@@ -45,6 +45,7 @@ pub(super) async fn update_profiles(
     };
 
     let (mut updated, mut failed) = (0usize, 0usize);
+    let mut successful = Vec::new();
     for uid in targets {
         let result = match fetcher.prepare(&store, &uid).await {
             Ok(prepared) => {
@@ -58,14 +59,33 @@ pub(super) async fn update_profiles(
             Err(error) => Err(error),
         };
         match result {
-            Ok(_) => updated += 1,
+            Ok(_) => {
+                updated += 1;
+                successful.push(uid);
+            }
             Err(error) => {
                 tracing::debug!(profile = %uid, error = %error, "update failed");
                 failed += 1;
             }
         }
     }
+    let active_changed = {
+        let service = service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        service.store().is_ok_and(|store| {
+            store
+                .current_uid()
+                .is_some_and(|uid| successful.iter().any(|updated| updated == uid))
+                || store
+                    .resolve_chain()
+                    .is_ok_and(|chain| chain.iter().any(|item| successful.contains(&item.uid)))
+        })
+    };
     let _ = sink.send(Event::Done(Done::ProfilesUpdated { updated, failed }));
+    if active_changed {
+        let _ = sink.send(Event::Done(Done::ProfileContentChanged));
+    }
 }
 
 pub(super) fn due_remote_uids(items: &[PrfItem], now: i64) -> Vec<String> {

@@ -47,50 +47,20 @@ impl Executor {
     pub(super) fn startup(&self, sink: &EventSink) {
         let (auto_start, update_on_start) = self.with_service(|service| {
             (
-                service.settings().core.auto_start,
+                service.settings().core.auto_start
+                    && service.store().is_ok_and(|store| store.current().is_some())
+                    && !service.core_status().is_running(),
                 service.settings().update.update_on_start,
             )
         });
-        if auto_start || update_on_start {
+        if auto_start {
+            self.perform(cvt_tui::Effect::StartCore, sink);
+        }
+        if update_on_start {
             let service = Arc::clone(&self.service);
-            let starting = Arc::clone(&self.starting);
             let sink = sink.clone();
             tokio::spawn(async move {
-                if auto_start {
-                    let start_service = Arc::clone(&service);
-                    starting.store(true, Ordering::SeqCst);
-                    let started = tokio::task::spawn_blocking(move || {
-                        let guard = start_service
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if guard.core_status().is_running() {
-                            Ok(None)
-                        } else {
-                            launch_core(&guard, false).map(Some)
-                        }
-                    })
-                    .await;
-                    let started = match started {
-                        Ok(Ok(Some(launch))) => ready_mode(launch).await.map(Some),
-                        Ok(Ok(None)) => Ok(None),
-                        Ok(Err(error)) => Err(error),
-                        Err(error) => Err(Error::Unsupported(error.to_string())),
-                    };
-                    starting.store(false, Ordering::SeqCst);
-                    match started {
-                        Ok(Some((pid, mode))) => {
-                            Self::emit(&sink, Event::Data(Data::CoreMode(mode)));
-                            Self::emit(&sink, Event::Done(Done::CoreStarted { pid }));
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            Self::emit(&sink, Event::Failed(error.to_string()));
-                        }
-                    }
-                }
-                if update_on_start {
-                    update_profiles(service, Vec::new(), &sink).await;
-                }
+                update_profiles(service, Vec::new(), &sink).await;
             });
         }
     }
@@ -152,16 +122,6 @@ impl Executor {
             let outcome = cvt_core::mihomo::download::install_latest_core(&paths).await;
             match outcome {
                 Ok(version) => {
-                    if was_running {
-                        let restart_service = Arc::clone(&service);
-                        let _ = tokio::task::spawn_blocking(move || {
-                            let guard = restart_service
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            let _ = guard.restart_core();
-                        })
-                        .await;
-                    }
                     let status = {
                         let guard = service
                             .lock()
@@ -170,6 +130,11 @@ impl Executor {
                     };
                     let _ = sink.send(Event::Data(Data::Core(status)));
                     let _ = sink.send(Event::Done(Done::CoreUpgraded { version }));
+                    if was_running {
+                        let _ = sink.send(Event::Data(Data::CoreAuthorized {
+                            next: Box::new(cvt_tui::Effect::RestartCore),
+                        }));
+                    }
                 }
                 Err(error) => {
                     let _ = sink.send(Event::Failed(error.to_string()));

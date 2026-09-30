@@ -92,6 +92,8 @@ pub struct App {
     pub keymap: Keymap,
     /// The modal layer on top, which consumes keys first.
     pub overlay: Option<Overlay>,
+    pending_authorization: Option<Effect>,
+    pending_profile_source: Option<String>,
     /// Profiles, as the store lists them.
     pub profiles: Table<ProfileRow>,
     /// Proxy rows, flattened to what is currently visible.
@@ -246,6 +248,8 @@ impl App {
             screen: Screen::Home,
             keymap: Keymap::new(),
             overlay: None,
+            pending_authorization: None,
+            pending_profile_source: None,
             profiles: Table::new(),
             nodes: Table::new(),
             connections: Table::new(),

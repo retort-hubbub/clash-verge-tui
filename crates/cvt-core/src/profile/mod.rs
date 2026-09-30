@@ -1,6 +1,7 @@
 //! The subscription store: index, documents, and remote updates.
 
 pub mod item;
+pub mod overrides;
 pub mod source;
 pub mod store;
 

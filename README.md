@@ -97,7 +97,7 @@ cannot disagree about what a profile chain means or how an apply is sequenced.
 
 | Area | Terminal interface | Command line |
 |---|---|---|
-| Profiles and subscriptions | List, switch, edit, update one or all due, import | The same, plus editing a subscription URL |
+| Profiles and subscriptions | List, switch, edit document/source URL, update one or all due, import | The same |
 | Configuration | Preview, apply, edit profiles and overrides | Generate, validate, diff, apply, roll back |
 | Running core | Nodes, connections, logs, rules, CONNECT/TCP/ICMP latency, current-route download speed, unlock checks and resource use | Node and group URL latency, DNS and named URL tests, plus core controls |
 | Diagnostics and maintenance | Core and Geo database updates, login startup, TUN override | Doctor, media unlock (YouTube Premium, Netflix, ChatGPT, Disney+), exit IP/geolocation, local backup and restore |
@@ -114,14 +114,25 @@ session or architecture is unsupported. Login startup does not require root.
 
 The Settings page also offers `core.tun_enabled`: `profile` follows the active
 profile, `on` enables TUN, and `off` disables it. Turning it on asks for
-confirmation and, on Linux when needed, uses `pkexec` and the desktop's
-authentication agent to grant `CAP_NET_ADMIN` and `CAP_NET_RAW` to the selected
-Mihomo binary. The grant persists on that binary after TUN is turned off;
-replacing or updating the binary removes it. TUN can change system routes and
-requires `/dev/net/tun`. Saving regenerates the runtime configuration and
-restarts a running core when enabling TUN so the new process receives the
-capabilities. If no authentication agent is available, the operation fails
-with an explanation and the setting is not saved.
+confirmation and grants the selected Mihomo binary the Linux capabilities
+needed by its configuration. Desktop sessions use `pkexec`; headless sessions
+use terminal `sudo`. The TUI releases its terminal while authentication runs.
+TUN needs `CAP_NET_ADMIN` and `CAP_NET_RAW`; privileged local listeners such as
+DNS on `:53` additionally need `CAP_NET_BIND_SERVICE`. The grant persists on
+the binary, and replacing it removes the grant. TUN can change system routes
+and needs `/dev/net/tun`. After saving, enabling TUN regenerates the runtime
+configuration and restarts a running core. Background `core start` cannot ask
+for a password; authorize the binary interactively before enabling login startup.
+
+On **Profiles**, `e` edits the document, `E` edits its subscription URL, and `o`
+opens the selected base profile's private override in the editor. On **Rules**,
+`a` adds a rule to the current subscription's private override and `o` edits
+that override. On **Proxies**, `E` edits the current subscription URL and `o`
+edits its override. Private overrides survive
+subscription updates and apply only while their owning profile is selected.
+Successful updates of active profiles regenerate the runtime document and
+reload a running core. On **Logs**, `/` filters buffered and incoming messages;
+`Esc` clears the filter.
 
 This project does not execute JavaScript enhancement scripts. It uses
 [declarative overrides](docs/OVERRIDE-FORMAT.md); a subscription that requires

@@ -590,6 +590,24 @@ async fn update(ctx: &Ctx, args: &UpdateArgs) -> Result<()> {
         results.push(fetch_one_with(&fetcher, &mut store, &uid).await);
     }
 
+    // Refresh the deployed document when an input in its active chain changed.
+    if ctx.paths().runtime_config().is_file()
+        && store.resolve_chain().is_ok_and(|chain| {
+            chain
+                .iter()
+                .any(|item| results.iter().any(|row| row.ok && row.uid == item.uid))
+        })
+    {
+        if ctx.service().core_status().is_running() {
+            ctx.service()
+                .apply(false, cvt_core::ReloadMode::Auto)
+                .await?;
+        } else {
+            let outcome = ctx.service().generate()?;
+            ctx.service().pipeline().commit(&outcome, false)?;
+        }
+    }
+
     let failed = results.iter().filter(|row| !row.ok).count();
     let report = UpdateReport {
         succeeded: results.len() - failed,

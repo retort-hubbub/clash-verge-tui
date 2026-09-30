@@ -144,4 +144,5 @@ mod rules;
 mod selection_preservation;
 mod settings;
 mod status;
+mod subscription_workflows;
 mod tests_screen;

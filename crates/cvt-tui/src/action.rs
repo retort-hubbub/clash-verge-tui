@@ -151,6 +151,14 @@ pub enum Action {
     ImportProfiles,
     /// Open the highlighted profile's document in `$EDITOR`.
     EditProfile,
+    /// Change the selected subscription's source URL.
+    EditProfileSource,
+    /// Edit the override owned by the selected/current base profile.
+    EditProfileOverride,
+    /// Add a rule to the current profile's override.
+    AddRule,
+    /// Grant the capabilities requested by the selected core.
+    AuthorizeCore,
     /// Add or remove the highlighted patch from the explicit chain.
     ToggleInChain,
     /// Preview what regenerating would change, without applying it.
@@ -275,6 +283,10 @@ impl Action {
             Self::RenameProfile => "rename",
             Self::ImportProfiles => "import",
             Self::EditProfile => "edit",
+            Self::EditProfileSource => "edit source",
+            Self::EditProfileOverride => "profile override",
+            Self::AddRule => "add rule",
+            Self::AuthorizeCore => "authorize core",
             Self::ToggleInChain => "chain",
             Self::PreviewConfig => "preview",
             Self::ApplyConfig => "apply",
@@ -353,6 +365,10 @@ impl Action {
             Self::RenameProfile => "give this profile a new name",
             Self::ImportProfiles => "copy profiles out of an existing clash-verge-rev home",
             Self::EditProfile => "open this profile's document in $EDITOR",
+            Self::EditProfileSource => "edit the subscription source URL and download it",
+            Self::EditProfileOverride => "edit the override for this profile in $EDITOR",
+            Self::AddRule => "prepend a rule to the current profile override",
+            Self::AuthorizeCore => "grant only the network capabilities required by the core",
             Self::ToggleInChain => "include or exclude this patch in the chain",
             Self::PreviewConfig => "show what regenerating would change, without applying it",
             Self::ApplyConfig => "generate the configuration and hand it to the core",
@@ -438,6 +454,8 @@ impl Action {
             | Self::RenameProfile
             | Self::ImportProfiles
             | Self::EditProfile
+            | Self::EditProfileSource
+            | Self::EditProfileOverride
             | Self::ToggleInChain
             | Self::PreviewConfig
             | Self::ApplyConfig
@@ -457,14 +475,16 @@ impl Action {
             Self::ToggleLogFollow | Self::CycleLogLevel | Self::ClearLogs | Self::ExportLogs => {
                 "Logs"
             }
-            Self::ToggleRule
+            Self::AddRule
+            | Self::ToggleRule
             | Self::UpdateRuleProvider
             | Self::UpdateAllRuleProviders
             | Self::ToggleDisabledRules => "Rules",
             Self::RunTests | Self::RunAllTests | Self::CancelTests | Self::ClearTestResults => {
                 "Tests"
             }
-            Self::StartCore
+            Self::AuthorizeCore
+            | Self::StartCore
             | Self::StopCore
             | Self::RestartCore
             | Self::CycleCoreMode

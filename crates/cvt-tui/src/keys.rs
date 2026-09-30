@@ -191,6 +191,8 @@ impl Keymap {
             Binding::new(K::Char('e'), none, A::EditRuntimeConfig, C::Home, "e"),
             // -- profiles --------------------------------------------------
             Binding::new(K::Enter, none, A::ActivateProfile, C::Profiles, "Enter"),
+            Binding::new(K::Char('E'), none, A::EditProfileSource, C::Profiles, "E"),
+            Binding::new(K::Char('o'), none, A::EditProfileOverride, C::Profiles, "o"),
             Binding::new(K::Char('u'), none, A::UpdateProfile, C::Profiles, "u"),
             Binding::new(K::Char('U'), none, A::UpdateAllProfiles, C::Profiles, "U"),
             Binding::new(K::Char('a'), none, A::NewProfile, C::Profiles, "a"),
@@ -203,6 +205,8 @@ impl Keymap {
             Binding::new(K::Char('A'), none, A::ApplyConfig, C::Profiles, "A"),
             Binding::new(K::Char('b'), none, A::RollbackConfig, C::Profiles, "b"),
             // -- proxies ---------------------------------------------------
+            Binding::new(K::Char('E'), none, A::EditProfileSource, C::Proxies, "E"),
+            Binding::new(K::Char('o'), none, A::EditProfileOverride, C::Proxies, "o"),
             Binding::new(K::Enter, none, A::SelectNode, C::Proxies, "Enter"),
             Binding::new(K::Char('t'), none, A::TestNode, C::Proxies, "t"),
             Binding::new(K::Char('T'), none, A::TestGroup, C::Proxies, "T"),
@@ -231,6 +235,7 @@ impl Keymap {
             ),
             Binding::new(K::Char('c'), none, A::CloseConnection, C::Connections, "c"),
             // -- logs ------------------------------------------------------
+            Binding::new(K::Char('/'), none, A::Search, C::Logs, "/"),
             Binding::new(K::Char('f'), none, A::ToggleLogFollow, C::Logs, "f"),
             Binding::new(K::Up, none, A::Up, C::Logs, "k/↑"),
             Binding::new(K::Char('k'), none, A::Up, C::Logs, "k/↑"),
@@ -244,6 +249,8 @@ impl Keymap {
             Binding::new(K::Char('c'), none, A::ClearLogs, C::Logs, "c"),
             Binding::new(K::Char('x'), none, A::ExportLogs, C::Logs, "x"),
             // -- rules -----------------------------------------------------
+            Binding::new(K::Char('a'), none, A::AddRule, C::Rules, "a"),
+            Binding::new(K::Char('o'), none, A::EditProfileOverride, C::Rules, "o"),
             Binding::new(K::Enter, none, A::ToggleRule, C::Rules, "Enter"),
             Binding::new(K::Char(' '), none, A::ToggleRule, C::Rules, "Space"),
             Binding::new(K::Char('u'), none, A::UpdateRuleProvider, C::Rules, "u"),

@@ -18,6 +18,29 @@ impl App {
 
     pub(super) fn on_data(&mut self, data: Data) -> Vec<Effect> {
         match data {
+            Data::CoreAuthorized { next } => return vec![*next],
+            Data::CoreAuthorization {
+                binary,
+                capabilities,
+                next,
+            } => {
+                let question = crate::i18n::message(
+                    self.language(),
+                    crate::i18n::Message::CoreAuthorization {
+                        capabilities: &capabilities,
+                        binary: &binary.to_string_lossy(),
+                    },
+                );
+                self.pending_authorization = Some(Effect::AuthorizeCore {
+                    binary,
+                    capabilities,
+                    next,
+                });
+                self.overlay = Some(Overlay::Confirm {
+                    question,
+                    action: Action::AuthorizeCore,
+                });
+            }
             Data::Profiles(rows) => self.set_profiles(rows),
             Data::Nodes(rows) => self.set_nodes(rows),
             Data::Connections(rows) => self.set_connections(rows),
@@ -333,6 +356,9 @@ impl App {
                         Effect::PrepareConfig
                     },
                 ];
+            }
+            Done::ProfileContentChanged => {
+                return vec![Effect::LoadProfiles, Effect::SynchronizeConfig];
             }
             Done::ProfilesUpdated { updated, failed } => {
                 let kind = if failed == 0 {

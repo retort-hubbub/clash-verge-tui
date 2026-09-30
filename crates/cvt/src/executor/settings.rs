@@ -55,12 +55,6 @@ impl Executor {
 fn persist(service: &mut Service, settings: Settings) -> Result<SettingsChange, Error> {
     let previous = &service.settings().core;
     let requested = &settings.core;
-    if requested.tun_enabled == Some(true) && previous.tun_enabled != Some(true) {
-        let binary = service.core_binary().ok_or_else(|| {
-            Error::Unsupported("install or select a Mihomo core before enabling TUN".to_owned())
-        })?;
-        crate::tun::authorize(&binary).map_err(|error| Error::Unsupported(error.to_string()))?;
-    }
     if previous.login_autostart != requested.login_autostart {
         let exe = std::env::current_exe().map_err(|error| Error::Unsupported(error.to_string()))?;
         crate::autostart::apply(requested.login_autostart, service.paths().home(), &exe)

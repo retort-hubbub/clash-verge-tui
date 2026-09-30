@@ -43,7 +43,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Constraint::Length(12),
                 Constraint::Length(12),
                 Constraint::Length(9),
-                Constraint::Length(7),
+                Constraint::Length(10),
             ],
             rows,
             empty: "no proxies yet — apply a profile, or start the core to see its groups"

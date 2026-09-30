@@ -149,6 +149,45 @@ impl App {
             }
             Action::ImportProfiles => vec![Effect::DetectImportSources],
             Action::EditProfile => self.edit_profile(),
+            Action::EditProfileSource => {
+                let row = if self.screen == Screen::Profiles {
+                    self.profiles.selected_item()
+                } else {
+                    self.profiles.items().iter().find(|row| row.current)
+                };
+                let Some(row) = row else {
+                    self.refuse("no profile selected");
+                    return Vec::new();
+                };
+                let Some(url) = row.url.clone() else {
+                    self.refuse("a local profile has no subscription URL");
+                    return Vec::new();
+                };
+                self.pending_profile_source = Some(row.uid.clone());
+                self.open_prompt(PromptKind::ProfileUrl, url);
+                Vec::new()
+            }
+            Action::EditProfileOverride => {
+                let uid = if self.screen == Screen::Profiles {
+                    let Some(row) = self.profiles.selected_item() else {
+                        self.refuse("no profile selected");
+                        return Vec::new();
+                    };
+                    if !row.kind.is_base() {
+                        self.refuse("select a base profile first");
+                        return Vec::new();
+                    }
+                    Some(row.uid.clone())
+                } else {
+                    None
+                };
+                vec![Effect::EditProfileOverride { uid }]
+            }
+            Action::AddRule => {
+                self.open_prompt(PromptKind::Rule, String::new());
+                Vec::new()
+            }
+            Action::AuthorizeCore => self.pending_authorization.take().into_iter().collect(),
             Action::ToggleInChain => self.toggle_in_chain(),
             Action::PreviewConfig => vec![Effect::PreviewConfig],
             Action::ApplyConfig => vec![Effect::ApplyConfig {

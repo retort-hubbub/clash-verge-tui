@@ -32,7 +32,10 @@ isolated instance. Record whether live checks ran when reporting validation.
 | `release/*` | Stabilise a version | `develop` | `main` and `develop` |
 | `hotfix/*` | Fix a released version | `main` | `main` and `develop` |
 
-Preserve merge commits with `--no-ff` so a feature or release remains identifiable.
+Prefer fast-forward integration with `--ff-only`; do not create a merge commit
+just to wrap a single commit. Keep the GitFlow branch roles and release tags
+without forcing `--no-ff`. If branches have diverged, resolve their history
+explicitly rather than silently creating a merge node.
 Do not commit feature work directly to `main` or rewrite released history.
 When a hosted remote is available, use pull requests and configure branch
 protection to require CI. In a local-only repository, run the same checks before
@@ -46,7 +49,7 @@ git switch -c feature/rule-editor
 git add <changed-files>
 git commit -m "feat(rules): add a rule editor screen"
 git switch develop
-git merge --no-ff feature/rule-editor
+git merge --ff-only feature/rule-editor
 git branch -d feature/rule-editor
 ```
 

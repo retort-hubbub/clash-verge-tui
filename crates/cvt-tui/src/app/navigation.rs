@@ -342,12 +342,21 @@ impl App {
         if let Some(rows) = self.active_rows_mut() {
             rows.set_filter(needle);
         }
+        if self.screen == Screen::Logs {
+            self.frozen = if self.logs.follow {
+                None
+            } else {
+                Some(self.logs.filtered().len())
+            };
+        }
         self.sync_scroll();
     }
 
     pub(super) fn clear_filter(&mut self) -> bool {
         let had = self.active_rows().is_some_and(|r| !r.filter().is_empty());
-        if let Some(rows) = self.active_rows_mut() {
+        if self.screen == Screen::Logs {
+            self.set_filter("");
+        } else if let Some(rows) = self.active_rows_mut() {
             rows.clear_filter();
         }
         self.sync_scroll();

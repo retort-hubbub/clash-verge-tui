@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Edit a remote subscription's source URL with `E` on Profiles or Proxies;
+  the new source is downloaded before replacing the saved URL and document.
+- Open a subscription-specific override with `o` on Profiles, Proxies or Rules.
+  Private overrides follow their subscription after the global enhancement chain,
+  survive subscription updates, and are removed with their owning profile.
+- Add a rule with `a` on Rules. The rule is validated against the active
+  configuration and prepended to that subscription's private override.
+- Filter live logs by keyword with `/`; matching new messages remain visible
+  and Esc clears the filter.
+
+### Fixed
+
+- Updating an active subscription regenerates the runtime configuration and
+  reloads a running core without switching profiles. Synchronization waits for
+  core startup and uses service state rather than stale interface status.
+- TUN authorization supports terminal sudo in headless sessions as well as
+  desktop pkexec. Interactive authorization releases the TUI terminal input,
+  asks for confirmation, and resumes the original operation after success.
+- Enabled DNS and other local listeners on privileged ports request
+  `cap_net_bind_service` before core startup; TUN also requests `cap_net_admin`
+  and `cap_net_raw`. Replacing a managed core checks permissions again.
+- The Chinese active-node status fits its column at normal terminal widths.
+- Rules can be viewed from the generated configuration while the core is stopped.
+
+### Changed
+
+- GitFlow integration uses fast-forward merges instead of forced merge commits.
+
 ## [0.7.0] - 2026-09-28
 
 ### Added

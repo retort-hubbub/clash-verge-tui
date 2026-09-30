@@ -84,6 +84,9 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if let Some(profile) = app.profiles.selected_item() {
         rows.push(("profile", profile.name.clone()));
         rows.push(("uid", profile.uid.clone()));
+        if let Some(base) = &profile.base_scope {
+            rows.push(("belongs to", base.clone()));
+        }
         rows.push((
             "source",
             profile

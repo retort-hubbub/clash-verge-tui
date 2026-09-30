@@ -124,6 +124,8 @@ pub struct ProfileRow {
     pub unsupported: Option<String>,
     /// Number of edits, for patch profiles; `None` when not applicable.
     pub edits: Option<usize>,
+    /// Base owning this patch; absent for a global profile.
+    pub base_scope: Option<String>,
 }
 
 impl ProfileRow {
@@ -141,6 +143,7 @@ impl ProfileRow {
             quota: item.extra,
             unsupported: item.unsupported_reason(),
             edits: None,
+            base_scope: item.base_scope().map(str::to_owned),
         }
     }
 

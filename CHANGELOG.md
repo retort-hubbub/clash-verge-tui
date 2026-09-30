@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Check application updates automatically or with `u` on Home. Release notes
+  accompany update, remind-later and skip-version choices; reminders persist.
+- Install the exact Linux architecture/ABI release binary after digest and
+  version validation, preserving a backup and replacing the executable atomically.
+
+### Fixed
+
+- Returning from an external editor or terminal authorization redraws the
+  fullscreen interface without querying the cursor position or timing out.
+
 ## [0.8.0] - 2026-10-01
 
 ### Added

@@ -45,6 +45,7 @@ pub(super) async fn ready_mode(
 
 impl Executor {
     pub(super) fn startup(&self, sink: &EventSink) {
+        self.check_app_update(false, sink);
         let (auto_start, update_on_start) = self.with_service(|service| {
             (
                 service.settings().core.auto_start

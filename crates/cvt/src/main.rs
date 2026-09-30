@@ -20,6 +20,7 @@
 // meant to be read.
 #![allow(unreachable_pub)]
 
+mod app_update;
 mod autostart;
 mod cli;
 mod commands;

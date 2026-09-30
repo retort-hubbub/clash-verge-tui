@@ -237,6 +237,8 @@ pub enum Action {
     CycleCoreMode,
     /// Download or update the managed core binary.
     UpgradeCore,
+    /// Check for a new version of the terminal application.
+    CheckAppUpdate,
     /// Refresh the GeoIP and GeoSite databases.
     UpdateGeo,
     /// Flush the fake-IP and DNS caches.
@@ -319,6 +321,7 @@ impl Action {
             Self::RestartCore => "restart core",
             Self::CycleCoreMode => "route mode",
             Self::UpgradeCore => "install core",
+            Self::CheckAppUpdate => "check app update",
             Self::UpdateGeo => "update geo",
             Self::FlushCaches => "flush caches",
             Self::EditRuntimeConfig => "edit config",
@@ -404,6 +407,9 @@ impl Action {
             Self::RestartCore => "stop and start the core",
             Self::CycleCoreMode => "switch rule, global and direct routing modes",
             Self::UpgradeCore => "download or update the managed mihomo core",
+            Self::CheckAppUpdate => {
+                "check the application release and choose update, later or skip"
+            }
             Self::UpdateGeo => "download fresh GeoIP and GeoSite databases",
             Self::FlushCaches => "clear the fake-IP and DNS caches",
             Self::EditRuntimeConfig => "open the generated configuration in $EDITOR",
@@ -430,7 +436,8 @@ impl Action {
     #[must_use]
     pub fn group(&self) -> &'static str {
         match self {
-            Self::Quit
+            Self::CheckAppUpdate
+            | Self::Quit
             | Self::Goto(_)
             | Self::NextScreen
             | Self::PreviousScreen

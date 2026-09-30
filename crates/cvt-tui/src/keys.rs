@@ -186,6 +186,7 @@ impl Keymap {
             Binding::new(K::Char('R'), none, A::RestartCore, C::Home, "R"),
             Binding::new(K::Char('M'), none, A::CycleCoreMode, C::Home, "M"),
             Binding::new(K::Char('U'), none, A::UpgradeCore, C::Home, "U"),
+            Binding::new(K::Char('u'), none, A::CheckAppUpdate, C::Home, "u"),
             Binding::new(K::Char('g'), none, A::UpdateGeo, C::Home, "g"),
             Binding::new(K::Char('F'), none, A::FlushCaches, C::Home, "F"),
             Binding::new(K::Char('e'), none, A::EditRuntimeConfig, C::Home, "e"),

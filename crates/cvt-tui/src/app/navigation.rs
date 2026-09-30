@@ -387,6 +387,9 @@ impl App {
 
     /// Run a picker choice.
     pub(super) fn choose(&mut self, title: &str, items: &[String], selected: usize) -> Vec<Effect> {
+        if title == super::application_update::UPDATE_TITLE {
+            return self.choose_app_update(selected);
+        }
         let Some(item) = items.get(selected).cloned() else {
             self.set_status(StatusKind::Warning, "nothing to choose");
             return Vec::new();

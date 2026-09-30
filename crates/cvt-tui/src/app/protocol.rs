@@ -31,6 +31,23 @@ use std::path::PathBuf;
 pub enum Effect {
     /// Run the enabled launch actions once, after the terminal is ready.
     Startup,
+    /// Query the latest stable application release.
+    CheckAppUpdate {
+        /// Ignore reminder suppression for an explicit user request.
+        manual: bool,
+    },
+    /// Download, verify and replace the running application executable.
+    InstallAppUpdate {
+        /// The confirmed release tag, pinned throughout installation.
+        tag: String,
+    },
+    /// Persist a postponed reminder or skipped version.
+    DismissAppUpdate {
+        /// Release being dismissed.
+        tag: String,
+        /// Permanently skip this exact version instead of postponing it.
+        skip: bool,
+    },
     /// Restore the terminal and exit. The core keeps running.
     Quit,
     /// Re-read everything a screen shows.
@@ -244,6 +261,9 @@ impl Effect {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Startup => "startup",
+            Self::CheckAppUpdate { .. } => "check application update",
+            Self::InstallAppUpdate { .. } => "install application update",
+            Self::DismissAppUpdate { .. } => "dismiss application update",
             Self::Quit => "quit",
             Self::Refresh(_) => "refresh",
             Self::RefreshIp => "refresh IP",
@@ -386,6 +406,8 @@ impl Preview {
 /// test without a core.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Data {
+    /// A newer compatible application release was found.
+    AppUpdateAvailable(UpdateRelease),
     /// Resume an approved operation after authentication or a core replacement.
     CoreAuthorized {
         /// Operation to retry.
@@ -533,6 +555,13 @@ impl SpeedMode {
 /// that takes a second or more actually completed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Done {
+    /// Application replacement succeeded; restart to use it.
+    AppUpdated {
+        /// Installed version.
+        version: String,
+        /// Preserved previous executable.
+        backup: PathBuf,
+    },
     /// Content contributing to the active configuration changed.
     ProfileContentChanged,
     /// The profile list was re-read.
@@ -690,4 +719,15 @@ pub enum Event {
     Done(Done),
     /// Something failed, with a message worth reading.
     Failed(String),
+}
+
+/// A stable application update offered to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRelease {
+    /// Official release tag.
+    pub tag: String,
+    /// Brief release notes.
+    pub summary: String,
+    /// Official release page.
+    pub url: String,
 }

@@ -19,6 +19,7 @@ use cvt_tui::row::{ProfileRow, TestKind};
 use cvt_tui::{Data, Done, Effect, Event, EventSink, Screen};
 
 mod adapters;
+mod application_update;
 mod configuration;
 mod diagnostics;
 mod inventory;
@@ -49,6 +50,8 @@ use profiles::update_profiles;
 #[derive(Clone)]
 pub struct Executor {
     service: Arc<Mutex<Service>>,
+    app_update_busy: Arc<AtomicBool>,
+    app_installed: Arc<Mutex<Option<String>>>,
     /// Suppress controller reads between process launch and API readiness.
     starting: Arc<AtomicBool>,
     /// Bumped when the user cancels; a batch notices at the next node instead
@@ -75,6 +78,8 @@ impl Executor {
     pub fn new(service: Service) -> Self {
         Self {
             service: Arc::new(Mutex::new(service)),
+            app_update_busy: Arc::new(AtomicBool::new(false)),
+            app_installed: Arc::new(Mutex::new(None)),
             starting: Arc::new(AtomicBool::new(false)),
             test_epoch: Arc::new(AtomicU64::new(0)),
             streaming: Arc::new(AtomicBool::new(false)),
@@ -210,6 +215,9 @@ impl Executor {
             Effect::Quit => {}
 
             Effect::Startup => self.startup(sink),
+            Effect::CheckAppUpdate { manual } => self.check_app_update(manual, sink),
+            Effect::InstallAppUpdate { tag } => self.install_app_update(tag, sink),
+            Effect::DismissAppUpdate { tag, skip } => self.dismiss_app_update(&tag, skip, sink),
 
             // ---- refresh, which fans out per screen
             Effect::Refresh(screen) => self.refresh(screen, sink),

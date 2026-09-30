@@ -39,6 +39,7 @@ use crate::state::{LogBuffer, Metrics, SortOrder, Table};
 use crate::theme::Theme;
 
 mod actions;
+mod application_update;
 mod details;
 mod input;
 mod lists;
@@ -51,11 +52,13 @@ mod settings;
 mod testing;
 mod updates;
 
+pub(crate) use application_update::UPDATE_TITLE;
 pub use navigation::ConnectionSort;
 use navigation::Rows;
 pub use overlay::{Overlay, PromptKind, Status, StatusKind};
 pub use protocol::{
     Data, Done, Effect, Event, IpInfo, Preview, PreviewChange, PreviewFinding, SpeedMode,
+    UpdateRelease,
 };
 pub use settings::{SettingKind, SettingRow, setting_rows};
 use settings::{set_setting_choice, set_setting_text};
@@ -94,6 +97,9 @@ pub struct App {
     pub overlay: Option<Overlay>,
     pending_authorization: Option<Effect>,
     pending_profile_source: Option<String>,
+    /// Latest application release waiting for a safe modal opportunity.
+    pub app_update: Option<UpdateRelease>,
+    app_update_next_check: Instant,
     /// Profiles, as the store lists them.
     pub profiles: Table<ProfileRow>,
     /// Proxy rows, flattened to what is currently visible.
@@ -250,6 +256,8 @@ impl App {
             overlay: None,
             pending_authorization: None,
             pending_profile_source: None,
+            app_update: None,
+            app_update_next_check: Instant::now() + Duration::from_secs(3600),
             profiles: Table::new(),
             nodes: Table::new(),
             connections: Table::new(),
@@ -455,6 +463,11 @@ impl App {
     pub fn on_tick(&mut self) -> Vec<Effect> {
         self.ticks = self.ticks.wrapping_add(1);
         self.expire_status();
+        self.show_pending_app_update();
+        if Instant::now() >= self.app_update_next_check && self.app_update.is_none() {
+            self.app_update_next_check = Instant::now() + Duration::from_secs(3600);
+            return vec![Effect::CheckAppUpdate { manual: false }];
+        }
         let before = self.node_health.len();
         self.node_health
             .retain(|_, (_, at)| at.elapsed() < NODE_HEALTH_TTL);

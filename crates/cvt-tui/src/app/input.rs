@@ -204,13 +204,22 @@ impl App {
                     items,
                     selected,
                 } => {
-                    if let Some(index) = crate::ui::picker_item_at(
-                        self.viewport,
-                        items.len(),
-                        selected,
-                        mouse.column,
-                        mouse.row,
-                    ) {
+                    let hit = if title == super::application_update::UPDATE_TITLE {
+                        crate::ui::application_update::choice_at(
+                            self.viewport,
+                            mouse.column,
+                            mouse.row,
+                        )
+                    } else {
+                        crate::ui::picker_item_at(
+                            self.viewport,
+                            items.len(),
+                            selected,
+                            mouse.column,
+                            mouse.row,
+                        )
+                    };
+                    if let Some(index) = hit {
                         self.overlay = None;
                         return self.choose(&title, &items, index);
                     }
@@ -289,6 +298,9 @@ impl App {
                 let last = items.len().saturating_sub(1);
                 match key.code {
                     KeyCode::Esc => {
+                        if title == super::application_update::UPDATE_TITLE {
+                            return self.choose_app_update(1);
+                        }
                         self.set_status(StatusKind::Info, "cancelled");
                     }
                     KeyCode::Enter => return self.choose(&title, &items, selected),

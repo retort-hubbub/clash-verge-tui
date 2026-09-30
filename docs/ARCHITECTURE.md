@@ -286,3 +286,12 @@ Correct mistaken test premises only with reproducible evidence. Keep essential
 counterexamples executable; temporary review reports and progress logs do not
 belong in the repository. [ADR 0009](adr/0009-adversarial-review.md) records the
 review rationale.
+
+Application self-updates are separate from Mihomo upgrades: `cvt::app_update`
+owns release metadata, download verification, extraction and atomic executable
+replacement; `executor::application_update` coordinates asynchronous effects.
+`app::application_update` owns queued prompts and reminders, and
+`ui::application_update` shares button geometry with mouse hit testing.
+The exact build target is recorded by `cvt/build.rs`; reminder preferences
+have a separate `app-update.json` store so update decisions cannot overwrite
+unsaved interface settings.

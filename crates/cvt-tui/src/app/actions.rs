@@ -347,6 +347,7 @@ impl App {
                 }]
             }
             Action::UpgradeCore => vec![Effect::UpgradeCore],
+            Action::CheckAppUpdate => vec![Effect::CheckAppUpdate { manual: true }],
             Action::UpdateGeo => {
                 if !self.require_core("updating geo databases") {
                     return Vec::new();

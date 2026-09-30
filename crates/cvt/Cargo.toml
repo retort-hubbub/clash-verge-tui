@@ -27,6 +27,7 @@ reqwest.workspace = true
 flate2.workspace = true
 tar.workspace = true
 sha2.workspace = true
+semver = "1.0.28"
 
 [dev-dependencies]
 tempfile = "3"

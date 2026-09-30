@@ -15,6 +15,7 @@
 //! clamps zero-sized areas, so the rule the screens follow is: never index a
 //! slice with a number the area did not already justify.
 
+pub(crate) mod application_update;
 pub mod connections;
 pub mod help;
 pub mod home;
@@ -501,6 +502,10 @@ fn picker(
     items: &[String],
     selected: usize,
 ) {
+    if title == crate::app::UPDATE_TITLE {
+        application_update::render(frame, area, app, selected);
+        return;
+    }
     let width = area.width.saturating_sub(4).clamp(12, 72);
     let height = u16::try_from(items.len())
         .unwrap_or(u16::MAX)

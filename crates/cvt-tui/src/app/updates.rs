@@ -18,6 +18,7 @@ impl App {
 
     pub(super) fn on_data(&mut self, data: Data) -> Vec<Effect> {
         match data {
+            Data::AppUpdateAvailable(release) => self.offer_app_update(release),
             Data::CoreAuthorized { next } => return vec![*next],
             Data::CoreAuthorization {
                 binary,
@@ -340,6 +341,17 @@ impl App {
 
     pub(super) fn on_done(&mut self, done: Done) -> Vec<Effect> {
         match done {
+            Done::AppUpdated { version, backup } => {
+                let label = self.tr("application updated; restart to use the new version");
+                self.set_status(
+                    StatusKind::Success,
+                    format!(
+                        "{label}: {version}; {} {}",
+                        self.tr("previous executable:"),
+                        backup.display()
+                    ),
+                );
+            }
             Done::ProfilesLoaded => self.set_status(StatusKind::Success, "profiles loaded"),
             Done::ProfileSwitched { name } => {
                 self.clear_ip();

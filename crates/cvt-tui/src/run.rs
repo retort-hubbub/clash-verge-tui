@@ -398,16 +398,22 @@ where
                     self.modes.suspend();
                     (self.executor)(effect, self.sink.clone()).await;
                     self.modes.resume();
+                    // Fullscreen resize clears the viewport and invalidates the
+                    // back buffer without querying the terminal cursor. clear()
+                    // queries it in Ratatui 0.30, racing Crossterm's event reader
+                    // and failing on terminals that do not answer cursor reports.
+                    let area = self
+                        .terminal
+                        .size()
+                        .map_err(|e| RunError::Terminal(io::Error::other(e)))?
+                        .into();
+                    self.terminal
+                        .resize(area)
+                        .map_err(|e| RunError::Terminal(io::Error::other(e)))?;
                     if owns_input {
                         self.input = Box::pin(terminal_input());
                         self.input_ended = false;
                     }
-                    // The editor wrote all over the screen: ratatui's buffers
-                    // no longer describe what is on it, so the next frame has
-                    // to repaint every cell.
-                    self.terminal
-                        .clear()
-                        .map_err(|e| RunError::Terminal(io::Error::other(e)))?;
                 }
                 other => self.running.push((self.executor)(other, self.sink.clone())),
             }

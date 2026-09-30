@@ -260,3 +260,19 @@ module is the code adaptation described above.
 ## Licence
 
 GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+
+## Application updates
+
+The TUI checks stable GitHub releases at startup and at most once per hour.
+Press `u` on Home to check immediately, including versions previously skipped.
+The localized update dialog includes brief release notes and supports keyboard
+and mouse choices: update now, remind in one hour, or skip this version.
+Reminder choices persist in `<home>/app-update.json`.
+
+Automatic installation matches the exact Linux build target (including GNU or
+musl), verifies the release asset's SHA-256 and the extracted executable's
+version, and atomically replaces the original executable. A sibling
+`.clash-verge-tui-update-*.previous` backup is retained for recovery. Restart the
+TUI to use the new version; the current session and Mihomo remain running.
+The executable directory must be writable. For package-managed or system-owned
+installations, use the package manager or a user-writable installation instead.

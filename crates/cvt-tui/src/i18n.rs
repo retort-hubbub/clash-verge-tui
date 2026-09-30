@@ -295,12 +295,28 @@ pub(crate) enum TextKey {
     StatusOverflowMore,
     /// Confirmation before installing the managed Mihomo binary.
     ManagedCoreConfirmation,
+    /// Application update dialog heading.
+    ApplicationUpdate,
+    /// Install the offered application release.
+    UpdateNow,
+    /// Postpone a reminder.
+    UpdateLater,
+    /// Skip the offered release.
+    UpdateSkip,
 }
 
 /// Look up a message by its semantic identity.
 #[must_use]
 pub(crate) const fn label(language: Language, key: TextKey) -> &'static str {
     match (language, key) {
+        (Language::English, TextKey::ApplicationUpdate) => "Application update",
+        (Language::Chinese, TextKey::ApplicationUpdate) => "程序更新",
+        (Language::English, TextKey::UpdateNow) => "Update now",
+        (Language::Chinese, TextKey::UpdateNow) => "立即更新",
+        (Language::English, TextKey::UpdateLater) => "Remind me in one hour",
+        (Language::Chinese, TextKey::UpdateLater) => "稍后提醒（一小时后）",
+        (Language::English, TextKey::UpdateSkip) => "Skip this version",
+        (Language::Chinese, TextKey::UpdateSkip) => "跳过此版本",
         (
             Language::English,
             TextKey::CursorDown | TextKey::ProxyUnavailable | TextKey::DownloadRate,
@@ -387,6 +403,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::RestartCore => "重启内核",
         Action::CycleCoreMode => "切换模式",
         Action::UpgradeCore => "下载/更新托管内核",
+        Action::CheckAppUpdate => "检查程序更新",
         Action::UpdateGeo => "更新地理数据",
         Action::FlushCaches => "清空缓存",
         Action::EditRuntimeConfig => "编辑配置",
@@ -513,6 +530,16 @@ pub fn text(language: Language, english: &str) -> &str {
         "live log stream from the core" => "查看内核实时日志",
         "routing rules and rule providers" => "查看路由规则和规则集",
         "application and core settings" => "修改程序和内核设置",
+        "check the application release and choose update, later or skip" => {
+            "检查程序新版本，可选择更新、稍后提醒或跳过此版本"
+        }
+        "downloading application update…" => "正在下载程序更新…",
+        "application version skipped" => "已跳过此版本",
+        "application update postponed for one hour" => "将在一小时后再次提醒更新",
+        "no newer application update is available" => "暂无更新的程序版本",
+        "an application update is already in progress" => "正在检查或安装程序更新，请稍候",
+        "application updated; restart to use the new version" => "程序更新完成，重启后使用新版本",
+        "previous executable:" => "旧程序备份：",
         "this reference" => "查看快捷键说明",
         "move to the next tab" => "切换到下一页",
         "move to the previous tab" => "切换到上一页",
@@ -920,6 +947,9 @@ pub fn text(language: Language, english: &str) -> &str {
 pub fn format_status(language: Language, text: &str) -> String {
     if language == Language::English {
         return text.to_owned();
+    }
+    if let Some(error) = text.strip_prefix("application update: ") {
+        return format!("程序更新：{error}");
     }
     let direct = self::text(language, text);
     if direct != text {

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-01
+
 ### Added
 
 - Check application updates automatically or with `u` on Home. Release notes
@@ -860,7 +862,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.0...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.1...develop
+[0.8.1]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.5.0...v0.6.0

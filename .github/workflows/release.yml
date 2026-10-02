@@ -4,12 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to attach release assets to (e.g. v0.8.2)'
-        required: true
-        default: 'v0.8.2'
 
 permissions:
   contents: write
@@ -58,5 +52,5 @@ jobs:
           tar: unix
           include: README.md,LICENSE
           build-tool: ${{ matrix.build_tool }}
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ github.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}

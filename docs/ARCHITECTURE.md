@@ -33,6 +33,7 @@ Dependencies point toward `cvt-core`. Shared application operations belong in
 | `mihomo` | Yes | Controller client, event streams and process supervisor |
 | `service` | Yes | Public application facade, paths, settings and adapter construction |
 | `service::{deployment,lifecycle,network_safety,selection}` (private) | Yes | Apply/reload/rollback, process lifecycle and bounded selection replay |
+| `service::profile_switch` (private) | Yes | Transactional base selection and recovery of the preceding runtime document |
 | `service::backup` (private) | Yes | Backup copying, restore and retention behind the `Service` API |
 
 Pure transformations accept values. Adapters own filesystem, network,
@@ -99,6 +100,21 @@ Controller readiness alone is insufficient: DNS/TUN startup failures are read
 from a bounded log window for the current launch or reload. Platform-specific behavior
 is implemented in that adapter.
 
+`mihomo::resolver` validates the local TUN DNS endpoint and runs bounded,
+noninteractive system utilities. `supervisor::resolver` owns the resolved Link
+lease: process birth identity, interface index and DNS endpoint are recorded
+before handoff. Startup and hot reload configure the owned `cvt-mihomo` Link
+only after the core is healthy; handoff failures enter the same deployment
+recovery path. Stop and TUN disable revert the recorded Link. A deleted Link's
+lease is discarded without touching a replacement interface. This integration
+does not change physical-interface settings or `/etc/resolv.conf`.
+
+The binary's private authorization entry point runs before opening application
+state. One explicit `pkexec`/terminal `sudo` operation grants the selected core's
+capabilities and, when resolved is active, installs a user/interface/action
+scoped polkit rule. File capabilities alone do not authorize resolved's D-Bus
+operations. Later DNS commands check authorization without requesting it.
+
 ### Subscription updates
 
 `profile::source` attempts the owned running core's proxy, then environment
@@ -121,7 +137,17 @@ when rollback is enabled, including API readiness and startup log checks.
 Recovery first tries to reload the previous document into a surviving process.
 If no process was running before the attempt, rollback restores disk state
 without starting a previously stopped core.
+Automatic apply recovery requires a runtime document to have existed before
+commit; historic snapshots cannot substitute for a missing initial runtime.
 An `ApplyReport` distinguishes an applied configuration from a rollback.
+
+TUI base selection uses `Service::switch_profile`: generate from an in-memory
+candidate index, validate and deploy, then persist the new selection. A failure
+leaves the old selection intact and restores the runtime captured for that
+operation. Startup compares the selected profile's generated document with the
+runtime instead of treating matching controller settings as proof of identity.
+Internal restart/recovery launches the explicitly deployed document so a pending
+selection transaction is not regenerated from the old index.
 
 After a successful reload, the service waits for the expected groups and
 replays saved selections. A `/version` response only establishes that the

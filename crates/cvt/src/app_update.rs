@@ -60,7 +60,7 @@ fn save(paths: &AppPaths, prefs: &Preferences) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn dismiss(paths: &AppPaths, tag: &str, skip: bool) -> Result<()> {
+pub fn dismiss(paths: &AppPaths, tag: &str, skip: bool) -> Result<()> {
     let mut prefs = preferences(paths)?;
     if skip {
         prefs.skipped = Some(tag.to_owned());
@@ -102,7 +102,7 @@ fn asset_name(tag: &str) -> String {
     format!("clash-verge-tui-{tag}-{}.tar.gz", env!("CVT_BUILD_TARGET"))
 }
 
-fn asset<'a>(release: &'a Release) -> Result<&'a Asset> {
+fn asset(release: &Release) -> Result<&Asset> {
     let expected = asset_name(&release.tag_name);
     release
         .assets
@@ -118,7 +118,7 @@ fn asset<'a>(release: &'a Release) -> Result<&'a Asset> {
 }
 
 /// Stable releases only; manual checks can revisit skipped or postponed versions.
-pub(super) async fn check(
+pub async fn check(
     paths: &AppPaths,
     proxy: Option<String>,
     manual: bool,
@@ -212,7 +212,7 @@ impl Drop for Staging {
 
 /// Validate the pinned release, extract only its executable, and replace by rename.
 /// The old inode stays available to the current process and in a sibling backup.
-pub(super) async fn install(tag: &str, proxy: Option<String>) -> Result<PathBuf> {
+pub async fn install(tag: &str, proxy: Option<String>) -> Result<PathBuf> {
     if !cfg!(target_os = "linux") {
         bail!("automatic application updates currently support Linux release binaries only");
     }

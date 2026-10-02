@@ -63,12 +63,17 @@ impl Executor {
             loop {
                 let event = tokio::select! {
                     _ = ownership.tick() => {
-                        let guard = match service.try_lock() {
-                            Ok(guard) => guard,
-                            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                            Err(std::sync::TryLockError::WouldBlock) => continue,
+                        let active = match service.try_lock() {
+                            Ok(guard) => {
+                                guard.supervisor().controller_endpoint().as_ref() == Some(&endpoint)
+                            }
+                            Err(std::sync::TryLockError::Poisoned(error)) => {
+                                error.into_inner().supervisor().controller_endpoint().as_ref()
+                                    == Some(&endpoint)
+                            }
+                            Err(std::sync::TryLockError::WouldBlock) => true,
                         };
-                        if guard.supervisor().controller_endpoint().as_ref() != Some(&endpoint) {
+                        if !active {
                             break;
                         }
                         continue;

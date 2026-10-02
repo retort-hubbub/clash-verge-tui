@@ -4,6 +4,8 @@
 pub mod client;
 pub mod download;
 pub mod endpoint;
+pub mod listeners;
+pub mod resolver;
 pub mod stream;
 pub mod supervisor;
 pub mod types;

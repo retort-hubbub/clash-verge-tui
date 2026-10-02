@@ -53,10 +53,10 @@ impl Executor {
                 Err(error) => Err(error),
             };
             let result = prepared.and_then(|prepared| {
-                let service = service
+                let mut current = service
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let mut current = service.store()?;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .store()?;
                 if current.get(&uid).and_then(|item| item.url.as_ref()) != previous.as_ref() {
                     return Err(Error::invalid(
                         "subscription URL",

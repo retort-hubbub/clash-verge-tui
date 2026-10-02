@@ -3,7 +3,7 @@
 use super::{Done, Error, Event, EventSink, Executor};
 
 impl Executor {
-    pub(super) fn copy_text(&self, text: String, sink: &EventSink) {
+    pub(super) fn copy_text(text: String, sink: &EventSink) {
         let sink = sink.clone();
         tokio::spawn(async move {
             let event = match crate::clipboard::copy(&text).await {
@@ -23,7 +23,7 @@ impl Executor {
             store.read_document(item)
         });
         match result {
-            Ok(text) => self.copy_text(text, sink),
+            Ok(text) => Self::copy_text(text, sink),
             Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
         }
     }
@@ -51,7 +51,7 @@ impl Executor {
                 .map_err(|error| Error::serialize("proxy configuration", error))
         });
         match result {
-            Ok(text) => self.copy_text(text, sink),
+            Ok(text) => Self::copy_text(text, sink),
             Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
         }
     }

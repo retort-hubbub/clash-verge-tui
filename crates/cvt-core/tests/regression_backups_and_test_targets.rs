@@ -62,6 +62,18 @@ fn home_with_index(index: &str, documents: &[(&str, &str)]) -> (TempDir, AppPath
     for (name, body) in documents {
         std::fs::write(paths.profiles_dir().join(name), body).unwrap();
     }
+    // Controller transport tests configure the application, not a subscription.
+    for (_, body) in documents {
+        if let Ok(config) = cvt_core::model::config::Config::from_yaml(body)
+            && let Some(endpoint) = config.get_str("external-controller")
+        {
+            let mut settings = cvt_core::Settings::load(&paths).unwrap();
+            settings.core.external_controller = Some(endpoint);
+            settings.core.secret = Some(String::new());
+            settings.save(&paths).unwrap();
+            break;
+        }
+    }
     (dir, paths)
 }
 
@@ -74,7 +86,7 @@ fn index_with(selected: &str) -> String {
 
 fn base_document(endpoint: &str) -> String {
     format!(
-        "mixed-port: 7890\nexternal-controller: {endpoint}\nmode: rule\nproxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}\nproxy-groups:\n  - {{name: grp-select, type: select, proxies: [node-a, DIRECT]}}\nrules:\n  - MATCH,grp-select\n"
+        "mixed-port: 0\nexternal-controller: {endpoint}\nmode: rule\nproxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}\nproxy-groups:\n  - {{name: grp-select, type: select, proxies: [node-a, DIRECT]}}\nrules:\n  - MATCH,grp-select\n"
     )
 }
 
@@ -1676,9 +1688,13 @@ fn defect_14_a_backup_does_not_read_through_a_symlinked_directory() {
     std::fs::write(outside.path().join("secret.yaml"), "not the home's\n").unwrap();
 
     let (_dir, paths) = home_with_index(&index_with(""), &[("L1.yaml", "mode: rule\n")]);
+    let service = cvt_core::Service::open(paths.clone()).unwrap();
     std::fs::remove_dir_all(paths.profiles_dir()).unwrap();
     std::os::unix::fs::symlink(outside.path(), paths.profiles_dir()).unwrap();
-    let service = Service::open(paths).unwrap();
+    assert!(
+        cvt_core::Service::open(paths).is_err(),
+        "unsafe links are refused on startup"
+    );
 
     let backup = service.backup().unwrap();
 

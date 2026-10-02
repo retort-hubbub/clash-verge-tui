@@ -3,14 +3,15 @@ use super::*;
 // -- proxies ------------------------------------------------------------
 
 #[test]
-fn switching_a_profile_replaces_stale_proxy_data_and_prepares_or_applies() {
+fn completed_profile_switch_refreshes_without_deploying_again() {
     let mut stopped = loaded();
     stopped.core = CoreStatus::Stopped;
     let effects = stopped.on_event(Event::Done(Done::ProfileSwitched {
         name: "new".to_owned(),
     }));
     assert!(stopped.nodes.is_empty());
-    assert!(effects.contains(&Effect::PrepareConfig));
+    assert!(effects.contains(&Effect::Refresh(Screen::Proxies)));
+    assert!(!effects.contains(&Effect::PrepareConfig));
     assert!(effects.contains(&Effect::LoadProfiles));
 
     let mut running = loaded();
@@ -18,9 +19,12 @@ fn switching_a_profile_replaces_stale_proxy_data_and_prepares_or_applies() {
         name: "new".to_owned(),
     }));
     assert!(running.nodes.is_empty());
-    assert!(effects.contains(&Effect::ApplyConfig {
-        mode: ReloadMode::Auto,
-    }));
+    assert!(effects.contains(&Effect::Refresh(Screen::Proxies)));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::ApplyConfig { .. }))
+    );
 }
 
 #[test]

@@ -144,7 +144,11 @@ fn set_setting_text_inner(settings: &mut Settings, key: &str, text: &str) -> Res
             Ok(())
         }
         "core.secret" => {
-            settings.core.secret = Some(text.to_owned());
+            // Opening and accepting an unset field must not disable generated
+            // credentials. Clearing an existing token is an explicit opt-out.
+            if !text.is_empty() || settings.core.secret.is_some() {
+                settings.core.secret = Some(text.to_owned());
+            }
             Ok(())
         }
         "test.url" => {

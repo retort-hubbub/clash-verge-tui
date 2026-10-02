@@ -11,6 +11,7 @@ impl Service {
     pub async fn apply(&self, force: bool, mode: ReloadMode) -> Result<ApplyReport> {
         let outcome = self.generate()?;
         let pipeline = self.pipeline();
+        let had_runtime = self.paths.runtime_config().is_file();
         if mode == ReloadMode::HotReload && self.controller_changes(&outcome.config) {
             return Err(Error::invalid(
                 "reload mode",
@@ -28,7 +29,7 @@ impl Service {
             self.validate_candidate(&outcome)?;
         }
         pipeline.commit(&outcome, force)?;
-        let reload = self.reload(mode).await?;
+        let reload = self.reload_with_recovery(mode, had_runtime).await?;
         // A reload rebuilds every group, so the choice a user made this morning
         // is gone by the afternoon. It is replayed here rather than at each
         // caller, because "apply" is the operation that discards it.
@@ -61,7 +62,7 @@ impl Service {
         })
     }
 
-    fn controller_changes(&self, config: &Config) -> bool {
+    pub(super) fn controller_changes(&self, config: &Config) -> bool {
         if !self.core_status().is_running() {
             return false;
         }
@@ -82,7 +83,10 @@ impl Service {
         self.validate_candidate_syntax(outcome)
     }
 
-    fn validate_candidate_syntax(&self, outcome: &crate::enhance::pipeline::Outcome) -> Result<()> {
+    pub(super) fn validate_candidate_syntax(
+        &self,
+        outcome: &crate::enhance::pipeline::Outcome,
+    ) -> Result<()> {
         if let Some(binary) = self.core_binary() {
             use std::io::Write as _;
             let directory = self.paths.runtime_dir();
@@ -113,6 +117,14 @@ impl Service {
     /// reload whose cause cannot be undone reports *that* cause, never a
     /// failure of the rollback bookkeeping.
     pub async fn reload(&self, mode: ReloadMode) -> Result<ReloadOutcome> {
+        self.reload_with_recovery(mode, true).await
+    }
+
+    pub(super) async fn reload_with_recovery(
+        &self,
+        mode: ReloadMode,
+        recover: bool,
+    ) -> Result<ReloadOutcome> {
         // Reload operates on an already deployed document. `start_core` may
         // prepare a first document for the user, but doing that here would
         // silently turn a reload of nothing into a new apply.
@@ -144,7 +156,8 @@ impl Service {
         match result {
             Ok(outcome) => Ok(outcome),
             Err(error)
-                if self.settings.core.rollback_on_failure
+                if recover
+                    && self.settings.core.rollback_on_failure
                     && !self.pipeline().snapshots()?.is_empty() =>
             {
                 let reason = error.to_string();
@@ -197,7 +210,9 @@ impl Service {
             .reload_configs(Some(&self.paths.runtime_config()), None, true)
             .await?;
         self.supervisor().finish_reload()?;
-        self.wait_until_ready().await
+        self.wait_until_ready().await?;
+        let config = Config::from_yaml(&self.paths.read(&self.paths.runtime_config())?)?;
+        self.supervisor().synchronize_dns(&config)
     }
 
     /// Restart the core, waiting for the API to come back.

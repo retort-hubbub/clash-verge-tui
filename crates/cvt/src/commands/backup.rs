@@ -195,11 +195,6 @@ impl Report for BackupList {
 }
 
 /// A timestamp relative to now, in the largest unit that is still exact.
-///
-/// "3 days ago" is what a person wants when choosing between backups; the raw
-/// second is available in `--json` for anything that needs it. Written out
-/// rather than pulled from a crate, because the whole operation is one
-/// subtraction and a divisor.
 fn time_of(stamp: i64) -> String {
     let seconds = now_unix().saturating_sub(stamp).max(0);
     match seconds {

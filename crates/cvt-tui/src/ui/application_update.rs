@@ -74,6 +74,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usi
     }
 }
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) fn choice_at(viewport: (u16, u16), column: u16, row: u16) -> Option<usize> {
     let popup = popup(Rect::new(0, 0, viewport.0, viewport.1));
     let inner = Rect::new(

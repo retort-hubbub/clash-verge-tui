@@ -126,14 +126,31 @@ configuration and restarts a running core. Background `core start` cannot ask
 for a password; authorize the binary interactively before enabling login startup.
 
 The capability grant is reused across restarts and profile switches. A new core
-binary needs a new grant. On Linux, child `resolvectl` calls use
-`--no-ask-password`; they do not launch additional DNS authorization dialogs.
-TUI-enabled TUN defaults to the `cvt-mihomo` interface and intercepts UDP/TCP DNS
-on port 53 instead of depending on an interactive system resolver change.
+binary needs a new grant. On Linux with active systemd-resolved, the same
+authorization also installs a persistent polkit rule for the current user:
+only DNS servers, routing domains, default DNS routing and reset operations on
+the application's `cvt-mihomo` link are allowed. Subsequent resolver commands
+use `--no-ask-password` and do not open additional authentication dialogs.
+
+Application-managed Linux TUN always uses `cvt-mihomo`. After startup, the
+application routes system DNS through Mihomo's local listener by setting that
+link's DNS server, `~.` routing domain and default DNS route, then flushing
+cached answers. Missing `dns.listen` defaults to `127.0.0.1:1053`; explicitly
+configured listeners are preserved and must be local. DNS must be enabled and
+use upstream servers independent of the system resolver. Failed DNS setup
+fails startup/apply; disabling TUN or stopping the core resets the recorded
+link. Physical-interface DNS settings and `/etc/resolv.conf` are not changed.
 Do not run two Mihomo TUN configurations simultaneously. Startup refuses
 detected foreign TUN and occupied controller/DNS listeners. With systemd-resolved,
-prefer `dns.listen: 127.0.0.1:1053` over `:53`; TUN DNS interception does not
-require a host listener on port 53.
+prefer `dns.listen: 127.0.0.1:1053` over `:53`. Ordinary applications can keep
+using the system resolver; they do not need individual DNS configuration.
+For an occupied DNS listener, the TUI identifies the observable owner and offers
+a local listener override. It first tries to retain port 53 on `127.0.0.1`, then
+offers another free port. Confirmation saves `core.dns_listen`; it does not
+rewrite the subscription or stop the existing service. The override serves
+local clients only and can be reset by removing that setting.
+Without systemd-resolved, this Link integration is unavailable and DNS routing
+continues to depend on the platform and TUN configuration.
 
 Before applying, the generated candidate is checked with the installed Mihomo
 core (30-second limit). The previous runtime file is snapshotted before replacement.
@@ -203,11 +220,9 @@ tree, so removing it removes every trace:
 └── logs/                  core.log and app.log, rotated on start
 ```
 
-A *snapshot* is one generated document, kept so a bad apply can be undone in
-seconds; a *backup* is everything a person would have to recreate by hand. The
-names are close enough to be worth the sentence, and the two live at the top
-level rather than inside `runtime/` because neither is derived — this tree is
-what `doctor` and `cvt config path` print.
+A *snapshot* stores one generated configuration for rollback. A *backup*
+stores application settings, profiles and overrides. Both are kept outside
+`runtime/`.
 
 An existing `clash-verge-rev` installation can be imported from the interface
 or with `clash-verge-tui profiles import`, and `doctor` will point at the
@@ -234,15 +249,9 @@ homes it found.
 $ cargo test --workspace
 ```
 
-The suite is layered on purpose. The library's model, merge, path and profile
-code is covered by property tests over generated documents, because the
-interesting failures there are invariants — a round trip that is not lossless,
-a merge that is not idempotent, an edit that reports failure but mutates
-anyway. The core API client is covered against a hand-rolled fake controller
-that answers with byte sequences captured from a real mihomo, because the
-documented API and the real one differ in ways that matter. On top of that is
-an environment-gated check that replays the same expectations against a real
-core:
+Tests cover document transformations, profile storage, API contracts and TUI
+interactions. Property tests check generated inputs; fake-controller tests
+reproduce observed Mihomo responses. Live-controller checks are opt-in:
 
 ```console
 $ CVT_LIVE_CONTROLLER='127.0.0.1:9090|your-secret' \
@@ -250,9 +259,9 @@ $ CVT_LIVE_CONTROLLER='127.0.0.1:9090|your-secret' \
   cargo test -p cvt-core --test live_controller -- --test-threads=1 --nocapture
 ```
 
-The counterexamples from independent reviews remain as **passing regression
-tests** in `crates/cvt-core/tests/regression_*.rs` and
-`crates/cvt-tui/tests/regression_*.rs`. The [test suite map](docs/ARCHITECTURE.md#adversarial-review-and-where-its-counterexamples-live)
+Regression tests are grouped by subsystem in
+`crates/cvt-core/tests/regression_*.rs` and `crates/cvt-tui/tests/regression_*.rs`.
+The [test suite map](docs/ARCHITECTURE.md#adversarial-review-and-where-its-counterexamples-live)
 shows which area each file covers.
 
 ## Relationship to other projects
@@ -265,11 +274,9 @@ country-code registry integrations and connects individual probes to the TUI.
 
 [clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev) is a
 Tauri desktop application for the same core, and this project borrows its
-profile model and file layout on purpose — being able to point at an existing
-`clash-verge-rev` home and import it is worth more than a novel layout.
-[clashtui](https://github.com/JohanChane/clashtui) is an earlier TUI for the
-same problem; its existence is why this one is written as a library with a
-thin TUI over it rather than as a TUI with logic inside it.
+profile model and file layout to support importing existing installations.
+[clashtui](https://github.com/JohanChane/clashtui) was also a reference for the
+terminal interface.
 
 This is an **independent implementation**, not a fork. The unlock probe
 module is the code adaptation described above.

@@ -1,9 +1,6 @@
 //! Application and core settings.
 //!
-//! The rows are typed: a switch flips, numeric and named choices open a picker,
-//! and free text opens a prompt that
-//! refuses an invalid answer while it is still open. Nothing here can produce
-//! a settings file that would fail to load.
+//! Switches toggle directly, choices open a picker, and text prompts validate input.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
@@ -66,15 +63,6 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             app.settings_rows
                 .selected_item()
                 .map_or_else(String::new, |row| app.tr(row.help).to_owned()),
-        ),
-        (
-            "saving",
-            if app.settings_dirty {
-                app.tr("the file is out of date — press s to write it")
-                    .to_owned()
-            } else {
-                app.tr("everything here is on disk").to_owned()
-            },
         ),
         ("file", path.display().to_string()),
     ];

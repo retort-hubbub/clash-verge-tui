@@ -136,12 +136,20 @@ pub fn authorize_capabilities(binary: &Path, capabilities: &str) -> Result<()> {
     if !binary.is_file() {
         bail!("the Mihomo binary is not a regular file");
     }
-    if has_capabilities(&binary, capabilities)? {
+    let resolver_required = capabilities.split(',').any(|cap| cap == "cap_net_admin")
+        && cvt_core::mihomo::resolver::available();
+    if has_capabilities(&binary, capabilities)?
+        && (!resolver_required || cvt_core::mihomo::resolver::authorized())
+    {
         return Ok(());
     }
-    let existing = file_capabilities(&binary)?;
-    let grant = format!("{existing} {capabilities}+ep").trim().to_owned();
-    let setcap = capability_tool("setcap")?;
+    let helper = std::env::current_exe().context("locating the authorization helper")?;
+    let helper = helper
+        .to_str()
+        .context("authorization executable path encoding")?;
+    let uid = crate::resolver_authorization::uid()
+        .context("determining the authenticated user")?
+        .to_string();
     let desktop =
         std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
     let pkexec = ["/usr/bin/pkexec", "/bin/pkexec"]
@@ -159,32 +167,46 @@ pub fn authorize_capabilities(binary: &Path, capabilities: &str) -> Result<()> {
         .unwrap_or(false);
     let use_pkexec = !root && desktop && pkexec.is_some();
     let mut command = authorization_command(
-        &setcap,
+        helper,
         root,
         desktop,
         pkexec,
         std::io::stdin().is_terminal(),
     );
     let mut status = command
-        .arg(&grant)
+        .arg("--internal-authorize-core")
         .arg(&binary)
+        .arg(capabilities)
+        .arg(&uid)
         .status()
         .context("authorization needs pkexec on a desktop, or sudo in a terminal")?;
     if use_pkexec && status.code() == Some(127) && std::io::stdin().is_terminal() {
         // No policy agent in an SSH/headless session: allow terminal sudo.
         status = sudo_command(true)
-            .arg(&setcap)
-            .arg(&grant)
+            .arg(helper)
+            .arg("--internal-authorize-core")
             .arg(&binary)
+            .arg(capabilities)
+            .arg(&uid)
             .status()?;
     }
     if !status.success() {
         bail!(
-            "core authorization failed or was cancelled; grant the requested capabilities with sudo setcap before starting the core"
+            "core authorization failed or was cancelled; retry authorization for network capabilities and scoped system DNS access"
         );
     }
     if !has_capabilities(&binary, capabilities)? {
         bail!("network capability grant did not take effect");
+    }
+    if resolver_required {
+        // polkit reloads rules asynchronously after the atomic replacement.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !cvt_core::mihomo::resolver::authorized() {
+            if std::time::Instant::now() >= deadline {
+                bail!("the scoped systemd-resolved authorization did not take effect");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
     Ok(())
 }

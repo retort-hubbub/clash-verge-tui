@@ -150,7 +150,7 @@ async fn changing_source_fetches_new_url_and_failed_fetch_keeps_old_url() {
         assert_eq!(
             service.store().unwrap().get("base").unwrap().url.as_deref(),
             Some(url.as_str())
-        )
+        );
     });
 }
 
@@ -214,7 +214,7 @@ async fn added_rule_is_scoped_survives_update_and_follows_subscription_switch() 
                 "proxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n",
             )
             .unwrap();
-        store.set_chain(&[patch.uid.clone()]).unwrap();
+        store.set_chain(std::slice::from_ref(&patch.uid)).unwrap();
         store.set_current("other").unwrap();
         store.save().unwrap();
         assert!(
@@ -334,7 +334,13 @@ async fn low_port_dns_start_requests_authorization_before_launch() {
         service.set_settings(settings);
         let store = service.store().unwrap();
         let base = store.get("base").unwrap().clone();
-        store.write_document(&base, "dns: {enable: true, listen: ':53', enhanced-mode: fake-ip, nameserver: [1.1.1.1]}\nproxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n").unwrap();
+        // Pick an unused privileged listener; the host may already run DNS :53.
+        let document = (600..1024).find_map(|port| {
+            let text = format!("dns: {{enable: true, listen: '127.0.0.1:{port}', enhanced-mode: fake-ip, nameserver: [1.1.1.1]}}\nproxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n");
+            let config = cvt_core::model::config::Config::from_yaml(&text).unwrap();
+            service.validate_environment(&config).is_ok().then_some(text)
+        }).expect("an unused privileged test port");
+        store.write_document(&base, &document).unwrap();
         let generated = service.generate().unwrap();
         service.pipeline().commit(&generated, false).unwrap();
     });

@@ -8,6 +8,43 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 impl Executor {
+    pub(super) fn switch_profile(&self, uid: String, sink: &EventSink) {
+        self.invalidate_ip();
+        let service = Arc::clone(&self.service);
+        let sink = sink.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = {
+                let guard = service
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mode = if guard.settings().update.prefer_hot_reload {
+                    ReloadMode::Auto
+                } else {
+                    ReloadMode::Restart
+                };
+                tokio::runtime::Handle::current().block_on(guard.switch_profile(&uid, mode))
+            };
+            let event = match result {
+                Ok(name) => Event::Done(Done::ProfileSwitched { name }),
+                Err(error) => Event::Failed(error.to_string()),
+            };
+            let _ = sink.send(event);
+            let guard = service
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match guard.store() {
+                Ok(store) => {
+                    let _ = sink.send(Event::Data(cvt_tui::Data::Profiles(
+                        cvt_tui::row::ProfileRow::all(&store),
+                    )));
+                }
+                Err(error) => {
+                    let _ = sink.send(Event::Failed(error.to_string()));
+                }
+            }
+        });
+    }
+
     pub(super) fn synchronize_config(&self, sink: &EventSink) {
         let executor = self.clone();
         let sink = sink.clone();

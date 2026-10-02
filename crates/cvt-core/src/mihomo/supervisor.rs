@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::paths::AppPaths;
 
+mod resolver;
 mod runtime;
 
 /// Environment variable naming an explicit core binary.
@@ -353,8 +354,7 @@ impl Supervisor {
         let Some(record) = self.read_pid_record() else {
             return CoreStatus::Stopped;
         };
-        if !process_alive(record.pid) || !pid_matches(record.clone()) || !self.owns_process(&record)
-        {
+        if !process_alive(record.pid) || !pid_matches(&record) || !self.owns_process(&record) {
             return CoreStatus::StalePid { pid: record.pid };
         }
         CoreStatus::Running {
@@ -484,6 +484,18 @@ impl Supervisor {
     /// [`Error::ProcessFailed`] when the signal could not be delivered to a
     /// process that is confirmed to be ours.
     pub fn stop(&self) -> Result<bool> {
+        let dns = self.release_dns();
+        let stopped = self.stop_process();
+        if let Err(error) = dns {
+            // Removing the TUN link also removes resolved's per-link state.
+            if !self.discard_vanished_dns_lease()? {
+                return Err(error);
+            }
+        }
+        stopped
+    }
+
+    fn stop_process(&self) -> Result<bool> {
         let Some(record) = self.read_pid_record() else {
             return Ok(false);
         };
@@ -649,7 +661,7 @@ impl Supervisor {
 
 /// Track exit by birth identity and process state, not argv visibility.
 fn record_process_alive(record: &PidRecord) -> bool {
-    if !process_alive(record.pid) || !pid_matches(record.clone()) {
+    if !process_alive(record.pid) || !pid_matches(record) {
         return false;
     }
     #[cfg(target_os = "linux")]
@@ -668,7 +680,7 @@ fn record_process_alive(record: &PidRecord) -> bool {
 }
 
 /// Guard against pid reuse: a recycled pid must not be mistaken for ours.
-fn pid_matches(record: PidRecord) -> bool {
+fn pid_matches(record: &PidRecord) -> bool {
     if record.start_ticks == 0 {
         return !cfg!(target_os = "linux"); // Linux records without identity are not adopted
     }
@@ -933,7 +945,7 @@ mod tests {
             endpoint: None,
         };
         assert!(
-            !pid_matches(mismatched),
+            !pid_matches(&mismatched),
             "a recycled or foreign pid must not match"
         );
     }
@@ -950,7 +962,7 @@ mod tests {
             config: None,
             endpoint: None,
         };
-        assert!(pid_matches(record));
+        assert!(pid_matches(&record));
         assert!(process_alive(pid), "the test process is obviously alive");
     }
 
@@ -971,7 +983,17 @@ mod tests {
             .write_atomic(&sup.pid_file(), &serde_norway::to_string(&record).unwrap())
             .unwrap();
         assert_eq!(sup.status(), CoreStatus::StalePid { pid });
-        assert!(!sup.stop().unwrap());
+        assert!(matches!(
+            sup.stop(),
+            Err(Error::InvalidValue {
+                field: "core identity",
+                ..
+            })
+        ));
+        assert!(
+            sup.pid_file().exists(),
+            "refusal preserves the identity record"
+        );
         assert!(process_alive(pid));
     }
 

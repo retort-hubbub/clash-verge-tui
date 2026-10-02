@@ -13,6 +13,47 @@ impl Service {
     /// [`Error::Validation`] when the document has errors, and
     /// [`Error::ProcessFailed`] when validation or the launch fails.
     pub fn start_core(&self) -> Result<u32> {
+        if let CoreStatus::Running { pid, .. } = self.core_status() {
+            return Err(Error::Unsupported(format!(
+                "the core is already running as pid {pid}; stop it first"
+            )));
+        }
+        if self.core_binary().is_none() {
+            return Err(Error::CoreUnavailable {
+                reason: "no mihomo binary found; install the managed core or set CVT_CORE"
+                    .to_owned(),
+            });
+        }
+        let config = self.paths.runtime_config();
+        // A runtime with valid controller settings may still belong to an old
+        // profile. Never silently launch it for a newly selected broken base.
+        if self.store()?.current().is_some() || !config.is_file() {
+            let outcome = self.generate()?;
+            if !outcome.is_applicable() {
+                return Err(Error::Validation {
+                    problems: outcome
+                        .report
+                        .errors_iter()
+                        .map(|d| d.message.clone())
+                        .collect(),
+                });
+            }
+            self.validate_candidate(&outcome)?;
+            let existing = if config.is_file() {
+                Some(Config::from_yaml(&self.paths.read(&config)?)?)
+            } else {
+                None
+            };
+            if existing.as_ref() != Some(&outcome.config) {
+                self.pipeline().commit(&outcome, false)?;
+            }
+        }
+        self.start_runtime_core()
+    }
+
+    /// Launch the explicitly deployed document, including a pending profile
+    /// transaction or an exact recovery copy. Do not regenerate from the index.
+    pub(super) fn start_runtime_core(&self) -> Result<u32> {
         let supervisor = self.supervisor();
         let binary = self.core_binary().ok_or_else(|| Error::CoreUnavailable {
             reason: format!(
@@ -22,21 +63,6 @@ impl Service {
             ),
         })?;
         let config = self.paths.runtime_config();
-        let needs_refresh = if config.is_file() {
-            !self
-                .pipeline()
-                .matches_control_plane(&Config::from_yaml(&self.paths.read(&config)?)?)
-        } else {
-            true
-        };
-        if needs_refresh {
-            // Selecting a subscription makes it current but does not write a
-            // runtime document. Starting from a fresh home should complete
-            // that first apply, using the same validation as an explicit apply.
-            let outcome = self.generate()?;
-            self.validate_candidate(&outcome)?;
-            self.pipeline().commit(&outcome, false)?;
-        }
         let text = self.paths.read(&config)?;
         let parsed = Config::from_yaml(&text)?;
         let report = crate::validate::check(&parsed);
@@ -63,7 +89,10 @@ impl Service {
         self.rotate_logs(&supervisor);
         let pid = supervisor.start(&binary, &config)?;
         std::thread::sleep(std::time::Duration::from_millis(250));
-        if let Err(error) = supervisor.check_health() {
+        if let Err(error) = supervisor
+            .check_health()
+            .and_then(|()| supervisor.synchronize_dns(&parsed))
+        {
             let _ = supervisor.stop();
             return Err(error);
         }
@@ -110,6 +139,33 @@ impl Service {
     pub fn restart_core(&self) -> Result<u32> {
         let config = self.paths.runtime_config();
         if config.is_file() {
+            let existing = Config::from_yaml(&self.paths.read(&config)?)?;
+            if (cfg!(target_os = "linux")
+                && existing.tun_enabled()
+                && existing
+                    .get("tun")
+                    .and_then(|tun| tun.get("device"))
+                    .and_then(serde_json::Value::as_str)
+                    != Some(crate::mihomo::resolver::DEVICE))
+                || self
+                    .settings
+                    .core
+                    .dns_listen
+                    .as_deref()
+                    .is_some_and(|address| {
+                        existing
+                            .get("dns")
+                            .and_then(|dns| dns.get("listen"))
+                            .and_then(serde_json::Value::as_str)
+                            != Some(address)
+                    })
+            {
+                let outcome = self.generate()?;
+                self.validate_candidate_syntax(&outcome)?;
+                self.pipeline().commit(&outcome, false)?;
+            }
+        }
+        if config.is_file() {
             let parsed = Config::from_yaml(&self.paths.read(&config)?)?;
             // Syntax is safe to check while the old core owns its sockets.
             // Resource availability is checked by start_core after stop has
@@ -126,6 +182,6 @@ impl Service {
             self.supervisor().validate_config(&binary, &config)?;
         }
         self.stop_core()?;
-        self.start_core()
+        self.start_runtime_core()
     }
 }

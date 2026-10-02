@@ -4,16 +4,9 @@
 
 ## Context
 
-This is a program that touches a user's network configuration, and the failure
-mode that matters is not "a feature is missing" — it is "a change broke
-working connectivity". Two things follow. A release needs a point that can be
-identified and returned to, and the history needs to explain *why* a change
-was made by a stranger six months from now, without a ticket tracker to
-consult.
-
-There is also an unusual constraint in this codebase: several known defects
-are preserved deliberately as passing counterexample tests with their reasoning
-in the test body. The history records when each case was reproduced and fixed.
+Network configuration changes need identifiable release points for recovery.
+Commit history records the reason for each change; regression tests preserve
+reproductions of fixed defects.
 
 ## Decision
 

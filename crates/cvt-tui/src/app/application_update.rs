@@ -2,6 +2,7 @@
 use super::{App, Effect, Overlay, StatusKind, UpdateRelease};
 use std::time::{Duration, Instant};
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) const UPDATE_TITLE: &str = "application update";
 impl App {
     pub(super) fn offer_app_update(&mut self, release: UpdateRelease) {
@@ -27,7 +28,7 @@ impl App {
         let Some(release) = self.app_update.take() else {
             return Vec::new();
         };
-        self.app_update_next_check = Instant::now() + Duration::from_secs(3600);
+        self.next_update_check = Instant::now() + Duration::from_secs(3600);
         if selected == 0 {
             self.set_status(
                 StatusKind::Info,

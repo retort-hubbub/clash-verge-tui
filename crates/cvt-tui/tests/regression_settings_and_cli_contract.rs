@@ -395,6 +395,10 @@ fn service_against_black_hole(port: u16, groups: usize) -> (TempDir, Service) {
         document_with_groups(&format!("127.0.0.1:{port}"), groups),
     )
     .unwrap();
+    let mut settings = Settings::load(&paths).unwrap();
+    settings.core.external_controller = Some(format!("127.0.0.1:{port}"));
+    settings.core.secret = Some(String::new());
+    settings.save(&paths).unwrap();
     let service = Service::open(paths).unwrap();
     (dir, service)
 }
@@ -568,13 +572,17 @@ fn confirmed_2_the_controller_a_text_row_writes_is_one_the_generator_accepts() {
          forces into every document: it refuses with {codes:?}"
     );
     assert!(
-        held.is_none(),
-        "committing the prompt untouched must not set it"
+        held == Settings::default().core.external_controller,
+        "committing the prompt untouched preserves the default controller"
     );
 
     // The reconstruction: the string the row *displays* for that state is not a
     // control plane, which is why seeding the prompt with it was the defect.
-    let displayed = cvt_tui::app::setting_rows(&Settings::default())
+    // v0.8.3 defaults now contain an actual endpoint. Exercise an explicitly
+    // unset value to retain the rendering-versus-editable-value regression.
+    let mut unset = Settings::default();
+    unset.core.external_controller = None;
+    let displayed = cvt_tui::app::setting_rows(&unset)
         .into_iter()
         .find(|row| row.key == "core.external_controller")
         .map(|row| row.value)
@@ -725,7 +733,7 @@ fn confirmed_4_every_edit_the_settings_screen_offers_survives_validation() {
     );
 
     // And the file it makes is the file it reads back.
-    app.settings = Settings::default();
+    app.settings = Settings::load(&paths).unwrap();
     app.settings_rows.select_by_key("logs.keep", |row| row.key);
     press(&mut app, KeyCode::Char(' '));
     app.settings.save(&paths).unwrap();

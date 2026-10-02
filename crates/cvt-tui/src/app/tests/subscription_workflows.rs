@@ -2,6 +2,44 @@
 use super::*;
 
 #[test]
+fn dns_conflict_confirmation_retries_the_original_action_and_cancel_changes_nothing() {
+    let mut a = app();
+    let before = a.settings.clone();
+    let conflict = cvt_core::mihomo::listeners::DnsConflict {
+        requested: ":53".to_owned(),
+        replacement: "127.0.0.1:53".to_owned(),
+        owners: Vec::new(),
+    };
+    let next = Effect::SwitchProfile {
+        uid: "new".to_owned(),
+    };
+    let event = Event::Data(Data::DnsConflict {
+        conflict,
+        next: Box::new(next.clone()),
+    });
+    a.on_event(event.clone());
+    assert!(matches!(
+        a.overlay,
+        Some(Overlay::Confirm {
+            action: Action::ResolveDnsConflict,
+            ..
+        })
+    ));
+    assert!(press(&mut a, KeyCode::Esc).is_empty());
+    assert_eq!(a.settings, before);
+    assert!(a.pending_confirmation.is_none());
+    a.on_event(event);
+    assert_eq!(
+        press(&mut a, KeyCode::Char('y')),
+        vec![Effect::ResolveDnsConflict {
+            address: "127.0.0.1:53".to_owned(),
+            next: Box::new(next)
+        }]
+    );
+    assert!(a.pending_confirmation.is_none());
+}
+
+#[test]
 fn source_and_override_have_distinct_accessible_key_routes() {
     let mut a = loaded();
     goto(&mut a, Screen::Profiles);

@@ -42,7 +42,10 @@ impl Fixture {
 fn opening_creates_the_home_and_loads_default_settings() {
     let f = fixture();
     assert!(f.service.paths().profiles_dir().is_dir());
-    assert_eq!(*f.service.settings(), Settings::default());
+    let mut expected = Settings::default();
+    expected.core.secret = f.service.settings().core.secret.clone();
+    assert_eq!(*f.service.settings(), expected);
+    assert_eq!(expected.core.secret.as_deref().unwrap().len(), 64);
     assert!(f.service.store().unwrap().items().is_empty());
 }
 
@@ -70,11 +73,22 @@ fn settings_survive_a_round_trip_through_the_service() {
 #[test]
 fn an_invalid_setting_is_refused_before_it_reaches_the_disk() {
     let mut f = fixture();
+    let before = f
+        .service
+        .paths()
+        .read(&f.service.paths().settings_file())
+        .unwrap();
     let mut s = f.service.settings().clone();
     s.test.concurrency = 0;
     f.service.set_settings(s);
     assert!(f.service.save_settings().is_err());
-    assert!(!f.service.paths().settings_file().exists());
+    assert_eq!(
+        f.service
+            .paths()
+            .read(&f.service.paths().settings_file())
+            .unwrap(),
+        before
+    );
 }
 
 #[test]
@@ -95,13 +109,16 @@ fn there_is_no_endpoint_before_anything_is_generated() {
 }
 
 #[test]
-fn the_generated_runtime_config_is_the_authority_on_the_endpoint() {
+fn the_application_settings_are_the_authority_on_the_endpoint() {
     let f = fixture();
     f.seed();
     let outcome = f.service.generate().unwrap();
     f.service.pipeline().commit(&outcome, false).unwrap();
     let endpoint = f.service.endpoint().unwrap().unwrap();
-    assert_eq!(endpoint, Endpoint::tcp("127.0.0.1:9090", None));
+    assert_eq!(
+        endpoint,
+        Endpoint::tcp("127.0.0.1:9090", f.service.settings().core.secret.clone())
+    );
     assert!(endpoint.is_loopback());
 }
 
@@ -112,10 +129,14 @@ fn subscription_fallback_uses_the_proxy_listener_not_the_controller() {
     assert_eq!(f.service.proxy_addr(), None, "only deployed ports count");
     let outcome = f.service.generate().unwrap();
     f.service.pipeline().commit(&outcome, false).unwrap();
-    assert_eq!(f.service.proxy_addr().as_deref(), Some("127.0.0.1:7890"));
+    assert_eq!(
+        f.service.proxy_addr(),
+        None,
+        "a stopped core cannot serve a proxy"
+    );
     assert_eq!(
         f.service.endpoint().unwrap().unwrap(),
-        Endpoint::tcp("127.0.0.1:9090", None)
+        Endpoint::tcp("127.0.0.1:9090", f.service.settings().core.secret.clone())
     );
 
     std::fs::write(
@@ -127,12 +148,15 @@ fn subscription_fallback_uses_the_proxy_listener_not_the_controller() {
 }
 
 #[test]
-fn the_endpoint_falls_back_to_the_selected_profile() {
+fn the_endpoint_uses_application_settings_before_first_generation() {
     let f = fixture();
     f.seed();
     // Nothing generated yet, but the profile declares a controller.
     let endpoint = f.service.endpoint().unwrap().unwrap();
-    assert_eq!(endpoint, Endpoint::tcp("127.0.0.1:9090", None));
+    assert_eq!(
+        endpoint,
+        Endpoint::tcp("127.0.0.1:9090", f.service.settings().core.secret.clone())
+    );
 }
 
 #[test]
@@ -189,7 +213,14 @@ fn starting_a_selected_profile_generates_the_first_runtime_configuration() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let f = fixture();
-    f.seed();
+    let uid = f.seed();
+    let store = f.service.store().unwrap();
+    store
+        .write_document(
+            store.get(&uid).unwrap(),
+            &BASE.replace("mixed-port: 7890", "mixed-port: 0"),
+        )
+        .unwrap();
     let binary = f.service.paths().core_dir().join("mihomo");
     std::fs::write(
         &binary,

@@ -37,6 +37,7 @@ use cvt_core::profile::store::{ProfileStore, document_path};
 use cvt_core::{Service, Settings, validate};
 use serde_json::{Value, json};
 use tempfile::TempDir;
+mod support;
 
 // ------------------------------------------------------------------ helpers
 
@@ -300,14 +301,9 @@ fn defect_1_a_start_that_is_refused_still_rotates_the_live_log() {
         "core:\n  binary: {CORE}\nlogs:\n  max_size_bytes: 1024\n  keep: 2\n  keep_days: 0\n"
     ));
     let paths = service.paths().clone();
-    // A core that is running: the pid file names this process, which is alive,
-    // and `start_ticks: 0` means "the field was unavailable, so do not
-    // second-guess".
-    std::fs::write(
-        paths.core_dir().join("mihomo.pid"),
-        format!("pid: {}\nsince: 1\nstart_ticks: 0\n", std::process::id()),
-    )
-    .unwrap();
+    // Strict ownership requires an actual process with the recorded paths
+    // and birth identity. This fixture installs no network listeners.
+    let _process = support::ManagedProcess::start(&paths, BASE);
     assert!(
         matches!(
             Supervisor::new(paths.clone()).status(),
@@ -910,11 +906,10 @@ async fn a_home_recorded_once_survives_a_panel_that_stops_sending_it() {
 
 // ================================================================ control plane
 
-/// The control plane has two sources: the settings, and a base profile.
-/// Everything else is removed, and losing one that should survive is as much a
-/// defect as gaining one that should not.
+/// Application settings own management endpoints and credentials, including
+/// defaults migrated by v0.8.3. Subscription and enhancement values are untrusted.
 #[test]
-fn the_control_plane_comes_from_the_settings_or_the_base_and_nowhere_else() {
+fn the_control_plane_comes_only_from_application_settings() {
     // The setting wins over the base.
     let (_dir, service) = service_with("core:\n  external_controller: 127.0.0.1:7777\n");
     seed(&service, BASE, &[]);
@@ -942,7 +937,7 @@ fn the_control_plane_comes_from_the_settings_or_the_base_and_nowhere_else() {
         Some("127.0.0.1:7777")
     );
 
-    // An empty setting is not a setting, so the base's survives.
+    // An empty setting migrates to the application loopback default.
     let (_dir, service) = service_with("core:\n  external_controller: ''\n");
     seed(&service, BASE, &[]);
     assert_eq!(
@@ -976,9 +971,12 @@ fn the_control_plane_comes_from_the_settings_or_the_base_and_nowhere_else() {
     );
     let outcome = service.generate().unwrap();
     let doc = outcome.config.as_value();
+    assert_eq!(doc["external-controller"], "127.0.0.1:9090");
+    assert_eq!(
+        doc["secret"].as_str(),
+        service.settings().core.secret.as_deref()
+    );
     for key in [
-        "secret",
-        "external-controller",
         "external-controller-cors",
         "external-controller-tls",
         "external-controller-unix",
@@ -990,18 +988,19 @@ fn the_control_plane_comes_from_the_settings_or_the_base_and_nowhere_else() {
         );
     }
     assert!(
-        outcome.warnings.iter().any(|w| w.contains("secret")),
+        outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("external-controller-cors")),
         "a removal the user has to know about: {:?}",
         outcome.warnings
     );
 }
 
-/// The other direction: a key the base declares and an enhancement moves or
-/// deletes is put back, with a warning, so an override that does not take
-/// effect says so.
+/// Application credentials survive attempted changes from enhancements.
 #[test]
-fn a_key_the_base_declares_is_restored_when_an_enhancement_moves_or_drops_it() {
-    let (_dir, service) = service_with("");
+fn application_credentials_survive_enhancements() {
+    let (_dir, service) = service_with("core:\n  external_controller: 127.0.0.1:7777\n");
     seed(
         &service,
         BASE,
@@ -1019,16 +1018,15 @@ fn a_key_the_base_declares_is_restored_when_an_enhancement_moves_or_drops_it() {
     let outcome = service.generate().unwrap();
     assert_eq!(
         outcome.config.get_str("external-controller").as_deref(),
-        Some("127.0.0.1:9090"),
-        "a merge deleted the base's endpoint and nothing put it back"
+        Some("127.0.0.1:7777")
     );
-    assert!(
-        outcome
-            .warnings
-            .iter()
-            .any(|w| w.contains("external-controller")),
-        "{:?}",
-        outcome.warnings
+    assert_eq!(
+        outcome.config.get_str("secret").as_deref(),
+        service.settings().core.secret.as_deref()
+    );
+    assert_ne!(
+        outcome.config.get_str("secret").as_deref(),
+        Some("attacker")
     );
 }
 
@@ -1067,13 +1065,9 @@ fn observation_an_enhancement_cannot_point_the_controller_at_any_directory() {
     );
 }
 
-/// The import route, which the change names in its own message: a bundle from
-/// another installation carries a base profile, and a base profile is allowed
-/// to declare the control plane. Recorded as behaviour — it is the documented
-/// exception — but it is the one route by which a directory of somebody else's
-/// files decides where this program connects.
+/// Imported subscriptions cannot replace local management credentials.
 #[test]
-fn an_imported_installation_can_point_the_application_at_its_controller() {
+fn an_imported_installation_cannot_supply_management_credentials() {
     let (_dir, service) = service_with("");
     let (_foreign_dir, foreign) = home();
     let mut store = ProfileStore::load(&foreign).unwrap();
@@ -1095,9 +1089,14 @@ fn an_imported_installation_can_point_the_application_at_its_controller() {
     let outcome = service.generate().unwrap();
     assert_eq!(
         outcome.config.get_str("external-controller").as_deref(),
-        Some("6.6.6.6:6666"),
-        "the imported base is a base, and a base may declare the control plane"
+        service.settings().core.external_controller.as_deref(),
+        "import must retain application-owned controller settings"
     );
+    assert_eq!(
+        outcome.config.get_str("secret").as_deref(),
+        service.settings().core.secret.as_deref()
+    );
+    assert_ne!(outcome.config.get_str("secret").as_deref(), Some("theirs"));
 }
 
 // ============================================== the third round's other fixes

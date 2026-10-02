@@ -116,9 +116,9 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     rows.push((
         "method",
         app.tr(if app.probe_mode == crate::row::ProbeMode::Connect {
-            "CONNECT uses the named proxy; v cycles test methods"
+            "CONNECT via selected proxy"
         } else {
-            "TCP and ICMP probe the server directly; v cycles test methods"
+            "TCP and ICMP to the server"
         })
         .to_owned(),
     ));
@@ -132,11 +132,9 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 if !app.core.is_running() {
                     app.tr("start the core to choose a member").to_owned()
                 } else if node.selectable {
-                    app.tr("Enter on a member pins it; x clears the choice")
-                        .to_owned()
+                    app.tr("manual selection").to_owned()
                 } else {
-                    app.tr("the core picks the member itself; it cannot be pinned")
-                        .to_owned()
+                    app.tr("automatic selection").to_owned()
                 },
             ));
         }
@@ -159,19 +157,8 @@ fn detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 })
                 .to_owned(),
             ));
-            rows.push((
-                "hint",
-                app.tr("Enter pins this node in its group, x lets the group choose again")
-                    .to_owned(),
-            ));
         }
-        None => rows.push((
-            "hint",
-            app.tr(
-                "apply a profile or start the core; t tests, T tests the group, a tests everything",
-            )
-            .to_owned(),
-        )),
+        None => {}
     }
     rows.push(("order", app.tr(app.node_sort.label()).to_owned()));
     w::details(frame, area, app, " selection ", &rows);

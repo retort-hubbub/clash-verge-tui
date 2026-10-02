@@ -266,7 +266,14 @@ pub enum Effect {
         /// Comma-separated network capabilities.
         capabilities: String,
         /// Operation to retry after authorization.
-        next: Box<Effect>,
+        next: Box<Self>,
+    },
+    /// Persist an approved local DNS listener, then retry the interrupted operation.
+    ResolveDnsConflict {
+        /// Local replacement endpoint.
+        address: String,
+        /// Operation to retry.
+        next: Box<Self>,
     },
 }
 
@@ -329,6 +336,7 @@ impl Effect {
             Self::EditProfileOverride { .. } => "edit profile override",
             Self::AddProfileRule { .. } => "add profile rule",
             Self::AuthorizeCore { .. } => "authorize core",
+            Self::ResolveDnsConflict { .. } => "resolve DNS listener conflict",
         }
     }
 }
@@ -424,6 +432,13 @@ impl Preview {
 /// test without a core.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Data {
+    /// Offer a local listener without stopping the existing DNS owner.
+    DnsConflict {
+        /// Read-only classification and alternative.
+        conflict: cvt_core::mihomo::listeners::DnsConflict,
+        /// Operation to retry after confirmation.
+        next: Box<Effect>,
+    },
     /// A newer compatible application release was found.
     AppUpdateAvailable(UpdateRelease),
     /// Resume an approved operation after authentication or a core replacement.

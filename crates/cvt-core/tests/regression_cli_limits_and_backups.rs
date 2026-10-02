@@ -74,10 +74,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cvt_core::mihomo::client::Client;
-use cvt_core::mihomo::supervisor::Supervisor;
 use cvt_core::settings::{MAX_TEST_CONCURRENCY, MAX_TEST_TIMEOUT_MS, Settings};
 use cvt_core::{AppPaths, ReloadMode, Service};
 use tempfile::TempDir;
+mod support;
 
 /// The core this project is validated against; `-t` exits on its own.
 const CORE: &str = "/usr/bin/verge-mihomo";
@@ -101,6 +101,18 @@ fn home_with_index(index: &str, documents: &[(&str, &str)]) -> (TempDir, AppPath
     for (name, body) in documents {
         std::fs::write(paths.profiles_dir().join(name), body).unwrap();
     }
+    // Controller transport tests configure the application, not a subscription.
+    for (_, body) in documents {
+        if let Ok(config) = cvt_core::model::config::Config::from_yaml(body)
+            && let Some(endpoint) = config.get_str("external-controller")
+        {
+            let mut settings = cvt_core::Settings::load(&paths).unwrap();
+            settings.core.external_controller = Some(endpoint);
+            settings.core.secret = Some(String::new());
+            settings.save(&paths).unwrap();
+            break;
+        }
+    }
     (dir, paths)
 }
 
@@ -114,7 +126,7 @@ fn index_with(selected: &str) -> String {
 /// A profile document with a real control plane and one group.
 fn base_document(endpoint: &str) -> String {
     format!(
-        "mixed-port: 7890\nexternal-controller: {endpoint}\nmode: rule\n\
+        "mixed-port: 0\nexternal-controller: {endpoint}\nmode: rule\n\
          proxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}\n\
          proxy-groups:\n  - {{name: PROXY, type: select, proxies: [node-a, DIRECT]}}\n\
          rules:\n  - MATCH,PROXY\n"
@@ -124,7 +136,7 @@ fn base_document(endpoint: &str) -> String {
 /// A document declaring two groups, for the `wait_for_document` checks.
 fn two_group_document(endpoint: &str) -> String {
     format!(
-        "mixed-port: 7890\nexternal-controller: {endpoint}\nmode: rule\n\
+        "mixed-port: 0\nexternal-controller: {endpoint}\nmode: rule\n\
          proxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}\n\
          proxy-groups:\n\
          \x20 - {{name: missing-group, type: select, proxies: [node-a, DIRECT]}}\n\
@@ -1346,9 +1358,13 @@ fn a_backup_skips_a_source_directory_reached_through_a_symlink() {
     std::fs::write(outside.path().join("secret.yaml"), "not the home's\n").unwrap();
 
     let (_dir, paths) = home_with_index(&index_with(""), &[("L1.yaml", "mode: rule\n")]);
+    let service = cvt_core::Service::open(paths.clone()).unwrap();
     std::fs::remove_dir_all(paths.profiles_dir()).unwrap();
     std::os::unix::fs::symlink(outside.path(), paths.profiles_dir()).unwrap();
-    let service = Service::open(paths).unwrap();
+    assert!(
+        cvt_core::Service::open(paths).is_err(),
+        "unsafe links are refused on startup"
+    );
 
     let backup = service.backup().unwrap();
     assert!(
@@ -1663,12 +1679,6 @@ fn test_urls_finds_a_node_in_both_places_and_refuses_a_name_in_neither() {
 /// to the controller below — which is what makes the whole tail of `apply`
 /// (the wait for the document, then the selection replay) observable without a
 /// real core.
-fn pretend_a_core_is_running(paths: &AppPaths) {
-    let pid = std::process::id();
-    let pid_file = Supervisor::new(paths.clone()).pid_file();
-    std::fs::write(&pid_file, format!("pid: {pid}\nsince: 0\nstart_ticks: 0\n")).unwrap();
-}
-
 /// The `wait_for_document` of `37e00be` (`5c92f28`), reconstructed line for line
 /// from `git show 5c92f28:crates/cvt-core/src/service.rs`, so that the shape
 /// that was shipped can be run against the same controller as the shape that
@@ -1760,8 +1770,10 @@ async fn waiting_for_a_document_asks_about_every_group() {
         &index_with(""),
         &[("L1.yaml", &two_group_document(&panel.endpoint()))],
     );
-    pretend_a_core_is_running(&paths);
-    let service = Service::open(paths).unwrap();
+    let service = Service::open(paths.clone()).unwrap();
+    // A fabricated PID record is no longer an owned process. Keep the fake
+    // controller, but give the supervisor a real disposable process identity.
+    let _process = support::ManagedProcess::start(&paths, &service.generate().unwrap().yaml);
 
     let started = std::time::Instant::now();
     let report = service

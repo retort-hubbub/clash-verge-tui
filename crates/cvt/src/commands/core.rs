@@ -245,6 +245,46 @@ async fn gc(ctx: &Ctx) -> Result<()> {
     })
 }
 
+/// Authenticate on the command-line terminal before launching listeners.
+fn authorize_listeners(ctx: &Ctx) -> Result<()> {
+    let path = ctx.paths().runtime_config();
+    let config = if ctx.store()?.current().is_some() {
+        ctx.service().generate()?.config
+    } else if path.is_file() {
+        cvt_core::model::config::Config::from_yaml(&ctx.paths().read(&path)?)?
+    } else {
+        ctx.service().generate()?.config
+    };
+    if !ctx.service().core_status().is_running() {
+        ctx.service().validate_environment(&config)?;
+    }
+    let capabilities = crate::tun::required_capabilities(&config);
+    if capabilities.is_empty() {
+        return Ok(());
+    }
+    let binary = ctx
+        .service()
+        .core_binary()
+        .ok_or_else(|| anyhow::anyhow!("install or select a Mihomo core before starting it"))?;
+    if !crate::tun::has_capabilities(&binary, &capabilities)?
+        || (capabilities.contains("cap_net_admin") && !cvt_core::mihomo::resolver::authorized())
+    {
+        let dns = if capabilities.split(',').any(|cap| cap == "cap_net_admin")
+            && cvt_core::mihomo::resolver::available()
+        {
+            "; DNS management on cvt-mihomo"
+        } else {
+            ""
+        };
+        ctx.out().note(format!(
+            "authorizing {}: {capabilities}{dns}",
+            binary.display()
+        ));
+        crate::tun::authorize_capabilities(&binary, &capabilities)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -339,31 +379,4 @@ mod tests {
         assert!(text.contains("no binary was found"), "{text}");
         assert!(!text.contains("controller"), "{text}");
     }
-}
-
-/// Authenticate on the command-line terminal before launching listeners.
-fn authorize_listeners(ctx: &Ctx) -> Result<()> {
-    let path = ctx.paths().runtime_config();
-    let config = if path.is_file() {
-        cvt_core::model::config::Config::from_yaml(&ctx.paths().read(&path)?)?
-    } else {
-        ctx.service().generate()?.config
-    };
-    ctx.service().validate_environment(&config)?;
-    let capabilities = crate::tun::required_capabilities(&config);
-    if capabilities.is_empty() {
-        return Ok(());
-    }
-    let binary = ctx
-        .service()
-        .core_binary()
-        .ok_or_else(|| anyhow::anyhow!("install or select a Mihomo core before starting it"))?;
-    if !crate::tun::has_capabilities(&binary, &capabilities)? {
-        ctx.out().note(format!(
-            "core listeners require {capabilities}; authenticating to grant capabilities on {}",
-            binary.display()
-        ));
-        crate::tun::authorize_capabilities(&binary, &capabilities)?;
-    }
-    Ok(())
 }

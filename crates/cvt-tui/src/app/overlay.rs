@@ -80,10 +80,9 @@ impl PromptKind {
         match self {
             Self::Search => "filter",
             Self::Rename => "rename profile",
-            Self::Url => "subscription URL",
+            Self::Url | Self::ProfileUrl => "subscription URL",
             Self::Name => "profile name",
             Self::Text => "value",
-            Self::ProfileUrl => "subscription URL",
             Self::Rule => "new rule (TYPE,payload,policy)",
         }
     }

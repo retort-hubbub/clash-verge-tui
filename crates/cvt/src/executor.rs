@@ -20,6 +20,7 @@ use cvt_tui::{Data, Done, Effect, Event, EventSink, Screen};
 
 mod adapters;
 mod application_update;
+mod clipboard;
 mod configuration;
 mod diagnostics;
 mod inventory;
@@ -207,6 +208,9 @@ impl Executor {
             return;
         }
         match effect {
+            Effect::CopyText { text } => self.copy_text(text, sink),
+            Effect::CopyProfile { uid } => self.copy_profile(&uid, sink),
+            Effect::CopyProxy { name } => self.copy_proxy(&name, sink),
             Effect::AuthorizeCore {
                 binary,
                 capabilities,
@@ -348,10 +352,12 @@ impl Executor {
             Effect::RunTest { kind, target, mode } => self.spawn_test(kind, target, mode, sink),
             Effect::TestRouteSpeed { mode } => self.spawn_route_speed(mode, sink),
             Effect::InstallSpeedtestGo => {
-                let home = self.with_service(|service| service.paths().home().to_path_buf());
+                let (home, proxy) = self.with_service(|service| {
+                    (service.paths().home().to_path_buf(), service.proxy_addr())
+                });
                 let sink = sink.clone();
                 tokio::spawn(async move {
-                    match crate::speedtest::install(&home).await {
+                    match crate::speedtest::install(&home, proxy.as_deref()).await {
                         Ok(version) => {
                             let _ = sink.send(Event::Done(Done::SpeedtestInstalled { version }));
                         }

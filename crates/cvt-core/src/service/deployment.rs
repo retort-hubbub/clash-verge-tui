@@ -17,7 +17,16 @@ impl Service {
                 "controller address or secret changes require a restart; use auto or restart",
             ));
         }
-        self.validate_candidate(&outcome)?;
+        let restarting = mode == ReloadMode::Restart
+            || (mode == ReloadMode::Auto && self.controller_changes(&outcome.config));
+        if restarting && self.core_status().is_running() {
+            // The old process still owns listeners, including ports a new
+            // configuration may assign to a different listener class.
+            // Syntax checks precede commit; resource checks follow its exit.
+            self.validate_candidate_syntax(&outcome)?;
+        } else {
+            self.validate_candidate(&outcome)?;
+        }
         pipeline.commit(&outcome, force)?;
         let reload = self.reload(mode).await?;
         // A reload rebuilds every group, so the choice a user made this morning
@@ -70,6 +79,10 @@ impl Service {
     /// Returns local conflicts or Mihomo parser failures before commit.
     pub fn validate_candidate(&self, outcome: &crate::enhance::pipeline::Outcome) -> Result<()> {
         self.validate_environment(&outcome.config)?;
+        self.validate_candidate_syntax(outcome)
+    }
+
+    fn validate_candidate_syntax(&self, outcome: &crate::enhance::pipeline::Outcome) -> Result<()> {
         if let Some(binary) = self.core_binary() {
             use std::io::Write as _;
             let directory = self.paths.runtime_dir();

@@ -5,15 +5,10 @@
 //! thing that is broken. So a refresh walks a short list of routes and stops at
 //! the first one that produces a document:
 //!
-//! 1. **direct** — no proxy at all. The client for this tier calls
-//!    `no_proxy()`, so an environment that happens to export `HTTPS_PROXY`
-//!    cannot make tier 1 quietly *be* tier 3 and hide the fact that the direct
-//!    route is dead.
-//! 2. **through the running core's mixed port** — when the direct route is
-//!    blocked, a node inside the current subscription usually is not.
-//! 3. **the system proxy** — `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`, which is
-//!    the corporate laptop and the VPN case. This is reqwest's default
-//!    behaviour, so the tier deliberately configures *no* proxy of its own.
+//! 1. **through the running core's proxy port**, when available.
+//! 2. **the environment proxy**, using HTTP_PROXY/HTTPS_PROXY/ALL_PROXY.
+//! 3. **direct**, explicitly bypassing environment proxies as a last resort.
+//! Environment routing may itself be direct if no applicable proxy is set.
 //!
 //! Every tier that was tried is recorded in [`UpdateOutcome::attempts`], the
 //! failures included. A fallback that reports only its final verdict leaves the
@@ -264,8 +259,7 @@ impl UpdateOutcome {
 /// The three cases are genuinely different clients: reqwest reads the
 /// environment's proxy variables unless a proxy was configured *and* unless
 /// `no_proxy()` was called, so "no explicit proxy" and "no proxy" are not the
-/// same thing. Keeping them apart is what makes tier 3 a fallback rather than
-/// tier 1 in disguise.
+/// same thing. Keeping them apart makes the final direct fallback explicit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route<'a> {
     /// Bypass every proxy.
@@ -293,7 +287,7 @@ pub struct SubscriptionFetcher {
     /// Client for the direct tier, built once because the proxy list of a
     /// `reqwest::Client` is fixed at construction.
     direct: reqwest::Client,
-    /// Mixed port of a running core, already normalised; `None` skips tier 2.
+    /// Mixed port of a running core, already normalised; `None` skips the first tier.
     proxy_addr: Option<String>,
     /// Timeout for one request, used when the other tiers build their clients.
     timeout: Duration,
@@ -348,11 +342,12 @@ impl SubscriptionFetcher {
     /// fetched, and so the chain is testable without a network.
     #[must_use]
     pub fn fetch_order(&self) -> Vec<FetchSource> {
-        let mut order = vec![FetchSource::Direct];
+        let mut order = Vec::new();
         if let Some(addr) = &self.proxy_addr {
             order.push(FetchSource::ViaClashProxy(addr.clone()));
         }
         order.push(FetchSource::ViaSystemProxy);
+        order.push(FetchSource::Direct);
         order
     }
 

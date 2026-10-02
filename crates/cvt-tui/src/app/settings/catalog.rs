@@ -129,6 +129,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
                 .core
                 .secret
                 .as_ref()
+                .filter(|secret| !secret.is_empty())
                 .map_or_else(|| "none".to_owned(), |_| "set".to_owned()),
             editable: settings.core.secret.clone().unwrap_or_default(),
             help: "the bearer token the core requires; stored in plain text, like the \

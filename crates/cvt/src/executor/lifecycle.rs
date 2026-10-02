@@ -127,16 +127,24 @@ impl Executor {
         let service = Arc::clone(&self.service);
         let sink = sink.clone();
         tokio::spawn(async move {
-            let (paths, was_running) = {
+            let (paths, was_running, proxy) = {
                 let guard = service
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                (guard.paths().clone(), guard.core_status().is_running())
+                (
+                    guard.paths().clone(),
+                    guard.core_status().is_running(),
+                    guard.proxy_addr(),
+                )
             };
             let _ = sink.send(Event::Data(Data::Notice(
                 "downloading latest mihomo core...".to_owned(),
             )));
-            let outcome = cvt_core::mihomo::download::install_latest_core(&paths).await;
+            let outcome = cvt_core::mihomo::download::install_latest_core_with_proxy(
+                &paths,
+                proxy.as_deref(),
+            )
+            .await;
             match outcome {
                 Ok(version) => {
                     let status = {

@@ -352,6 +352,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::Cancel => "取消",
         Action::ShowLastMessage => "消息详情",
         Action::InspectSelection => "完整详情",
+        Action::CopySelection => "复制",
         Action::Up => "上移",
         Action::Down => label(language, TextKey::CursorDown),
         Action::PageUp => "上翻页",
@@ -484,6 +485,19 @@ pub fn text(language: Language, english: &str) -> &str {
         return english;
     }
     match english {
+        "copy" => "复制",
+        "copy the selected value or the complete open details" => "复制选中值或完整详情",
+        "settings saved; controller secret is empty: API access is unauthenticated" => {
+            "设置已保存；控制器密钥为空，API 无需认证即可访问"
+        }
+        "controller secret is empty: API access is unauthenticated" => {
+            "控制器密钥为空，API 无需认证即可访问"
+        }
+        "nothing to copy" => "没有可复制的内容",
+        "copied to clipboard" => "已复制到剪贴板",
+        "clipboard request sent; your terminal must allow OSC 52" => {
+            "已发送复制请求；终端需要允许 OSC 52"
+        }
         // Tabs and help groups.
         "Home" | "home" => "首页",
         "Profiles" | "profiles" => "配置",

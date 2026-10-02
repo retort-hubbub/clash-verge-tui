@@ -3,9 +3,69 @@
 use crate::action::Screen;
 use crate::row::LogRow;
 
-use super::{App, Overlay, StatusKind};
+use super::{App, Effect, Overlay, StatusKind};
 
 impl App {
+    pub(super) fn copy_selection(&mut self) -> Vec<Effect> {
+        let text = match &self.overlay {
+            Some(Overlay::Message { text, .. }) => Some(text.clone()),
+            Some(Overlay::Preview { lines, .. }) => Some(lines.join("\n")),
+            Some(Overlay::Prompt { value, .. }) => Some(value.clone()),
+            Some(Overlay::Confirm { question, .. }) => Some(self.tr(question).to_owned()),
+            Some(Overlay::Picker {
+                items, selected, ..
+            }) => items.get(*selected).cloned(),
+            None => match self.screen {
+                Screen::Profiles => {
+                    if let Some(row) = self.profiles.selected_item() {
+                        if let Some(url) = &row.url {
+                            Some(url.clone())
+                        } else {
+                            return vec![Effect::CopyProfile {
+                                uid: row.uid.clone(),
+                            }];
+                        }
+                    } else {
+                        None
+                    }
+                }
+                Screen::Proxies => {
+                    if let Some(row) = self.nodes.selected_item() {
+                        return vec![Effect::CopyProxy {
+                            name: row.name.clone(),
+                        }];
+                    }
+                    self.inspect_selection();
+                    return self.copy_open_details();
+                }
+                Screen::Settings => self
+                    .settings_rows
+                    .selected_item()
+                    .map(|row| row.editable.clone()),
+                _ => {
+                    self.inspect_selection();
+                    return self.copy_open_details();
+                }
+            },
+        };
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            vec![Effect::CopyText { text }]
+        } else {
+            self.set_status(StatusKind::Info, self.tr("nothing to copy").to_owned());
+            Vec::new()
+        }
+    }
+
+    fn copy_open_details(&mut self) -> Vec<Effect> {
+        match self.overlay {
+            Some(Overlay::Preview { .. } | Overlay::Message { .. }) => self.copy_selection(),
+            _ => {
+                self.set_status(StatusKind::Info, self.tr("nothing to copy").to_owned());
+                Vec::new()
+            }
+        }
+    }
+
     pub(super) fn show_help_entry(&mut self) {
         if let Some(entry) = crate::ui::help::entries(self).get(self.help_selected) {
             self.overlay = Some(Overlay::Preview {

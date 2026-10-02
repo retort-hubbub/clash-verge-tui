@@ -770,6 +770,11 @@ fn check_exposure(endpoint: Option<&Endpoint>) -> Check {
             "not run: no controller is configured",
         );
     };
+    if endpoint.is_loopback() && !endpoint.is_authenticated() {
+        return Check::warn(ID, TITLE, Kind::General,
+            "the loopback controller has no secret; local clients can control the core without authentication")
+            .with_hint("set core.secret to a random token in application settings");
+    }
     if endpoint.is_loopback() {
         return Check::pass(
             ID,

@@ -22,7 +22,14 @@ impl Service {
             ),
         })?;
         let config = self.paths.runtime_config();
-        if !config.is_file() {
+        let needs_refresh = if config.is_file() {
+            !self
+                .pipeline()
+                .matches_control_plane(&Config::from_yaml(&self.paths.read(&config)?)?)
+        } else {
+            true
+        };
+        if needs_refresh {
             // Selecting a subscription makes it current but does not write a
             // runtime document. Starting from a fresh home should complete
             // that first apply, using the same validation as an explicit apply.
@@ -104,7 +111,15 @@ impl Service {
         let config = self.paths.runtime_config();
         if config.is_file() {
             let parsed = Config::from_yaml(&self.paths.read(&config)?)?;
-            self.validate_environment(&parsed)?;
+            // Syntax is safe to check while the old core owns its sockets.
+            // Resource availability is checked by start_core after stop has
+            // confirmed exit; probing here can reject our own listeners.
+            let report = crate::validate::check(&parsed);
+            if !report.is_ok() {
+                return Err(Error::Validation {
+                    problems: report.errors_iter().map(|d| d.message.clone()).collect(),
+                });
+            }
             let binary = self.core_binary().ok_or_else(|| Error::CoreUnavailable {
                 reason: "no Mihomo binary found".to_owned(),
             })?;

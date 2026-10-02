@@ -28,6 +28,7 @@ Dependencies point toward `cvt-core`. Shared application operations belong in
 | `settings` | Yes | Preferences, validation and persistence |
 | `profile::store` | Yes | Profile index, chain and documents on disk |
 | `profile::source` | Yes | Subscription fetching, decoding and update scheduling |
+| `download` | Yes | Bounded release metadata and artifact fetching through core, environment and direct routes |
 | `enhance::pipeline` | Yes | Read the profile chain, generate, commit and snapshot configuration |
 | `mihomo` | Yes | Controller client, event streams and process supervisor |
 | `service` | Yes | Public application facade, paths, settings and adapter construction |
@@ -67,8 +68,8 @@ allows preview and validation before `commit`. Key contracts are:
 - Overlay rule insertion keeps an existing terminal rule last by default; a
   new terminal rule replaces it. The validator warns about unreachable rules
   in imported configurations rather than rejecting them solely for that reason.
-- Application controller settings take precedence over the base profile;
-  enhancements cannot change control-plane keys. See
+- Application controller settings define the management endpoint and token;
+  base subscriptions and enhancements cannot supply other control-plane keys. See
   [ADR 0008](adr/0008-control-plane-ownership.md).
 - `Pipeline::SNAPSHOT_LIMIT` bounds generated snapshots used for rollback.
   These snapshots are separate from backups of user-maintained state.
@@ -87,6 +88,9 @@ core, validates configuration with `mihomo -t`, and records process identity so
 a recycled pid is not mistaken for the managed core. On Linux, start ticks,
 work-directory and configuration arguments must match; legacy records without
 start ticks are not adopted. Signals are limited to matching processes.
+Shutdown waits for the recorded process to exit (including the Linux zombie
+state) before clearing its PID record. A shutdown timeout retains that record
+and prevents a replacement launch.
 The PID record also pins the process's controller independently of a newly
 selected or committed document. Controller address changes require restart;
 otherwise reload uses the running endpoint and then checks the new document.
@@ -97,16 +101,20 @@ is implemented in that adapter.
 
 ### Subscription updates
 
-`profile::source` attempts direct fetching, then the deployed core's proxy,
-then the system proxy. Bodies are size-limited; plain-text and base64 payloads
+`profile::source` attempts the owned running core's proxy, then environment
+proxies, then direct fetching. An environment tier can itself connect directly
+when no applicable proxy is configured. Bodies are size-limited; plain-text and base64 payloads
 are supported. Response metadata supplies subscription usage information, and
 `update_all_due` respects each profile's update interval.
 
 ### Applying configuration
 
 `Service` exposes operations shared by the CLI and TUI. `apply` generates a
-candidate, checks local controller/DNS listeners and competing TUN processes,
-and runs the installed core's parser against a temporary file before commit.
+candidate and runs the installed core's parser against a temporary file before
+commit. Local controller/DNS listeners and competing TUN processes are checked
+before commit unless a running core is scheduled for restart. In that case,
+listener checks occur after the old process has stopped and before the new
+process starts, so the application does not reject its own occupied ports.
 Parser execution is bounded to 30 seconds. Automatic mode tries hot reload
 before restart. Failed reloads in all modes use the same snapshot recovery
 when rollback is enabled, including API readiness and startup log checks.

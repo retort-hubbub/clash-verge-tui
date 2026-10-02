@@ -269,7 +269,9 @@ enhancement that tries to change or introduce one has it removed, with a
 warning naming the key: the endpoint is read out of the generated document, so
 a document that rewrites it does not break this program's connection, it
 *redirects* it. Set `core.external_controller` and `core.secret` in the
-settings, or declare them in the base profile.
+application settings. The application supplies a loopback endpoint and persisted
+random token by default; base subscriptions cannot supply alternate management
+listeners, CORS settings, or controller web UI.
 
 There is no JavaScript. A `script` profile is reported as skipped rather than
 silently ignored. See the [feature limits](../README.md#feature-coverage-and-limits)

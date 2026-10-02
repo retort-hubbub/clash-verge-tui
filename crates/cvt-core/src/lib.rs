@@ -20,6 +20,7 @@
 
 #![warn(missing_docs)]
 
+pub mod download;
 pub mod enhance;
 pub mod error;
 pub mod mihomo;

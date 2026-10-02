@@ -44,13 +44,8 @@ pub struct CoreSettings {
     pub binary: Option<PathBuf>,
     /// Where the controller listens, forced over every profile.
     ///
-    /// The control plane has to be settable from somewhere that a subscription
-    /// update cannot overwrite, and a profile is exactly the wrong place for
-    /// it: the base document is replaced wholesale whenever the subscription is
-    /// refreshed. When this is set it wins over every profile. A base profile
-    /// may supply an address when this setting is absent, while enhancement
-    /// profiles cannot change it — see
-    /// [`crate::enhance::pipeline::CONTROL_PLANE`].
+    /// Subscription documents never supply management endpoints. Missing values
+    /// are migrated to a loopback controller when settings are loaded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_controller: Option<String>,
     /// The controller's secret, forced over every profile.
@@ -116,7 +111,7 @@ impl Default for CoreSettings {
     fn default() -> Self {
         Self {
             binary: None,
-            external_controller: None,
+            external_controller: Some("127.0.0.1:9090".to_owned()),
             secret: None,
             auto_start: false,
             rollback_on_failure: true,
@@ -411,22 +406,52 @@ impl Settings {
     /// [`Error::Parse`] for malformed YAML, [`Error::Io`] when it is
     /// unreadable.
     pub fn load(paths: &AppPaths) -> Result<Self> {
+        #[cfg(unix)]
+        let _lock = paths.lock_settings()?;
         let path = paths.settings_file();
-        if !path.is_file() {
-            return Ok(Self::default());
+        let mut settings: Self = if path.is_file() {
+            let text = paths.read(&path)?;
+            if text.trim().is_empty() {
+                Self::default()
+            } else {
+                serde_norway::from_str(&text).map_err(|e| Error::parse("settings", &path, e))?
+            }
+        } else {
+            Self::default()
+        };
+        let mut migrated = !path.is_file();
+        if settings
+            .core
+            .external_controller
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+        {
+            settings.core.external_controller = Some("127.0.0.1:9090".to_owned());
+            migrated = true;
         }
-        let text = paths.read(&path)?;
-        if text.trim().is_empty() {
-            return Ok(Self::default());
+        // None means uninitialised; Some("") is an explicit unauthenticated
+        // choice and must survive restart instead of being silently changed.
+        if settings.core.secret.is_none() {
+            let mut random = [0_u8; 32];
+            getrandom::fill(&mut random).map_err(|error| {
+                Error::invalid(
+                    "controller secret",
+                    format!("OS randomness unavailable: {error}"),
+                )
+            })?;
+            settings.core.secret = Some(random.iter().map(|byte| format!("{byte:02x}")).collect());
+            migrated = true;
         }
-        let settings: Self =
-            serde_norway::from_str(&text).map_err(|e| Error::parse("settings", &path, e))?;
         // The same checks `save` runs, run on the way in. Otherwise the cap is
         // enforced only against values this program wrote, and the documented
         // way to change one — editing `cvt.yaml` — bypasses it: a `keep` of a
         // hundred million is accepted by the loader and then costs minutes of
         // syscalls on every start, on both logs.
         settings.validate()?;
+        if migrated {
+            paths.ensure_dirs()?;
+            settings.save(paths)?;
+        }
         Ok(settings)
     }
 

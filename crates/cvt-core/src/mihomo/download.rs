@@ -4,8 +4,9 @@
 //! extracts the executable, and places it into the managed core directory
 //! under the application home (`<home>/core/mihomo`).
 
-use std::io::Read;
-use std::path::Path;
+use sha2::{Digest as _, Sha256};
+use std::io::{Read, Write};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -14,13 +15,15 @@ use crate::mihomo::supervisor::Supervisor;
 use crate::paths::AppPaths;
 
 const GITHUB_REPO: &str = "MetaCubeX/mihomo";
-const USER_AGENT: &str = "clash-verge-tui";
 
 /// Asset descriptor from GitHub's releases API.
 #[derive(Debug, Deserialize)]
 struct GithubAsset {
     name: String,
     browser_download_url: String,
+    #[serde(default)]
+    digest: Option<String>,
+    size: u64,
 }
 
 /// Release descriptor from GitHub's releases API.
@@ -96,136 +99,189 @@ fn select_asset<'a>(assets: &'a [GithubAsset], os: &str, arch: &str) -> Option<&
 
 /// Download and install the latest mihomo release from GitHub into `<home>/core`.
 ///
-/// Returns the verified version string of the newly installed binary.
+/// Returns the version after archive integrity and execution compatibility checks.
+/// GitHub metadata is the digest trust source; this is not signature verification.
 ///
 /// # Errors
 /// [`Error::Unsupported`] on unsupported platforms, [`Error::Http`] or
 /// [`Error::Io`] on download or filesystem failures, and [`Error::ProcessFailed`]
 /// if the downloaded binary fails execution verification.
 pub async fn install_latest_core(paths: &AppPaths) -> Result<String> {
-    let os = current_platform_os().ok_or_else(|| {
-        Error::Unsupported(format!(
-            "automatic core download is not supported on {}",
-            std::env::consts::OS
-        ))
-    })?;
-    let arch = current_platform_arch().ok_or_else(|| {
-        Error::Unsupported(format!(
-            "automatic core download is not supported on {}",
-            std::env::consts::ARCH
-        ))
-    })?;
+    let proxy = crate::Service::open(paths.clone())?.proxy_addr();
+    install_latest_core_with_proxy(paths, proxy.as_deref()).await
+}
 
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| Error::CoreUnavailable {
-            reason: format!("failed to build HTTP client: {e}"),
-        })?;
+/// Install using the application-owned running core as the first download route.
+///
+/// # Errors
+/// As [`install_latest_core`].
+pub async fn install_latest_core_with_proxy(
+    paths: &AppPaths,
+    proxy: Option<&str>,
+) -> Result<String> {
+    tokio::time::timeout(
+        Duration::from_secs(300),
+        install(
+            paths,
+            proxy,
+            std::time::Instant::now() + Duration::from_secs(300),
+        ),
+    )
+    .await
+    .map_err(|_| unavailable("core installation exceeded its five-minute deadline"))?
+}
 
-    let api_url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    let resp = client
-        .get(&api_url)
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await
-        .map_err(|e| Error::CoreUnavailable {
-            reason: format!("failed to query GitHub releases: {e}"),
-        })?;
+const MAX_ARCHIVE: usize = 64 * 1024 * 1024;
+const MAX_BINARY: u64 = 128 * 1024 * 1024;
+const MAX_RELEASE: usize = 4 * 1024 * 1024;
 
-    let (download_url, tag_name) = if resp.status().is_success() {
-        let release: GithubRelease = resp.json().await.map_err(|e| Error::CoreUnavailable {
-            reason: format!("failed to parse GitHub release response: {e}"),
-        })?;
-        let asset = select_asset(&release.assets, os, arch).ok_or_else(|| {
-            Error::Unsupported(format!(
-                "no compatible asset found for {os}-{arch} in release {}",
-                release.tag_name
-            ))
-        })?;
-        (asset.browser_download_url.clone(), release.tag_name)
-    } else {
-        // Fallback if GitHub API rate-limited: direct tag download URL
-        return Err(Error::CoreUnavailable {
-            reason: format!(
-                "GitHub API returned HTTP {}: unable to locate latest release",
-                resp.status()
-            ),
-        });
-    };
-
-    // Download the release asset
-    let download_resp =
-        client
-            .get(&download_url)
-            .send()
-            .await
-            .map_err(|e| Error::CoreUnavailable {
-                reason: format!("failed to download core asset from {download_url}: {e}"),
-            })?;
-
-    if !download_resp.status().is_success() {
-        return Err(Error::CoreUnavailable {
-            reason: format!(
-                "download failed with HTTP status {}",
-                download_resp.status()
-            ),
-        });
+fn unavailable(reason: impl Into<String>) -> Error {
+    Error::CoreUnavailable {
+        reason: reason.into(),
     }
+}
 
-    let bytes = download_resp
-        .bytes()
-        .await
-        .map_err(|e| Error::CoreUnavailable {
-            reason: format!("failed to read download payload: {e}"),
-        })?;
-
-    // Decompress payload
-    let decompressed = if Path::new(&download_url)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"))
-    {
-        let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
-        let mut buffer = Vec::new();
-        decoder
-            .read_to_end(&mut buffer)
-            .map_err(|e| Error::io(Path::new("mihomo.gz"), e))?;
-        buffer
-    } else {
+async fn install(
+    paths: &AppPaths,
+    proxy: Option<&str>,
+    deadline: std::time::Instant,
+) -> Result<String> {
+    let os = current_platform_os()
+        .ok_or_else(|| Error::Unsupported("unsupported core OS".to_owned()))?;
+    let arch = current_platform_arch()
+        .ok_or_else(|| Error::Unsupported("unsupported core architecture".to_owned()))?;
+    // The extraction implementation is gzip-only; refuse before downloading a zip.
+    if os == "windows" {
         return Err(Error::Unsupported(
-            "zip extraction not supported on this platform".to_owned(),
+            "automatic core installation on Windows is not supported".to_owned(),
         ));
-    };
-
+    }
     paths.ensure_dirs()?;
-    let core_dir = paths.core_dir();
-    let dest = core_dir.join(core_executable_name());
-    let temp_dest = core_dir.join(format!("{}.download", core_executable_name()));
+    let fetcher = crate::download::ArtifactFetcher::new(proxy)?;
+    let api = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
+    let release: GithubRelease = serde_json::from_slice(&fetcher.get(&api, MAX_RELEASE).await?)
+        .map_err(|e| unavailable(format!("invalid release metadata: {e}")))?;
+    let asset = select_asset(&release.assets, os, arch)
+        .ok_or_else(|| Error::Unsupported(format!("no core asset for {os}-{arch}")))?;
+    let digest = asset
+        .digest
+        .as_deref()
+        .and_then(|value| value.strip_prefix("sha256:"))
+        .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            unavailable("release asset has no valid SHA-256 digest; installation refused")
+        })?;
+    if asset.size == 0 || asset.size > MAX_ARCHIVE as u64 {
+        return Err(unavailable(
+            "core archive size is outside the allowed range",
+        ));
+    }
+    let url =
+        reqwest::Url::parse(&asset.browser_download_url).map_err(|e| unavailable(e.to_string()))?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url
+            .path()
+            .starts_with(&format!("/{GITHUB_REPO}/releases/download/"))
+    {
+        return Err(unavailable(
+            "core download URL is outside the official release repository",
+        ));
+    }
+    let bytes = fetcher.get(url.as_str(), MAX_ARCHIVE).await?;
+    if bytes.len() as u64 != asset.size
+        || format!("{:x}", Sha256::digest(&bytes)) != digest.to_ascii_lowercase()
+    {
+        return Err(unavailable(
+            "core archive size or SHA-256 digest does not match GitHub release metadata",
+        ));
+    }
+    // Integrity has been checked before decompression and before any execution.
+    // This authenticates bytes against GitHub metadata, not an independent signature.
+    let paths = paths.clone();
+    let tag = release.tag_name;
+    tokio::task::spawn_blocking(move || install_verified(&paths, &bytes, &tag, deadline))
+        .await
+        .map_err(|e| unavailable(format!("core installer failed: {e}")))?
+}
 
-    std::fs::write(&temp_dest, &decompressed).map_err(|e| Error::io(&temp_dest, e))?;
-
+fn install_verified(
+    paths: &AppPaths,
+    archive: &[u8],
+    tag: &str,
+    deadline: std::time::Instant,
+) -> Result<String> {
+    let directory = paths.core_dir();
+    let dest = directory.join(core_executable_name());
+    let mut candidate =
+        tempfile::NamedTempFile::new_in(&directory).map_err(|e| Error::io(&directory, e))?;
+    let mut decoder = flate2::read::GzDecoder::new(archive).take(MAX_BINARY + 1);
+    let length = std::io::copy(&mut decoder, candidate.as_file_mut())
+        .map_err(|e| Error::io(candidate.path(), e))?;
+    if length == 0 || length > MAX_BINARY {
+        return Err(unavailable(
+            "decompressed core exceeds the size limit or is empty",
+        ));
+    }
+    candidate
+        .flush()
+        .map_err(|e| Error::io(candidate.path(), e))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&temp_dest, std::fs::Permissions::from_mode(0o755));
+        use std::os::unix::fs::PermissionsExt as _;
+        candidate
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| Error::io(candidate.path(), e))?;
     }
-
-    std::fs::rename(&temp_dest, &dest).map_err(|e| Error::io(&dest, e))?;
-
-    // Verify newly installed binary
-    let supervisor = Supervisor::new(paths.clone());
-    match supervisor.version(&dest) {
-        Ok(ver) => {
-            let ver_trimmed = ver.trim().to_owned();
-            Ok(if ver_trimmed.is_empty() {
-                tag_name
-            } else {
-                ver_trimmed
-            })
-        }
-        Err(err) => {
-            let _ = std::fs::remove_file(&dest);
-            Err(err)
-        }
+    candidate
+        .as_file()
+        .sync_all()
+        .map_err(|e| Error::io(candidate.path(), e))?;
+    // Close the writable descriptor before exec (ETXTBSY on Linux otherwise).
+    let candidate = candidate.into_temp_path();
+    if std::time::Instant::now() >= deadline {
+        return Err(unavailable("core installation deadline exceeded"));
     }
+    let version = Supervisor::new(paths.clone()).version(&candidate)?;
+    if !version.split_whitespace().any(|token| token == tag) {
+        return Err(unavailable(format!(
+            "downloaded core does not report the expected release {tag}"
+        )));
+    }
+    // All download, integrity, decompression and execution failures leave the old
+    // executable untouched. Keep an independent backup for later rollback.
+    if let Ok(meta) = std::fs::symlink_metadata(&dest) {
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return Err(unavailable(
+                "managed core destination is not a regular file",
+            ));
+        }
+        let backup = directory.join(format!("{}.previous", core_executable_name()));
+        let mut saved =
+            tempfile::NamedTempFile::new_in(&directory).map_err(|e| Error::io(&directory, e))?;
+        std::io::copy(
+            &mut std::fs::File::open(&dest).map_err(|e| Error::io(&dest, e))?,
+            saved.as_file_mut(),
+        )
+        .map_err(|e| Error::io(&backup, e))?;
+        saved
+            .as_file()
+            .set_permissions(meta.permissions())
+            .map_err(|e| Error::io(&backup, e))?;
+        saved
+            .as_file()
+            .sync_all()
+            .map_err(|e| Error::io(&backup, e))?;
+        saved
+            .persist(&backup)
+            .map_err(|e| Error::io(&backup, e.error))?;
+    }
+    if std::time::Instant::now() >= deadline {
+        return Err(unavailable("core installation deadline exceeded"));
+    }
+    candidate
+        .persist(&dest)
+        .map_err(|e| Error::io(&dest, e.error))?;
+    Ok(version)
 }

@@ -27,6 +27,7 @@ reqwest.workspace = true
 flate2.workspace = true
 tar.workspace = true
 sha2.workspace = true
+base64 = "0.22.1"
 semver = "1.0.28"
 
 [dev-dependencies]

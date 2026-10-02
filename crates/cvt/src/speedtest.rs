@@ -4,7 +4,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use futures_util::StreamExt as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
@@ -92,22 +91,25 @@ fn asset_name(tag: &str) -> Result<String, String> {
 }
 
 /// Download a release whose GitHub asset digest matches, then install its binary.
-pub async fn install(home: &Path) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("clash-verge-tui/0.5")
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let release: Release = client
-        .get("https://api.github.com/repos/showwin/speedtest-go/releases/latest")
-        .send()
+pub async fn install(home: &Path, proxy: Option<&str>) -> Result<String, String> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        install_inner(home, proxy),
+    )
+    .await
+    .map_err(|_| "speedtest-go installation exceeded its five-minute deadline".to_owned())?
+}
+
+async fn install_inner(home: &Path, proxy: Option<&str>) -> Result<String, String> {
+    let fetcher = cvt_core::download::ArtifactFetcher::new(proxy).map_err(|e| e.to_string())?;
+    let metadata = fetcher
+        .get(
+            "https://api.github.com/repos/showwin/speedtest-go/releases/latest",
+            4 * 1024 * 1024,
+        )
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
         .map_err(|e| e.to_string())?;
+    let release: Release = serde_json::from_slice(&metadata).map_err(|e| e.to_string())?;
     let name = asset_name(&release.tag_name)?;
     let asset = release
         .assets
@@ -120,21 +122,10 @@ pub async fn install(home: &Path) -> Result<String, String> {
         .and_then(|v| v.strip_prefix("sha256:"))
         .filter(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
         .ok_or_else(|| "release asset has no valid SHA-256 digest".to_owned())?;
-    let response = client
-        .get(&asset.browser_download_url)
-        .send()
+    let archive = fetcher
+        .get(&asset.browser_download_url, MAX_ARCHIVE)
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
         .map_err(|e| e.to_string())?;
-    let mut archive = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        archive.extend_from_slice(&chunk.map_err(|e| e.to_string())?);
-        if archive.len() > MAX_ARCHIVE {
-            return Err("speedtest-go archive is unexpectedly large".to_owned());
-        }
-    }
     let actual = format!("{:x}", Sha256::digest(&archive));
     if !actual.eq_ignore_ascii_case(digest) {
         return Err("speedtest-go SHA-256 mismatch".to_owned());

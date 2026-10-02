@@ -573,6 +573,7 @@ name = "cvt"
 version = "0.8.2"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "cvt-core",
@@ -603,6 +604,7 @@ dependencies = [
  "dirs",
  "flate2",
  "futures-util",
+ "getrandom 0.3.4",
  "proptest",
  "regex",
  "reqwest",
@@ -610,6 +612,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

@@ -156,6 +156,7 @@ impl Keymap {
             Binding::new(K::Char('r'), none, A::Refresh, C::Global, "r"),
             Binding::new(K::Char('m'), none, A::ShowLastMessage, C::Global, "m"),
             Binding::new(K::F(1), none, A::InspectSelection, C::Global, "F1"),
+            Binding::new(K::Char('y'), ctrl, A::CopySelection, C::Global, "C-y"),
             // -- list movement --------------------------------------------
             Binding::new(K::Up, none, A::Up, C::List, "k/↑"),
             Binding::new(K::Char('k'), none, A::Up, C::List, "k/↑"),
@@ -513,6 +514,7 @@ mod tests {
             Action::PreviousScreen,
             Action::ShowLastMessage,
             Action::InspectSelection,
+            Action::CopySelection,
             Action::StartCore,
             Action::StopCore,
             Action::RestartCore,

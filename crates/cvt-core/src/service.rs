@@ -217,32 +217,30 @@ impl Service {
 
     /// Where the controller is, as far as can be determined.
     ///
-    /// Reads, in order: the generated runtime configuration, then the profile
-    /// that is currently selected. A generated file is authoritative because
-    /// it is what the running core was actually launched with.
+    /// A running managed process uses its recorded endpoint; otherwise use
+    /// application settings. Never infer management credentials from a subscription.
     ///
     /// # Errors
     /// [`Error::Io`] or [`Error::Parse`] when the runtime configuration exists
     /// but cannot be read.
     pub fn endpoint(&self) -> Result<Option<Endpoint>> {
-        let runtime = self.paths.runtime_config();
-        if runtime.is_file() {
-            let text = self.paths.read(&runtime)?;
-            let config = Config::from_yaml(&text)?;
-            if let Some(endpoint) = Endpoint::from_config(&config) {
-                return Ok(Some(endpoint));
-            }
+        if let Some(endpoint) = self.supervisor().controller_endpoint() {
+            return Ok(Some(endpoint));
         }
-        let store = self.store()?;
-        let Some(current) = store.current() else {
+        if !self.paths.runtime_config().is_file() && self.store()?.current().is_none() {
             return Ok(None);
-        };
-        let Ok(text) = store.read_document(current) else {
-            return Ok(None);
-        };
-        Ok(Config::from_yaml(&text)
-            .ok()
-            .and_then(|c| Endpoint::from_config(&c)))
+        }
+        let mut config = Config::from_yaml("{}")?;
+        config.set(
+            "external-controller",
+            self.settings
+                .core
+                .external_controller
+                .as_deref()
+                .unwrap_or("127.0.0.1:9090"),
+        );
+        config.set("secret", self.settings.core.secret.as_deref().unwrap_or(""));
+        Ok(Endpoint::from_config(&config))
     }
 
     /// A client for the controller.
@@ -267,6 +265,9 @@ impl Service {
     /// cannot be passed to the HTTP proxy client.
     #[must_use]
     pub fn proxy_addr(&self) -> Option<String> {
+        if !self.core_status().is_running() {
+            return None;
+        }
         let text = self.paths.read(&self.paths.runtime_config()).ok()?;
         let config = Config::from_yaml(&text).ok()?;
         config

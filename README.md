@@ -55,11 +55,12 @@ that is inserted *before* the terminal `MATCH` rather than after it. Every
 generated document is validated before it is written, and the previous one is
 snapshotted, so a configuration that the core refuses can always be undone.
 
-**Subscriptions.** Three-tier fetching: direct, then through a running core's
-mixed or HTTP proxy port when configured, then through the system proxy — so an
+**Subscriptions.** Three-tier fetching: through a running core's mixed or HTTP
+proxy port, then environment proxies, and finally direct — so an
 update works on a machine whose only route to the internet is the proxy it is
 updating. `subscription-userinfo` is parsed so the interface can show what is
-left.
+left. The core proxy still follows its routing rules, and environment routing
+can be direct when no applicable proxy is configured.
 
 **The running core.** Select nodes, pin a selection, run latency and
 DNS tests, list and close connections, watch traffic and memory, follow the
@@ -292,3 +293,30 @@ version, and atomically replaces the original executable. A sibling
 TUI to use the new version; the current session and Mihomo remain running.
 The executable directory must be writable. For package-managed or system-owned
 installations, use the package manager or a user-writable installation instead.
+
+### Private management and copying
+
+The application persists a loopback controller (`127.0.0.1:9090`) and a random
+management token on first load, including migration of older unset settings.
+Set `core.external_controller` to another local port if it is occupied.
+Subscriptions cannot supply management listeners, CORS, or controller web UI.
+An explicitly empty `core.secret` is allowed, with an unauthenticated API warning.
+Unix application directories are private (0700); state files are written as 0600
+and existing state permissions are tightened on startup. The executable sets
+`umask 077`, inherited by the core and editor. Use a dedicated app home.
+
+Mihomo and speedtest-go downloads prefer the owned running core's proxy, then
+environment proxies, then direct access, with bounded requests and payloads.
+Managed Mihomo downloads require the GitHub asset SHA-256 digest before execution.
+Requests and payloads are bounded; the candidate must pass a successful, bounded
+version check before atomic replacement. The old executable is retained as
+`core/mihomo.previous`. GitHub metadata is the trust source; no independent
+publisher signature is claimed.
+
+Use **Ctrl+Y** to copy the selected setting value (including a controller token),
+subscription URL, local profile document, or proxy/group YAML. In a detail,
+message or configuration preview popup it copies the complete text; in a prompt
+it copies the input. Desktop copies use `wl-copy`, `xclip`, `xsel`, or `pbcopy`.
+SSH/headless sessions use OSC 52, which requires terminal/tmux clipboard support;
+the UI reports a request sent, rather than claiming the terminal accepted it.
+Copies happen only on request and are not logged; clipboard history may retain secrets.

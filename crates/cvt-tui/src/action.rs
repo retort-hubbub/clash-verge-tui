@@ -113,6 +113,8 @@ pub enum Action {
     ShowLastMessage,
     /// View every field of the highlighted row in full.
     InspectSelection,
+    /// Copy the highlighted value or complete open detail view.
+    CopySelection,
 
     // -- list navigation --------------------------------------------------
     /// Move the cursor up one row.
@@ -269,6 +271,7 @@ impl Action {
             Self::Cancel => "cancel",
             Self::ShowLastMessage => "message",
             Self::InspectSelection => "details",
+            Self::CopySelection => "copy",
             Self::Up => "up",
             Self::Down => "down",
             Self::PageUp => "page up",
@@ -352,6 +355,7 @@ impl Action {
             Self::Cancel => "close a prompt, or clear the search",
             Self::ShowLastMessage => "view the full text of the latest status message",
             Self::InspectSelection => "view every field of the highlighted row in full",
+            Self::CopySelection => "copy the selected value or the complete open details",
             Self::Up => "move the cursor up",
             Self::Down => "move the cursor down",
             Self::PageUp => "move up by a screenful",
@@ -444,7 +448,8 @@ impl Action {
             | Self::Refresh
             | Self::Cancel
             | Self::ShowLastMessage
-            | Self::InspectSelection => "General",
+            | Self::InspectSelection
+            | Self::CopySelection => "General",
             Self::Up
             | Self::Down
             | Self::PageUp
@@ -586,6 +591,7 @@ mod tests {
             Action::Cancel,
             Action::ShowLastMessage,
             Action::InspectSelection,
+            Action::CopySelection,
             Action::Up,
             Action::Down,
             Action::PageUp,

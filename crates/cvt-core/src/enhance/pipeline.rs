@@ -91,6 +91,7 @@ pub const CONTROL_PLANE: &[&str] = &[
     "external-controller-pipe",
     "external-controller-routing-mark",
     "external-controller-cors",
+    "external-doh-server",
     // What the core serves at `/ui`, which is the controller's own origin.
     //
     // These were left out deliberately — they decide what a *browser* sees
@@ -155,6 +156,7 @@ pub struct Pipeline {
     tun_enabled: Option<bool>,
     /// The control plane the application itself insists on, if the user set
     /// one. It wins over every profile.
+    application_control_plane: bool,
     control_plane: Vec<(&'static str, Value)>,
     /// Top-level keys the base declared and no enhancement may change, with the
     /// value the base gave them.
@@ -173,9 +175,23 @@ impl Pipeline {
         Self {
             paths,
             tun_enabled: None,
+            application_control_plane: false,
             control_plane: Vec::new(),
             protected: Vec::new(),
         }
+    }
+
+    /// Whether an existing runtime document still uses application-owned controls.
+    pub(crate) fn matches_control_plane(&self, config: &Config) -> bool {
+        !self.application_control_plane
+            || CONTROL_PLANE.iter().all(|key| {
+                let wanted = self
+                    .control_plane
+                    .iter()
+                    .find(|(name, _)| name == key)
+                    .map(|(_, value)| value);
+                config.get(key) == wanted
+            })
     }
 
     /// Force the TUN switch after profile enhancements have been applied.
@@ -200,21 +216,23 @@ impl Pipeline {
     /// Force the controller address and secret over every profile.
     ///
     /// The controller's address and secret belong to the application, not to a
-    /// document a subscription replaces on every update. Everything here is
-    /// written after the whole chain has been applied, so no profile can move
-    /// it. A base profile may supply a value when the application setting is
-    /// absent; enhancement profiles cannot change or introduce these keys.
+    /// document a subscription replaces on every update. Supplying application
+    /// settings removes every other management/UI field supplied by profiles.
     #[must_use]
     pub fn with_control_plane(mut self, controller: Option<&str>, secret: Option<&str>) -> Self {
-        self.control_plane.clear();
-        if let Some(controller) = controller.filter(|value| !value.trim().is_empty()) {
-            self.control_plane
-                .push(("external-controller", Value::String(controller.to_owned())));
-        }
-        if let Some(secret) = secret.filter(|value| !value.trim().is_empty()) {
-            self.control_plane
-                .push(("secret", Value::String(secret.to_owned())));
-        }
+        self.application_control_plane = true;
+        self.control_plane = vec![
+            (
+                "external-controller",
+                Value::String(
+                    controller
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("127.0.0.1:9090")
+                        .to_owned(),
+                ),
+            ),
+            ("secret", Value::String(secret.unwrap_or("").to_owned())),
+        ];
         self
     }
 
@@ -439,7 +457,11 @@ impl Pipeline {
                 .iter()
                 .find(|(name, _)| name == key)
                 .map(|(_, value)| value);
-            let wanted = from_setting.or(from_base);
+            let wanted = if self.application_control_plane {
+                from_setting
+            } else {
+                from_setting.or(from_base)
+            };
 
             match (wanted, config.get(*key)) {
                 (Some(wanted), Some(current)) if current == wanted => {}
@@ -471,7 +493,7 @@ impl Pipeline {
             warnings.push(format!(
                 "an enhancement tried to introduce {}; the control plane is not a \
                  profile's to set — use `core.external-controller` and `core.secret` \
-                 in the settings, or declare it in the base profile",
+                 in the application settings",
                 refused.join(", ")
             ));
         }
@@ -554,6 +576,14 @@ impl Pipeline {
             }
         }
 
+        if self.application_control_plane
+            && config
+                .get("secret")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            warnings.push("the management controller has an empty secret; local clients can control the core without authentication".to_owned());
+        }
         let config = Config::from_value(config)?;
         let report = validate::check(&config);
         let yaml = config.to_yaml()?;

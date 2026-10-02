@@ -346,6 +346,14 @@ impl App {
 
     pub(super) fn on_done(&mut self, done: Done) -> Vec<Effect> {
         match done {
+            Done::ClipboardCopied { terminal } => {
+                let message = if terminal {
+                    "clipboard request sent; your terminal must allow OSC 52"
+                } else {
+                    "copied to clipboard"
+                };
+                self.set_status(StatusKind::Success, self.tr(message).to_owned());
+            }
             Done::AppUpdated { version, backup } => {
                 let label = self.tr("application updated; restart to use the new version");
                 self.set_status(
@@ -570,7 +578,17 @@ impl App {
             Done::CachesFlushed => self.set_status(StatusKind::Success, "caches flushed"),
             Done::SettingsSaved => {
                 self.settings_dirty = false;
-                self.set_status(StatusKind::Success, "settings saved");
+                if self
+                    .settings
+                    .core
+                    .secret
+                    .as_deref()
+                    .is_none_or(str::is_empty)
+                {
+                    self.set_status(StatusKind::Warning, self.tr("settings saved; controller secret is empty: API access is unauthenticated").to_owned());
+                } else {
+                    self.set_status(StatusKind::Success, "settings saved");
+                }
             }
             Done::LogsExported { path } => self.set_status(
                 StatusKind::Success,

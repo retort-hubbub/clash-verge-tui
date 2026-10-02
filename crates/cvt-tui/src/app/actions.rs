@@ -101,6 +101,7 @@ impl App {
                 self.cancel_scope();
                 Vec::new()
             }
+            Action::CopySelection => self.copy_selection(),
             Action::ShowLastMessage => self.show_last_message(),
             Action::InspectSelection => {
                 self.inspect_selection();

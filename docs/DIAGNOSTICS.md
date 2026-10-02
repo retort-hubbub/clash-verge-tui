@@ -57,7 +57,7 @@ a sentence is not one a reader can look up.
 | `W-MATCH-WITH-PAYLOAD` | A payload-less rule (`MATCH`) carries a field it ignores. The core loads this and discards the field | Remove everything after the policy |
 | `W-MISSING-PORT` | A proxy has no `port` | Add it unless the protocol does not need one |
 | `W-MIXED-PORT-REDUNDANT` | `mixed-port` is set alongside `port`/`socks-port` | Keep one arrangement |
-| `W-NO-CONTROLLER` | `external-controller` is not set, so this program cannot manage the core | Set `core.external_controller` in the settings, or declare it in the base profile |
+| `W-NO-CONTROLLER` | `external-controller` is not set, so this program cannot manage the core | Set `core.external_controller` in the application settings |
 | `W-NO-TERMINAL-RULE` | No `MATCH` rule: traffic that matches nothing is rejected | Add `MATCH,DIRECT` or `MATCH,<group>` |
 | `W-RULE-KIND` | A rule uses a type this build does not know | Usually a newer core; check the spelling |
 | `W-TERMINAL-NOT-LAST` | A `MATCH` rule is not the last one, so the rules after it can never run | Move it to the end |
@@ -121,3 +121,27 @@ or TLS correctness. Startup additionally checks local conflicts and known DNS/TU
 listener failures; apply failures use runtime snapshots when rollback is enabled.
 A Python `Exception ignored while flushing sys.stdout` needs its complete traceback
 (e.g. `BrokenPipeError`) to diagnose; the message alone is not evidence of a DNS fault.
+
+### Managed download failures and recovery
+
+Core installation refuses missing/mismatched GitHub SHA-256 digests, oversized
+responses, decompression over 128 MiB, or unsuccessful/timed-out version checks.
+The archive limit is 64 MiB; requests time out after 90 seconds and the overall
+installation deadline is five minutes. These checks happen before replacement.
+The last executable is kept at `<home>/core/mihomo.previous`; stop the managed
+core before restoring it, then check network capabilities before restarting.
+GitHub release metadata supplies integrity information, not an independent signature.
+
+Mihomo and speedtest-go downloads first try the owned running core's HTTP proxy,
+then environment proxies, then direct access. Each route has a 10-second connect
+timeout and a 20-second read timeout; all-route failures include each route's error. Explicit proxying avoids host resolution of the GitHub destination,
+but follows the core's rules. Direct fallback still uses the system network and
+cannot bypass TUN interception.
+
+### Copying from SSH or tmux
+
+Ctrl+Y copies complete open messages/previews or the selected value. In SSH and
+headless sessions, copying sends OSC 52 to the terminal. If the terminal does not
+allow it, no clipboard update occurs. Configure terminal/tmux clipboard support
+or copy with the terminal's own selection mode; the TUI does not enable clipboard
+permissions automatically. Desktop clipboard tools are attempted only outside SSH.

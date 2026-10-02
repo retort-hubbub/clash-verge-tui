@@ -144,11 +144,7 @@ fn set_setting_text_inner(settings: &mut Settings, key: &str, text: &str) -> Res
             Ok(())
         }
         "core.secret" => {
-            settings.core.secret = if text.is_empty() {
-                None
-            } else {
-                Some(text.to_owned())
-            };
+            settings.core.secret = Some(text.to_owned());
             Ok(())
         }
         "test.url" => {

@@ -23,6 +23,7 @@
 mod app_update;
 mod autostart;
 mod cli;
+mod clipboard;
 mod commands;
 mod context;
 mod executor;
@@ -46,6 +47,7 @@ use crate::output::Output;
 
 #[tokio::main]
 async fn main() -> ProcessExit {
+    AppPaths::set_private_creation_mask();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {

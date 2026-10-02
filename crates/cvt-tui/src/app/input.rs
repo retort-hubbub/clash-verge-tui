@@ -13,6 +13,10 @@ impl App {
     // -- key routing --------------------------------------------------------
 
     pub(super) fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        // Copy also works inside details, previews and text prompts.
+        if key.code == KeyCode::Char('y') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return self.copy_selection();
+        }
         // An overlay is modal: while one is open the key map is not consulted
         // at all, which is what stops `q` from quitting out of a prompt.
         if self.overlay.is_some() {

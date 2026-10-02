@@ -40,6 +40,13 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
+    /// Restrict newly created files in this process and its child programs.
+    /// Call once at executable startup, before application files are opened.
+    pub fn set_private_creation_mask() {
+        #[cfg(unix)]
+        rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
+    }
+
     /// Resolve the home directory.
     ///
     /// `explicit` wins over `CVT_HOME`, which wins over the platform default.
@@ -181,9 +188,109 @@ impl AppPaths {
             self.backups_dir(),
             self.logs_dir(),
         ] {
-            std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+            Self::ensure_private_dir(&dir)?;
         }
+        Self::protect_existing_tree(&self.home)?;
         Ok(())
+    }
+
+    /// Create an application directory with owner-only access on Unix.
+    pub(crate) fn ensure_private_dir(path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(path)
+                .map_err(|e| Error::io(path, e))?;
+            let meta = std::fs::symlink_metadata(path).map_err(|e| Error::io(path, e))?;
+            if !meta.is_dir() || meta.uid() != rustix::process::getuid().as_raw() {
+                return Err(Error::invalid(
+                    "application directory",
+                    format!(
+                        "{} must be a real directory owned by the current user",
+                        path.display()
+                    ),
+                ));
+            }
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| Error::io(path, e))?;
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(path).map_err(|e| Error::io(path, e))?;
+        Ok(())
+    }
+
+    fn protect_existing_tree(directory: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+            for entry in std::fs::read_dir(directory).map_err(|e| Error::io(directory, e))? {
+                let path = entry.map_err(|e| Error::io(directory, e))?.path();
+                let meta = match std::fs::symlink_metadata(&path) {
+                    Ok(meta) => meta,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(Error::io(&path, error)),
+                };
+                // Never change permissions through a link into another home.
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+                if meta.is_dir() {
+                    Self::ensure_private_dir(&path)?;
+                    Self::protect_existing_tree(&path)?;
+                } else if meta.is_file() {
+                    if meta.uid() != rustix::process::getuid().as_raw() || meta.nlink() > 1 {
+                        return Err(Error::invalid(
+                            "private state",
+                            format!(
+                                "{} must be an owned file without hard links",
+                                path.display()
+                            ),
+                        ));
+                    }
+                    let mode = if meta.permissions().mode() & 0o111 != 0 {
+                        0o700
+                    } else {
+                        0o600
+                    };
+                    if meta.permissions().mode() & 0o7777 != mode {
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                            .map_err(|e| Error::io(&path, e))?;
+                    }
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = directory;
+        Ok(())
+    }
+
+    /// Serialise initial controller-secret migration across application processes.
+    #[cfg(unix)]
+    pub(crate) fn lock_settings(&self) -> Result<std::fs::File> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        Self::ensure_private_dir(self.home())?;
+        let path = self.home.join("settings.lock");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(&path)
+            .map_err(|e| Error::io(&path, e))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(file),
+                Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                Err(error) => return Err(Error::io(&path, std::io::Error::from(error))),
+            }
+        }
     }
 
     /// Read a file, mapping failures to [`Error::Io`].
@@ -191,6 +298,14 @@ impl AppPaths {
     /// # Errors
     /// [`Error::Io`] if the file cannot be read.
     pub fn read(&self, path: &Path) -> Result<String> {
+        if path.starts_with(self.home())
+            && std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+        {
+            return Err(Error::invalid(
+                "private state",
+                format!("{} must not be a symbolic link", path.display()),
+            ));
+        }
         std::fs::read_to_string(path).map_err(|e| Error::io(path, e))
     }
 
@@ -204,8 +319,11 @@ impl AppPaths {
     pub fn write_atomic(&self, path: &Path, contents: &str) -> Result<()> {
         use std::io::Write as _;
 
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            Self::ensure_private_dir(parent)?;
         }
         let directory = path
             .parent()

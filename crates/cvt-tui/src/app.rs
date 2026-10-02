@@ -304,6 +304,13 @@ impl App {
             loaded: Vec::new(),
         };
         app.rebuild_tests();
+        if app.settings.core.secret.as_deref() == Some("") {
+            app.set_status(
+                StatusKind::Warning,
+                app.tr("controller secret is empty: API access is unauthenticated")
+                    .to_owned(),
+            );
+        }
         app
     }
 

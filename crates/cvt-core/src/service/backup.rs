@@ -9,6 +9,7 @@ use chrono::Utc;
 
 use super::Service;
 use crate::error::{Error, Result};
+use crate::paths::AppPaths;
 
 /// Relative paths copied in both directions and recognised as backup contents.
 const STATE_FILES: &[&str] = &["cvt.yaml", "profiles.yaml"];
@@ -67,7 +68,7 @@ fn looks_like_a_backup(dir: &Path) -> bool {
 /// Used in both directions: from the home into a backup, and from a backup
 /// into the home. Both operations share the same file selection and guards.
 fn copy_state(from: &Path, to: &Path) -> Result<()> {
-    std::fs::create_dir_all(to).map_err(|e| Error::io(to, e))?;
+    AppPaths::ensure_private_dir(to)?;
     for name in STATE_FILES {
         let source = from.join(name);
         // A *link* where a scalar file goes is skipped, exactly as `copy_dir`
@@ -283,6 +284,12 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
         ));
     }
     std::fs::copy(source, destination).map_err(|e| Error::io(destination, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| Error::io(destination, e))?;
+    }
     Ok(())
 }
 
@@ -324,7 +331,7 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     if !from.is_dir() {
         return Ok(());
     }
-    std::fs::create_dir_all(to).map_err(|e| Error::io(to, e))?;
+    AppPaths::ensure_private_dir(to)?;
     let entries = std::fs::read_dir(from).map_err(|e| Error::io(from, e))?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -397,14 +404,14 @@ impl Service {
                 ),
             ));
         }
-        std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        AppPaths::ensure_private_dir(&dir)?;
         let mut candidates = vec![dir.join(stamp.to_string())];
         for n in 2..1000 {
             candidates.push(dir.join(format!("{stamp}-{n}")));
         }
         candidates.push(dir.join(format!("{stamp}-{}", u32::MAX)));
         for candidate in &candidates {
-            match std::fs::create_dir(candidate) {
+            match create_backup_directory(&candidate) {
                 Ok(()) => return Ok(candidate.clone()),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(Error::io(candidate, e)),
@@ -628,4 +635,14 @@ impl Service {
         removed += self.remove_links()?;
         Ok(removed)
     }
+}
+
+fn create_backup_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir(path)
 }

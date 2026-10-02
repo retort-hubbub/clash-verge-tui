@@ -484,35 +484,73 @@ impl Supervisor {
     /// [`Error::ProcessFailed`] when the signal could not be delivered to a
     /// process that is confirmed to be ours.
     pub fn stop(&self) -> Result<bool> {
-        let status = self.status();
-        let pid = match status {
-            CoreStatus::Running { pid, .. } => pid,
-            CoreStatus::StalePid { .. } => {
-                // Nothing to signal; just clear the record.
-                let _ = std::fs::remove_file(self.pid_file());
-                return Ok(false);
-            }
-            _ => return Ok(false),
+        let Some(record) = self.read_pid_record() else {
+            return Ok(false);
         };
-
-        terminate(pid, false)?;
+        if !record_process_alive(&record) {
+            self.remove_pid_record_if_same(&record)?;
+            return Ok(false);
+        }
+        if !self.owns_process(&record) {
+            return Err(Error::invalid(
+                "core identity",
+                "recorded process is alive but no longer has this application's launch identity; refusing to signal it",
+            ));
+        }
+        // Verify birth identity again before signalling, without relying on
+        // the PID record remaining unchanged during another process's startup.
+        if !record_process_alive(&record) {
+            self.remove_pid_record_if_same(&record)?;
+            return Ok(false);
+        }
+        terminate(record.pid, false)?;
         let deadline = std::time::Instant::now() + GRACEFUL_TIMEOUT;
         while std::time::Instant::now() < deadline {
-            if !process_alive(pid)
-                || !matches!(self.status(), CoreStatus::Running { pid: current, .. } if current == pid)
-            {
-                let _ = std::fs::remove_file(self.pid_file());
+            // /proc/cmdline can disappear before the kernel has closed sockets.
+            // A failed owns_process/status check therefore does not mean exit.
+            if !record_process_alive(&record) {
+                self.remove_pid_record_if_same(&record)?;
                 return Ok(true);
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        if matches!(self.status(), CoreStatus::Running { pid: current, .. } if current == pid) {
-            terminate(pid, true)?;
+        if !self.owns_process(&record) && record_process_alive(&record) {
+            return Err(Error::invalid(
+                "core identity",
+                "process identity changed during shutdown; refusing to force-kill it",
+            ));
         }
-        // Give the kernel a moment to reap before reporting.
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let _ = std::fs::remove_file(self.pid_file());
-        Ok(true)
+        if record_process_alive(&record) {
+            terminate(record.pid, true)?;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if !record_process_alive(&record) {
+                self.remove_pid_record_if_same(&record)?;
+                return Ok(true);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        // Keep the record on timeout; claiming a stop succeeded would allow a
+        // competing start while the same process still owns listener sockets.
+        Err(Error::ProcessFailed {
+            program: format!("stop Mihomo ({})", record.pid),
+            status: "shutdown timed out".to_owned(),
+            stderr: "the previous core has not exited; no replacement was started".to_owned(),
+        })
+    }
+
+    fn remove_pid_record_if_same(&self, expected: &PidRecord) -> Result<()> {
+        if self.read_pid_record().is_some_and(|current| {
+            current.pid == expected.pid && current.start_ticks == expected.start_ticks
+        }) {
+            match std::fs::remove_file(self.pid_file()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(Error::io(self.pid_file(), error)),
+            }
+        }
+        Ok(())
     }
 
     /// Stop and start again.
@@ -529,18 +567,77 @@ impl Supervisor {
     /// # Errors
     /// [`Error::ProcessFailed`] when the binary cannot be run.
     pub fn version(&self, binary: &Path) -> Result<String> {
-        let output = Command::new(binary)
+        use std::io::{Read as _, Seek as _};
+        let directory = self.paths.core_dir();
+        AppPaths::ensure_private_dir(&directory)?;
+        let mut output =
+            tempfile::NamedTempFile::new_in(&directory).map_err(|e| Error::io(&directory, e))?;
+        let failure = |status: String, stderr: String| Error::ProcessFailed {
+            program: binary.display().to_string(),
+            status,
+            stderr,
+        };
+        let mut child = Command::new(binary)
             .arg("-v")
             .stdin(Stdio::null())
-            .output()
-            .map_err(|e| Error::ProcessFailed {
-                program: binary.display().to_string(),
-                status: "spawn failed".to_owned(),
-                stderr: e.to_string(),
-            })?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        // `mihomo -v` prints "Mihomo Meta v1.19.31 ..." on one line.
-        Ok(text.lines().next().unwrap_or_default().trim().to_owned())
+            .stdout(
+                output
+                    .as_file()
+                    .try_clone()
+                    .map_err(|e| Error::io(output.path(), e))?,
+            )
+            .stderr(
+                output
+                    .as_file()
+                    .try_clone()
+                    .map_err(|e| Error::io(output.path(), e))?,
+            )
+            .spawn()
+            .map_err(|e| failure("spawn failed".to_owned(), e.to_string()))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(failure("wait failed".to_owned(), error.to_string()));
+                }
+            }
+            if std::time::Instant::now() >= deadline
+                || output
+                    .as_file()
+                    .metadata()
+                    .map_or(true, |meta| meta.len() > 65536)
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(failure(
+                    "version check exceeded its time/output limit".to_owned(),
+                    String::new(),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        output
+            .as_file_mut()
+            .rewind()
+            .map_err(|e| Error::io(output.path(), e))?;
+        let mut text = String::new();
+        output
+            .as_file_mut()
+            .take(65536)
+            .read_to_string(&mut text)
+            .map_err(|e| Error::io(output.path(), e))?;
+        if !status.success() {
+            return Err(failure(status.to_string(), summarise(&text)));
+        }
+        let version = text.lines().next().unwrap_or_default().trim();
+        if version.is_empty() {
+            return Err(failure("empty version output".to_owned(), String::new()));
+        }
+        Ok(version.to_owned())
     }
 
     /// Read the pid record, tolerating a truncated or foreign file.
@@ -548,6 +645,26 @@ impl Supervisor {
         let text = std::fs::read_to_string(self.pid_file()).ok()?;
         serde_norway::from_str(&text).ok()
     }
+}
+
+/// Track exit by birth identity and process state, not argv visibility.
+fn record_process_alive(record: &PidRecord) -> bool {
+    if !process_alive(record.pid) || !pid_matches(record.clone()) {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", record.pid)) else {
+            return false;
+        };
+        let state = stat
+            .rsplit_once(')')
+            .and_then(|(_, tail)| tail.split_whitespace().next());
+        // Zombies have released descriptors; kill(pid, 0) still succeeds for them.
+        !matches!(state, Some("Z" | "X" | "x"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
 }
 
 /// Guard against pid reuse: a recycled pid must not be mistaken for ours.

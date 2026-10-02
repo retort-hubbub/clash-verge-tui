@@ -29,6 +29,21 @@ use std::path::PathBuf;
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    /// Copy explicitly selected text without logging the payload.
+    CopyText {
+        /// Complete untruncated text.
+        text: String,
+    },
+    /// Copy a local profile document.
+    CopyProfile {
+        /// Selected profile.
+        uid: String,
+    },
+    /// Copy the effective outbound definition for a selected node.
+    CopyProxy {
+        /// Selected node.
+        name: String,
+    },
     /// Run the enabled launch actions once, after the terminal is ready.
     Startup,
     /// Query the latest stable application release.
@@ -260,6 +275,9 @@ impl Effect {
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
+            Self::CopyText { .. } | Self::CopyProfile { .. } | Self::CopyProxy { .. } => {
+                "copy to clipboard"
+            }
             Self::Startup => "startup",
             Self::CheckAppUpdate { .. } => "check application update",
             Self::InstallAppUpdate { .. } => "install application update",
@@ -555,6 +573,11 @@ impl SpeedMode {
 /// that takes a second or more actually completed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Done {
+    /// A desktop copy succeeded, or an OSC 52 request was sent.
+    ClipboardCopied {
+        /// Terminal permission cannot be confirmed.
+        terminal: bool,
+    },
     /// Application replacement succeeded; restart to use it.
     AppUpdated {
         /// Installed version.

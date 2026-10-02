@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-02
+
+### Added
+
+- Copy complete messages, settings, subscription URLs and proxy configuration
+  with Ctrl+Y, using desktop clipboard tools or OSC 52 in SSH/tmux.
+
+### Fixed
+
+- Keep controller addresses and secrets under application control instead of
+  accepting management settings from remote subscriptions. Default unset
+  settings to a loopback controller and a randomly generated secret.
+- Restrict Unix state directories and sensitive files to the current user,
+  including backups and atomic writes, and reject unsafe linked state files.
+- Verify managed Mihomo archives against GitHub SHA-256 metadata before
+  execution, bound download/extraction resources, and preserve the previous
+  executable when upgrading.
+- Prefer the running core's proxy, then environment proxies, then direct access
+  for subscription, Mihomo and speedtest-go downloads.
+- Check restart listener availability after the old core exits, preventing
+  its own occupied ports from blocking a configuration restart. Retain process
+  identity records when shutdown times out instead of starting another core.
+
 ## [0.8.2] - 2026-10-02
 
 ### Fixed
@@ -880,7 +903,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.2...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.3...develop
+[0.8.3]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.7.0...v0.8.0

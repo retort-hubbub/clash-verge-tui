@@ -113,7 +113,7 @@ pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
                 .core
                 .external_controller
                 .clone()
-                .unwrap_or_else(|| "from the base profile".to_owned()),
+                .unwrap_or_else(|| "default".to_owned()),
             editable: settings
                 .core
                 .external_controller

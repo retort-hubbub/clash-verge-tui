@@ -202,13 +202,45 @@ impl Executor {
             Effect::StartCore
                 | Effect::RestartCore
                 | Effect::ApplyConfig { .. }
+                | Effect::PrepareConfig
+                | Effect::SwitchProfile { .. }
+                | Effect::SaveSettings { .. }
+        ) && self.request_dns_resolution(&effect, sink)
+        {
+            return;
+        }
+        if matches!(
+            effect,
+            Effect::StartCore
+                | Effect::RestartCore
+                | Effect::ApplyConfig { .. }
+                | Effect::SwitchProfile { .. }
                 | Effect::SaveSettings { .. }
         ) && self.request_permissions(&effect, sink)
         {
             return;
         }
         match effect {
-            Effect::CopyText { text } => self.copy_text(text, sink),
+            Effect::ResolveDnsConflict { address, mut next } => {
+                let result = self.with_service(|service| {
+                    let mut settings = service.settings().clone();
+                    settings.core.dns_listen = Some(address.clone());
+                    settings.save(service.paths())?;
+                    service.set_settings(settings.clone());
+                    Ok::<_, Error>(settings)
+                });
+                match result {
+                    Ok(settings) => {
+                        Self::emit(sink, Event::Data(Data::Settings(Box::new(settings))));
+                        if let Effect::SaveSettings { settings } = next.as_mut() {
+                            settings.core.dns_listen = Some(address);
+                        }
+                        Self::emit(sink, Event::Data(Data::CoreAuthorized { next }));
+                    }
+                    Err(error) => Self::emit(sink, Event::Failed(error.to_string())),
+                }
+            }
+            Effect::CopyText { text } => Self::copy_text(text, sink),
             Effect::CopyProfile { uid } => self.copy_profile(&uid, sink),
             Effect::CopyProxy { name } => self.copy_proxy(&name, sink),
             Effect::AuthorizeCore {
@@ -398,13 +430,13 @@ impl Executor {
             },
 
             // ---- applying runs on a blocking thread, and reports once
+            Effect::SwitchProfile { uid } => self.switch_profile(uid, sink),
             Effect::ApplyConfig { mode } => self.apply_config(mode, sink),
             Effect::PrepareConfig => self.prepare_config(sink),
             Effect::SynchronizeConfig => self.synchronize_config(sink),
 
             // Enumerate local commands so adding an effect requires a handler.
             other @ (Effect::LoadProfiles
-            | Effect::SwitchProfile { .. }
             | Effect::SetChain { .. }
             | Effect::DeleteProfile { .. }
             | Effect::RenameProfile { .. }
@@ -444,22 +476,6 @@ impl Executor {
             Effect::LoadProfiles => self.with_service(|service| {
                 let store = service.store()?;
                 Ok(Event::Data(Data::Profiles(ProfileRow::all(&store))))
-            }),
-            Effect::SwitchProfile { uid } => self.with_service(|service| {
-                let mut store = service.store()?;
-                let name = store
-                    .get(&uid)
-                    .map(|item| item.name.clone())
-                    .ok_or_else(|| Error::ProfileNotFound { uid: uid.clone() })?;
-                store.set_current(&uid)?;
-                store.save()?;
-                if !service.core_status().is_running() {
-                    let path = service.paths().runtime_config();
-                    if path.exists() {
-                        std::fs::remove_file(&path).map_err(|error| Error::io(&path, error))?;
-                    }
-                }
-                Ok(Event::Done(Done::ProfileSwitched { name }))
             }),
             Effect::SetChain { uids } => self.with_service(|service| {
                 let mut store = service.store()?;

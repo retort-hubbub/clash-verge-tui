@@ -18,6 +18,20 @@ impl App {
 
     pub(super) fn on_data(&mut self, data: Data) -> Vec<Effect> {
         match data {
+            Data::DnsConflict { conflict, next } => {
+                if self.pending_confirmation.is_some() {
+                    return Vec::new();
+                }
+                let question = crate::i18n::dns_conflict(self.language(), &conflict);
+                self.pending_confirmation = Some(Effect::ResolveDnsConflict {
+                    address: conflict.replacement,
+                    next,
+                });
+                self.overlay = Some(Overlay::Confirm {
+                    question,
+                    action: Action::ResolveDnsConflict,
+                });
+            }
             Data::AppUpdateAvailable(release) => self.offer_app_update(release),
             Data::CoreAuthorized { next } => return vec![*next],
             Data::CoreAuthorization {
@@ -25,7 +39,7 @@ impl App {
                 capabilities,
                 next,
             } => {
-                if self.pending_authorization.is_some() {
+                if self.pending_confirmation.is_some() {
                     // Repeated synchronization effects must not replace the
                     // user's in-progress authorization dialog.
                     return Vec::new();
@@ -37,7 +51,7 @@ impl App {
                         binary: &binary.to_string_lossy(),
                     },
                 );
-                self.pending_authorization = Some(Effect::AuthorizeCore {
+                self.pending_confirmation = Some(Effect::AuthorizeCore {
                     binary,
                     capabilities,
                     next,
@@ -373,13 +387,10 @@ impl App {
                 self.invalidate_controller_views();
                 return vec![
                     Effect::LoadProfiles,
-                    if self.core.is_running() {
-                        Effect::ApplyConfig {
-                            mode: self.reload_mode(),
-                        }
-                    } else {
-                        Effect::PrepareConfig
-                    },
+                    Effect::Refresh(Screen::Home),
+                    Effect::Refresh(Screen::Proxies),
+                    Effect::Refresh(Screen::Rules),
+                    Effect::Refresh(Screen::Connections),
                 ];
             }
             Done::ProfileContentChanged => {

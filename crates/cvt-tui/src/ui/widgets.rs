@@ -1,11 +1,4 @@
-//! Pieces every screen draws with.
-//!
-//! Everything here takes a [`Theme`] and asks it for a *semantic* style, never
-//! for a colour: that is what makes the monochrome theme a setting rather than
-//! a second renderer. The helpers also share one rule for empty lists — say
-//! something useful rather than drawing a blank box — because an empty panel
-//! that looks the same as a panel that failed to load is the most common way
-//! for a TUI to waste the user's time.
+//! Shared widgets with semantic theme styles and empty-list messages.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};

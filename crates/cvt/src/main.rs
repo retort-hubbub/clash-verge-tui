@@ -30,6 +30,7 @@ mod executor;
 mod exit;
 mod media_unlock;
 mod output;
+mod resolver_authorization;
 mod speedtest;
 mod tui;
 mod tun;
@@ -48,6 +49,19 @@ use crate::output::Output;
 #[tokio::main]
 async fn main() -> ProcessExit {
     AppPaths::set_private_creation_mask();
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments
+        .first()
+        .is_some_and(|arg| arg == "--internal-authorize-core")
+    {
+        return match resolver_authorization::internal(&arguments[1..]) {
+            Ok(()) => ProcessExit::SUCCESS,
+            Err(error) => {
+                eprintln!("core authorization: {error:#}");
+                ProcessExit::FAILURE
+            }
+        };
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {

@@ -31,11 +31,7 @@ impl App {
         self.perform(&action)
     }
 
-    /// Why a destructive action would be pointless, checked before asking.
-    ///
-    /// Confirming "stop the core?" when nothing is running trains the user to
-    /// answer yes without reading, which is exactly what a confirmation is
-    /// supposed to prevent.
+    /// Check whether a destructive action has a target before confirming it.
     pub(super) fn destructive_blocker(&self, action: &Action) -> Option<String> {
         match action {
             Action::StopCore if !self.core.is_running() => {
@@ -60,7 +56,7 @@ impl App {
             Action::CloseAllConnections => {
                 format!("close all {} connection(s)?", self.connections.total())
             }
-            Action::StopCore => "stop the core? nothing will be proxied".to_owned(),
+            Action::StopCore => "stop the core?".to_owned(),
             Action::RollbackConfig => {
                 "restore the previous generated configuration and restart the core?".to_owned()
             }
@@ -74,11 +70,7 @@ impl App {
         }
     }
 
-    /// The dispatcher: one arm per [`Action`], no exceptions.
-    ///
-    /// The action is borrowed because only [`Action::Goto`] carries a payload
-    /// the dispatcher needs; everything else re-reads the state it acts on, so
-    /// taking the value would mean moving sixty payloads nowhere.
+    /// Dispatch an action using the current application state.
     #[allow(clippy::too_many_lines)] // one arm per action is the readable form
     pub(super) fn perform(&mut self, action: &Action) -> Vec<Effect> {
         match action {
@@ -188,7 +180,9 @@ impl App {
                 self.open_prompt(PromptKind::Rule, String::new());
                 Vec::new()
             }
-            Action::AuthorizeCore => self.pending_authorization.take().into_iter().collect(),
+            Action::AuthorizeCore | Action::ResolveDnsConflict => {
+                self.pending_confirmation.take().into_iter().collect()
+            }
             Action::ToggleInChain => self.toggle_in_chain(),
             Action::PreviewConfig => vec![Effect::PreviewConfig],
             Action::ApplyConfig => vec![Effect::ApplyConfig {

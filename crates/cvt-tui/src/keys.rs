@@ -437,18 +437,23 @@ mod tests {
             defined.len()
         );
 
-        let bound: Vec<&str> = include_str!("keys.rs")
-            .match_indices("Action::")
-            .filter_map(|(at, _)| {
-                let rest = &include_str!("keys.rs")[at + "Action::".len()..];
-                let name: String = rest
-                    .chars()
-                    .take_while(char::is_ascii_alphanumeric)
-                    .collect();
-                (!name.is_empty()).then_some(name)
+        // Read the runtime table; source scans miss the A:: alias and become
+        // false positives when key definitions are reformatted.
+        let names: Vec<String> = Keymap::default()
+            .bindings
+            .iter()
+            .map(|binding| {
+                format!("{:?}", binding.action)
+                    .split(['(', '{'])
+                    .next()
+                    .unwrap()
+                    .to_owned()
             })
-            .map(|name| Box::leak(name.into_boxed_str()) as &str)
             .collect();
+        let mut bound: Vec<&str> = names.iter().map(String::as_str).collect();
+        // These actions are reached by accepting their modals, without a key binding.
+        bound.push("AuthorizeCore");
+        bound.push("ResolveDnsConflict");
 
         let unreachable: Vec<&&str> = defined
             .iter()

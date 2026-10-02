@@ -100,7 +100,8 @@ impl Supervisor {
     }
 
     /// Keep a capability-based core from opening interactive system DNS
-    /// authorization dialogs. DNS interception is configured in the TUN itself.
+    /// authorization dialogs. The application configures resolved explicitly
+    /// after startup using a scoped, previously approved polkit grant.
     pub(super) fn child_path(&self) -> Result<std::ffi::OsString> {
         let current = std::env::var_os("PATH").unwrap_or_default();
         #[cfg(target_os = "linux")]
@@ -167,7 +168,7 @@ impl Supervisor {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(25))
+                    std::thread::sleep(std::time::Duration::from_millis(25));
                 }
                 other => {
                     let _ = child.kill();

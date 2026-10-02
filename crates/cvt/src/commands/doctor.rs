@@ -1112,7 +1112,11 @@ mod tests {
         assert!(guarded.detail.contains("protected by a secret"));
 
         let local = check_exposure(Some(&Endpoint::tcp("127.0.0.1:9090", None)));
-        assert_eq!(local.status, CheckStatus::Pass);
+        assert_eq!(local.status, CheckStatus::Warn);
+        assert!(local.detail.contains("no secret"));
+        let local_guarded =
+            check_exposure(Some(&Endpoint::tcp("127.0.0.1:9090", Some("s".into()))));
+        assert_eq!(local_guarded.status, CheckStatus::Pass);
     }
 
     #[test]

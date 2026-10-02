@@ -89,6 +89,18 @@ fn home_with_index(index: &str, documents: &[(&str, &str)]) -> (TempDir, AppPath
     for (name, body) in documents {
         std::fs::write(paths.profiles_dir().join(name), body).unwrap();
     }
+    // Controller transport tests configure the application, not a subscription.
+    for (_, body) in documents {
+        if let Ok(config) = cvt_core::model::config::Config::from_yaml(body)
+            && let Some(endpoint) = config.get_str("external-controller")
+        {
+            let mut settings = cvt_core::Settings::load(&paths).unwrap();
+            settings.core.external_controller = Some(endpoint);
+            settings.core.secret = Some(String::new());
+            settings.save(&paths).unwrap();
+            break;
+        }
+    }
     (dir, paths)
 }
 
@@ -407,7 +419,7 @@ fn index_with(selected: &str) -> String {
 
 fn base_document(endpoint: &str) -> String {
     format!(
-        "mixed-port: 7890\nexternal-controller: {endpoint}\nmode: rule\nproxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}\n  - {{name: node-b, type: socks5, server: 127.0.0.1, port: 1081}}\nproxy-groups:\n  - {{name: grp-select, type: select, proxies: [node-a, node-b, DIRECT]}}\nrules:\n  - MATCH,grp-select\n"
+        "mixed-port: 0\nexternal-controller: {endpoint}\nmode: rule\nproxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}\n  - {{name: node-b, type: socks5, server: 127.0.0.1, port: 1081}}\nproxy-groups:\n  - {{name: grp-select, type: select, proxies: [node-a, node-b, DIRECT]}}\nrules:\n  - MATCH,grp-select\n"
     )
 }
 
@@ -724,8 +736,6 @@ fn a_selected_entry_round_trips_through_the_index() {
 /// rather than swallowed.
 #[test]
 fn a_failed_index_write_reports_and_changes_nothing() {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let (_dir, service) = service_with_selected(
         "127.0.0.1:1",
         "      - name: grp-select\n        now: node-a\n",
@@ -733,11 +743,12 @@ fn a_failed_index_write_reports_and_changes_nothing() {
     let path = service.paths().profiles_index();
     let before = std::fs::read_to_string(&path).unwrap();
 
-    // A home that cannot be written to: the temporary file cannot be created.
-    let home = service.paths().home().to_path_buf();
-    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Atomic writes may repair home permissions. Use an unsafe linked index
+    // to force a deterministic refusal without relying on umask/root privileges.
+    let saved = service.paths().home().join("original-index.yaml");
+    std::fs::rename(&path, &saved).unwrap();
+    std::os::unix::fs::symlink(&saved, &path).unwrap();
     let result = service.remember_selection("grp-select", "node-b");
-    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     assert!(
         result.is_err(),
@@ -748,6 +759,12 @@ fn a_failed_index_write_reports_and_changes_nothing() {
         before,
         "the index must be untouched by a failed write"
     );
+    assert!(
+        service.store().is_err(),
+        "linked indexes must also be refused on read"
+    );
+    std::fs::remove_file(&path).unwrap();
+    std::fs::rename(&saved, &path).unwrap();
     assert_eq!(
         service.store().unwrap().selections()[0].now,
         "node-a",

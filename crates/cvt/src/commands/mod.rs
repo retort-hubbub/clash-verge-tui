@@ -1,12 +1,6 @@
-//! One module per subcommand group, plus the pieces they share.
-//!
-//! Every command has the same shape: gather data, build a report, emit it.
-//! Reports are plain data, so the `--json` shape and the terminal rendering are
-//! two views of one value and cannot drift apart.
-//!
-//! The one thing worth knowing before reading a command: the only method that
-//! can write the profile index is [`Ctx::edit_store`], so a command that never
-//! calls it is read-only.
+//! Subcommand groups and shared report helpers.
+//! Reports supply both JSON and terminal output. [`Ctx::edit_store`] saves
+//! profile-index edits after the edit closure succeeds.
 
 pub mod backup;
 pub mod config;

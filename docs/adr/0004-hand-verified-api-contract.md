@@ -1,12 +1,11 @@
-# 0004 — A hand-verified API contract that outranks the official documentation
+# 0004 — API contracts based on observed Mihomo responses
 
 **Status:** accepted
 
 ## Context
 
-The core's REST API is documented, and the documentation is wrong in ways that
-break a client rather than annoy it. Six examples, all observed against a real
-mihomo **v1.19.31**:
+Mihomo **v1.19.31** responses differ from its API documentation in the following
+cases:
 
 - `GET /rules` returns rule types in Go's PascalCase (`DomainSuffix`,
   `RuleSet`, `Match`), not the configuration's SCREAMING-CASE spelling, so a
@@ -33,35 +32,20 @@ The API client is written against an observed contract, not a documented one.
 each fact was observed against, and where it contradicts the upstream
 documentation it says so explicitly and explains the evidence.
 
-Two consequences follow from taking that seriously:
+The contract has two test layers:
 
-- **The contract is tested against a fake that speaks the observed bytes.**
-  `crates/cvt-core/tests/client_contract.rs` drives the client with a
-  hand-rolled HTTP and unix-socket controller that answers exactly what the
-  real core answered, quirks included. This is what makes the suite runnable
-  with nothing installed.
-- **The claims that only a real core can settle are verified against one.**
-  `crates/cvt-core/tests/live_controller.rs` replays the same expectations
-  against a real binary. It is environment-gated, so it is a no-op on a
-  machine without a core — and it has already earned its place: run for the
-  first time, it failed on its fourth assertion, because a `select` group's
-  remembered choice survives in the core's `cache.db` across a configuration
-  reload.
+- `crates/cvt-core/tests/client_contract.rs` uses fake HTTP and Unix-socket
+  controllers with responses observed from Mihomo. It runs without a core.
+- `crates/cvt-core/tests/live_controller.rs` checks a real core when explicitly
+  enabled, including selection persistence through `cache.db` across reloads.
 
 ## Consequences
 
-- The client is correct against the real thing on the first try, which is the
-  whole point.
-- The research document is a maintained artifact, not a one-off. A core
-  upgrade that changes a response shape will not be caught by the fake, which
-  is a real limitation of this approach.
-- Behaviour is verified rather than assumed, so the client does not carry
-  defensive code for problems that do not exist — and does carry it for the
-  ones that do, such as the `null` connection list and the string-encoded
-  metadata ports.
-- Two testing layers have to be kept in step. The compensation is that the
-  cheap layer runs everywhere and the expensive layer catches what only a real
-  core can.
+- Fake-controller fixtures must match observed core responses, including
+  `null` connection lists and string-encoded metadata ports.
+- A fake controller cannot detect upstream response changes. Core upgrades
+  require live checks and corresponding fixture updates.
+- Live checks require a core; fake-controller checks run without one.
 
 ## Alternatives considered
 

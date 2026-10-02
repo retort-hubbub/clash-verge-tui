@@ -11,6 +11,71 @@ use cvt_core::settings::Language;
 use crate::action::Screen;
 use crate::row::ProfileRow;
 
+/// Explain observable ownership and the exact local-only change being offered.
+pub(crate) fn dns_conflict(
+    language: Language,
+    conflict: &cvt_core::mihomo::listeners::DnsConflict,
+) -> String {
+    use cvt_core::mihomo::listeners::OwnerKind;
+    let chinese = language == Language::Chinese;
+    let mut lines = vec![if chinese {
+        format!("DNS 监听地址 {} 存在冲突：", conflict.requested)
+    } else {
+        format!("DNS listener {} conflicts with:", conflict.requested)
+    }];
+    for owner in &conflict.owners {
+        let kind = match (language, owner.kind) {
+            (Language::Chinese, OwnerKind::SystemDns) => "系统 DNS 服务",
+            (Language::Chinese, OwnerKind::ProxyCore) => "其他代理内核",
+            (Language::Chinese, OwnerKind::Unknown) => "未知或无法读取身份的程序",
+            (_, OwnerKind::SystemDns) => "system DNS service",
+            (_, OwnerKind::ProxyCore) => "another proxy core",
+            (_, OwnerKind::Unknown) => "unknown or inaccessible process",
+        };
+        let process = owner.process.as_deref().unwrap_or("?");
+        let pid = owner
+            .pid
+            .map_or_else(|| "?".to_owned(), |pid| pid.to_string());
+        let inferred = if owner.inferred {
+            if chinese {
+                "（根据 resolved 活跃状态和 stub 地址推断，未确认 PID）"
+            } else {
+                " (inferred from the active resolved stub; PID unverified)"
+            }
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "{} {} — {kind}: {process}, PID {pid}{inferred}",
+            owner.protocol, owner.address
+        ));
+    }
+    if conflict.owners.is_empty() {
+        lines.push(
+            if chinese {
+                "地址被占用，但无法读取占用者身份。"
+            } else {
+                "Address in use; owner information is unavailable."
+            }
+            .to_owned(),
+        );
+    }
+    lines.insert(
+        1,
+        if chinese {
+            format!("是否使用 {} 并重试？", conflict.replacement)
+        } else {
+            format!("Use {} and retry?", conflict.replacement)
+        },
+    );
+    lines.push(if chinese {
+        "保存为默认 DNS 监听地址，仅本机可访问。".to_owned()
+    } else {
+        "Save as the default DNS listener. Local clients only.".to_owned()
+    });
+    lines.join("\n")
+}
+
 /// Messages whose values are supplied by the running application.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Message<'a> {
@@ -68,9 +133,14 @@ pub(crate) fn message(language: Language, message: Message<'_>) -> String {
                 capabilities,
                 binary,
             },
-        ) => format!(
-            "grant {capabilities} to {binary}? authentication is required; permissions persist on this binary"
-        ),
+        ) => {
+            let dns = if capabilities.contains("cap_net_admin") {
+                " With systemd-resolved, also authorize DNS management on cvt-mihomo."
+            } else {
+                ""
+            };
+            format!("Grant network permissions to {binary}? Authorization persists.{dns}")
+        }
         (
             Language::Chinese,
             Message::CoreAuthorization {
@@ -78,7 +148,12 @@ pub(crate) fn message(language: Language, message: Message<'_>) -> String {
                 binary,
             },
         ) => {
-            format!("为 {binary} 授予 {capabilities} 权限？需要认证，授权会保留在当前内核文件上。")
+            let dns = if capabilities.contains("cap_net_admin") {
+                "使用 systemd-resolved 时，还将授权管理 cvt-mihomo 的 DNS。"
+            } else {
+                ""
+            };
+            format!("为 {binary} 授予网络权限？授权持续生效。{dns}")
         }
         (Language::English, Message::ProfilesTitle { shown, total }) => {
             if shown == total {
@@ -373,6 +448,7 @@ pub(crate) fn action_label(language: Language, action: &crate::action::Action) -
         Action::EditProfileOverride => "订阅覆写",
         Action::AddRule => "添加规则",
         Action::AuthorizeCore => "授权内核",
+        Action::ResolveDnsConflict => "DNS 监听冲突",
         Action::ToggleInChain => "配置链",
         Action::PreviewConfig => "预览",
         Action::ApplyConfig => "应用",
@@ -678,11 +754,9 @@ pub fn text(language: Language, english: &str) -> &str {
         "selected connection" => "选中的连接",
         "selected rule" => "选中的规则",
         "selected check" => "选中的检查",
-        "chain and selection" => "配置链与选择",
         "settings file" => "设置文件",
         "rule sets" => "规则集",
         "local document" => "本地文件",
-        "base only (no patches are chained)" => "仅基础配置（未串联扩展）",
         "no profiles yet — press `a` to add one" => "暂无配置，按 a 添加",
         "no proxies yet — apply a profile, or start the core to see its groups" => {
             "暂无代理，应用配置或启动内核后查看"
@@ -692,9 +766,6 @@ pub fn text(language: Language, english: &str) -> &str {
         }
         "no rules — apply a profile, or press h to show hidden rules" => {
             "暂无规则；请应用配置，或按 h 显示隐藏规则"
-        }
-        "no checks are available yet — load a profile so there is something to test" => {
-            "暂无可用测试；请先加载配置"
         }
         "no setting matches the filter" => "没有设置项匹配当前筛选",
         "no log lines yet — start the core, and check that stream.logs is on" => {
@@ -708,10 +779,6 @@ pub fn text(language: Language, english: &str) -> &str {
         "none reported by the core" => "内核未报告任何条目",
         "Enter switches profile, c chains a patch, p previews" => {
             "Enter 切换配置，c 加入扩展，p 预览"
-        }
-        "Enter on a member pins it; x clears the choice" => "对节点按 Enter 固定，按 x 取消固定",
-        "the core picks the member itself; it cannot be pinned" => {
-            "此组由内核自动选择，无法固定节点"
         }
         "yes — Enter collapses it" => "是；按 Enter 折叠",
         "no — Enter opens it" => "否；按 Enter 展开",
@@ -771,12 +838,10 @@ pub fn text(language: Language, english: &str) -> &str {
             "按配置顺序或测速结果排列组内节点"
         }
         "method" => "方式",
-        "CONNECT uses the named proxy; v cycles test methods" => {
-            "CONNECT 经指定代理测试；按 v 切换方式"
-        }
-        "TCP and ICMP probe the server directly; v cycles test methods" => {
-            "TCP 与 ICMP 直测服务器；按 v 切换方式"
-        }
+        "CONNECT via selected proxy" => "CONNECT 通过指定代理",
+        "TCP and ICMP to the server" => "TCP 与 ICMP 直测服务器",
+        "manual selection" => "手动选择",
+        "automatic selection" => "自动选择",
         "v cycles CONNECT, TCP and ICMP; speed uses the current route" => {
             "按 v 切换 CONNECT、TCP、ICMP；速度测试走当前路由"
         }
@@ -790,10 +855,7 @@ pub fn text(language: Language, english: &str) -> &str {
         "resolves a name through the core's resolver, so fake-IP mode shows the synthetic address" => {
             "通过内核 DNS 解析域名；Fake-IP 模式会显示虚拟地址"
         }
-        "downloads up to 4 MB through the current route; this does not measure an individual node" => {
-            "通过当前路由下载最多 4 MB；此项并非单节点测速"
-        }
-        " · unsaved changes" => " · 有未保存的修改",
+        " · unsaved changes" => " · 未保存",
         "d closes the highlighted connection; s changes the sort order" => {
             "按 d 关闭当前连接，按 s 切换排序方式"
         }
@@ -817,12 +879,6 @@ pub fn text(language: Language, english: &str) -> &str {
         "— press s to start it" => "— 按 s 启动内核",
         "— press 2, then a, to add a subscription" => "— 按 2，再按 a 添加订阅",
         "— the dashboard will stay empty" => "— 首页将不会显示实时数据",
-        "Enter pins this node in its group, x lets the group choose again" => {
-            "Enter 固定此节点，x 恢复自动选择"
-        }
-        "apply a profile or start the core; t tests, T tests the group, a tests everything" => {
-            "应用配置或启动内核；t 测试节点，T 测试组，a 测试全部"
-        }
         "Enter toggles the highlighted rule; h shows or hides disabled rules" => {
             "Enter 切换规则状态，h 显示或隐藏已禁用规则"
         }
@@ -834,9 +890,6 @@ pub fn text(language: Language, english: &str) -> &str {
         "Enter or Space cycles this value" => "按 Enter 或空格切换此值",
         "Enter opens a prompt for this value" => "按 Enter 输入此值",
         "press a to add a profile from the Profiles screen" => "请在配置页按 a 添加配置",
-        "the file is out of date — press s to write it" => "设置尚未保存；按 s 写入文件",
-        "everything here is on disk" => "所有设置均已保存",
-        "an invalid value is refused before it can be written" => "无效值不会写入文件",
         "type to narrow the list · Enter keep · Esc clear" => {
             "输入文字筛选 · Enter 保留 · Esc 清除"
         }
@@ -871,7 +924,7 @@ pub fn text(language: Language, english: &str) -> &str {
         "a blank local profile" => "新建空白本地配置",
         "update rule set" => "更新规则集",
         "delete this profile?" => "是否删除此配置？",
-        "stop the core? nothing will be proxied" => "是否停止内核？停止后将无法代理流量",
+        "stop the core?" => "是否停止内核？",
         "restore the previous generated configuration and restart the core?" => {
             "是否恢复上一次生成的配置并重启内核？"
         }

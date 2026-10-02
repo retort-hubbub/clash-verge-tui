@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-10-03
+
+### Fixed
+
+- Fix `systemd-resolved` authorization failure when enabling TUN mode by removing unsupported detail parameters from `pkcheck` verification and aligning polkit rules with the system resolver's authorization request shape.
+
 ## [0.8.4] - 2026-10-02
 
 ### Added
@@ -914,7 +920,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.4...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.5...develop
+[0.8.5]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.1...v0.8.2

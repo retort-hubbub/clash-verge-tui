@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "cvt"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "cvt-core"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "anyhow",
  "bytes",
@@ -622,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "cvt-tui"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "anyhow",
  "chrono",

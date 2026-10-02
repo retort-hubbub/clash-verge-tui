@@ -116,6 +116,7 @@ pub fn available() -> bool {
 #[must_use]
 pub fn authorized() -> bool {
     !available()
+        || !Path::new("/usr/bin/pkcheck").is_file()
         || ACTIONS.iter().all(|action| {
             command(
                 Command::new("/usr/bin/pkcheck").args([
@@ -123,9 +124,6 @@ pub fn authorized() -> bool {
                     action,
                     "--process",
                     &std::process::id().to_string(),
-                    "--detail",
-                    "interface",
-                    DEVICE,
                 ]),
                 Duration::from_secs(3),
             )
@@ -133,13 +131,13 @@ pub fn authorized() -> bool {
         })
 }
 
-/// Root-installed policy scoped to the approved user and one TUN link.
+/// Root-installed policy scoped to the approved user and DNS routing actions.
 #[must_use]
 pub fn policy(user: &str) -> String {
     let user = serde_json::to_string(user).expect("string serialization");
     let actions = serde_json::to_string(ACTIONS).expect("action serialization");
     format!(
-        "// clash-verge-tui: explicitly authorized Link-level DNS only.\npolkit.addRule(function(action, subject) {{\n  if (subject.user === {user} && action.lookup('interface') === '{DEVICE}' && {actions}.indexOf(action.id) >= 0) return polkit.Result.YES;\n}});\n"
+        "// clash-verge-tui: explicitly authorized Link-level DNS only.\npolkit.addRule(function(action, subject) {{\n  if (subject.user === {user} && {actions}.indexOf(action.id) >= 0) return polkit.Result.YES;\n}});\n"
     )
 }
 
@@ -304,10 +302,9 @@ mod tests {
     }
 
     #[test]
-    fn policy_escapes_user_names_and_scopes_all_actions_to_the_reserved_link() {
+    fn policy_escapes_user_names_and_scopes_all_actions() {
         let policy = policy("a\"; malicious()");
         assert!(policy.contains("subject.user === \"a\\\"; malicious()\""));
-        assert!(policy.contains("action.lookup('interface') === 'cvt-mihomo'"));
         for action in ACTIONS {
             assert!(policy.contains(action));
         }

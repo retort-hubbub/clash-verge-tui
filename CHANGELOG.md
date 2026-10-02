@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-02
+
+### Fixed
+
+- Reuse Mihomo network capabilities across restarts and profile switches,
+  including binaries reached through symlinks, while preserving existing grants.
+- Prevent core startup from repeatedly opening desktop authorization dialogs
+  for system DNS changes; retain explicit authorization for required privileges.
+- Identify managed processes by their start time, launch paths and recorded
+  controller, avoiding operations on another application's Mihomo instance.
+- Validate candidate configurations and local listener/TUN conflicts before
+  replacing the runtime configuration. Restore the previous configuration and
+  recover the managed core when applying a configuration fails.
+- Restart when controller settings change, and stop stale controller streams
+  when the managed process or its controller identity changes.
+- Clean up failed core startups and write state atomically through private,
+  unique temporary files.
+
 ## [0.8.1] - 2026-10-01
 
 ### Added
@@ -862,7 +880,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.1...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.2...develop
+[0.8.2]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.6.0...v0.7.0

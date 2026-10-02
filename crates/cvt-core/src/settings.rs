@@ -62,6 +62,9 @@ pub struct CoreSettings {
     pub login_autostart: LoginAutostart,
     /// Override the selected profile's TUN switch. `None` follows the profile.
     pub tun_enabled: Option<bool>,
+    /// User-approved local DNS listener, applied after subscription enhancements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_listen: Option<String>,
 }
 
 /// Supported login startup managers.
@@ -118,6 +121,7 @@ impl Default for CoreSettings {
             use_managed: true,
             login_autostart: LoginAutostart::Off,
             tun_enabled: None,
+            dns_listen: None,
         }
     }
 }
@@ -419,19 +423,20 @@ impl Settings {
         } else {
             Self::default()
         };
-        let mut migrated = !path.is_file();
-        if settings
+        let controller_migrated = if settings
             .core
             .external_controller
             .as_deref()
             .is_none_or(|s| s.trim().is_empty())
         {
             settings.core.external_controller = Some("127.0.0.1:9090".to_owned());
-            migrated = true;
-        }
+            true
+        } else {
+            false
+        };
         // None means uninitialised; Some("") is an explicit unauthenticated
         // choice and must survive restart instead of being silently changed.
-        if settings.core.secret.is_none() {
+        let secret_migrated = if settings.core.secret.is_none() {
             let mut random = [0_u8; 32];
             getrandom::fill(&mut random).map_err(|error| {
                 Error::invalid(
@@ -439,9 +444,17 @@ impl Settings {
                     format!("OS randomness unavailable: {error}"),
                 )
             })?;
-            settings.core.secret = Some(random.iter().map(|byte| format!("{byte:02x}")).collect());
-            migrated = true;
-        }
+            use std::fmt::Write as _;
+            let mut secret = String::with_capacity(64);
+            for byte in random {
+                let _ = write!(secret, "{byte:02x}");
+            }
+            settings.core.secret = Some(secret);
+            true
+        } else {
+            false
+        };
+        let migrated = !path.is_file() || controller_migrated || secret_migrated;
         // The same checks `save` runs, run on the way in. Otherwise the cap is
         // enforced only against values this program wrote, and the documented
         // way to change one — editing `cvt.yaml` — bypasses it: a `keep` of a
@@ -471,6 +484,17 @@ impl Settings {
     /// # Errors
     /// [`Error::InvalidValue`] naming the offending field.
     pub fn validate(&self) -> Result<()> {
+        if let Some(address) = &self.core.dns_listen {
+            let socket = address.parse::<std::net::SocketAddr>().map_err(|_| {
+                Error::invalid("core.dns_listen", "use a loopback IP address and port")
+            })?;
+            if !socket.ip().is_loopback() || socket.port() == 0 {
+                return Err(Error::invalid(
+                    "core.dns_listen",
+                    "use a loopback IP address and nonzero port",
+                ));
+            }
+        }
         if self.ui.refresh_ms == 0 {
             return Err(Error::invalid(
                 "ui.refresh_ms",
@@ -678,7 +702,17 @@ mod tests {
     fn a_missing_file_yields_working_defaults() {
         let (_d, p) = paths();
         let s = Settings::load(&p).unwrap();
-        assert_eq!(s, Settings::default());
+        let secret = s.core.secret.as_deref().unwrap();
+        assert_eq!(secret.len(), 64);
+        assert!(secret.bytes().all(|b| b.is_ascii_hexdigit()));
+        let mut expected = Settings::default();
+        expected.core.secret = s.core.secret.clone();
+        assert_eq!(s, expected);
+        assert_eq!(
+            Settings::load(&p).unwrap(),
+            s,
+            "generated credentials persist"
+        );
         assert!(s.validate().is_ok());
         assert!(
             !s.core.auto_start,
@@ -693,7 +727,13 @@ mod tests {
     fn an_empty_file_is_treated_as_absent() {
         let (_d, p) = paths();
         std::fs::write(p.settings_file(), "\n  \n").unwrap();
-        assert_eq!(Settings::load(&p).unwrap(), Settings::default());
+        let loaded = Settings::load(&p).unwrap();
+        assert_eq!(
+            loaded.core.external_controller.as_deref(),
+            Some("127.0.0.1:9090")
+        );
+        assert_eq!(loaded.core.secret.as_deref().unwrap().len(), 64);
+        assert_eq!(Settings::load(&p).unwrap(), loaded);
     }
 
     #[test]

@@ -28,6 +28,7 @@ mod backup;
 mod deployment;
 mod lifecycle;
 mod network_safety;
+mod profile_switch;
 mod selection;
 
 #[cfg(test)]
@@ -213,6 +214,7 @@ impl Service {
                 self.settings.core.secret.as_deref(),
             )
             .with_tun_enabled(self.settings.core.tun_enabled)
+            .with_dns_listen(self.settings.core.dns_listen.as_deref())
     }
 
     /// Where the controller is, as far as can be determined.

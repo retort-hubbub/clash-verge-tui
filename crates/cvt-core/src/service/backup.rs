@@ -411,7 +411,7 @@ impl Service {
         }
         candidates.push(dir.join(format!("{stamp}-{}", u32::MAX)));
         for candidate in &candidates {
-            match create_backup_directory(&candidate) {
+            match create_backup_directory(candidate) {
                 Ok(()) => return Ok(candidate.clone()),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(Error::io(candidate, e)),

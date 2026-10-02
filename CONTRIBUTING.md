@@ -125,3 +125,11 @@ Avoid copied feature ledgers, test counts, review-round narratives and temporary
 line-number references. They drift when the implementation changes. Preserve
 historical evidence where it explains a regression, but describe current
 contracts in production comments and user documentation.
+
+Keep interface text and documentation concise:
+
+- Prompts state the action, affected object and relevant consequences. Show
+  warnings when their conditions apply; keep implementation details in reference docs.
+- Put shortcuts in help and the footer. Detail panes describe the selected item.
+- Document behavior and constraints. Remove self-evaluation, unsupported guarantees
+  and troubleshooting conversations; update both interface languages together.

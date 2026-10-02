@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.3] - 2026-10-02
+## [0.8.4] - 2026-10-02
+
+### Added
+
+- Route system DNS through `cvt-mihomo` via `systemd-resolved` when TUN mode is active, preventing DNS queries from escaping to upstream resolvers and suffering poisoning.
+- Resolve `:53` DNS port conflicts dynamically: distinguish between system resolvers, active proxy cores, and other processes, and offer an alternative loopback bind address with interactive confirmation.
+- Add transactional profile switching: candidate configurations are validated before deployment, and failure restores the previous active profile and running runtime configuration.
+
+### Fixed
+
+- Prevent UI prompt verbosity across dialogs and documentation, keeping confirmation messages concise and aligning English and Simplified Chinese localizations.
+- Reclaim unused lock guards promptly during background executor events to prevent resource contention.
 
 ### Added
 
@@ -903,7 +914,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.3...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.4...develop
+[0.8.4]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.0...v0.8.1

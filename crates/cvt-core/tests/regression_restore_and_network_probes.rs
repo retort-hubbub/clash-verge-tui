@@ -78,6 +78,14 @@ fn index_one(body: &str) -> (TempDir, AppPaths) {
     )
     .unwrap();
     std::fs::write(paths.profiles_dir().join("L1.yaml"), body).unwrap();
+    if let Ok(config) = cvt_core::model::config::Config::from_yaml(body)
+        && let Some(endpoint) = config.get_str("external-controller")
+    {
+        let mut settings = cvt_core::Settings::load(&paths).unwrap();
+        settings.core.external_controller = Some(endpoint);
+        settings.core.secret = Some(String::new());
+        settings.save(&paths).unwrap();
+    }
     (dir, paths)
 }
 
@@ -380,7 +388,7 @@ fn defect_2_a_backup_this_program_took_from_an_index_less_home_is_refused() {
     );
     assert_eq!(
         contents(&paths.settings_file()),
-        "ui:\n  refresh_ms: 4242\n"
+        contents(&taken.join("cvt.yaml"))
     );
 }
 
@@ -712,7 +720,9 @@ async fn defect_7_wait_until_ready_cannot_enforce_its_ten_second_deadline() {
     let (port, accepted) = black_hole();
     let (_dir, paths) = index_one(&document(&format!("127.0.0.1:{port}")));
     // A large UI refresh interval must not change the controller deadline.
-    std::fs::write(paths.settings_file(), "ui:\n  refresh_ms: 6000\n").unwrap();
+    let mut settings = cvt_core::Settings::load(&paths).unwrap();
+    settings.ui.refresh_ms = 6000;
+    settings.save(&paths).unwrap();
     let service = Service::open(paths).unwrap();
 
     let started = Instant::now();

@@ -57,12 +57,11 @@ impl App {
     }
 
     fn copy_open_details(&mut self) -> Vec<Effect> {
-        match self.overlay {
-            Some(Overlay::Preview { .. } | Overlay::Message { .. }) => self.copy_selection(),
-            _ => {
-                self.set_status(StatusKind::Info, self.tr("nothing to copy").to_owned());
-                Vec::new()
-            }
+        if let Some(Overlay::Preview { .. } | Overlay::Message { .. }) = self.overlay {
+            self.copy_selection()
+        } else {
+            self.set_status(StatusKind::Info, self.tr("nothing to copy").to_owned());
+            Vec::new()
         }
     }
 

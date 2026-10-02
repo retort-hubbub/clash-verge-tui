@@ -11,7 +11,7 @@ reason remains visible.
 | [0001](0001-rust-three-crate-workspace.md) | Rust, as a three-crate workspace with a one-way dependency |
 | [0002](0002-lossless-config-document.md) | Keep configuration as a lossless ordered document, not a typed struct |
 | [0003](0003-mihomo-only.md) | Support the mihomo core only |
-| [0004](0004-hand-verified-api-contract.md) | A hand-verified API contract that outranks the official documentation |
+| [0004](0004-hand-verified-api-contract.md) | API contracts based on observed Mihomo responses |
 | [0005](0005-pure-state-machine-with-effects.md) | The interface is a pure state machine driven by an effect vocabulary |
 | [0006](0006-one-service-facade.md) | One `Service` facade behind both front ends |
 | [0007](0007-gitflow-and-conventional-commits.md) | GitFlow with Conventional Commits |

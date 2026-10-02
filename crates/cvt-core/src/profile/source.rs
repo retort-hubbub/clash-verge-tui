@@ -8,6 +8,7 @@
 //! 1. **through the running core's proxy port**, when available.
 //! 2. **the environment proxy**, using HTTP_PROXY/HTTPS_PROXY/ALL_PROXY.
 //! 3. **direct**, explicitly bypassing environment proxies as a last resort.
+//!
 //! Environment routing may itself be direct if no applicable proxy is set.
 //!
 //! Every tier that was tried is recorded in [`UpdateOutcome::attempts`], the
@@ -1598,7 +1599,7 @@ mod tests {
         let without = SubscriptionFetcher::new(None).unwrap();
         assert_eq!(
             without.fetch_order(),
-            vec![FetchSource::Direct, FetchSource::ViaSystemProxy]
+            vec![FetchSource::ViaSystemProxy, FetchSource::Direct]
         );
 
         let with = SubscriptionFetcher::new(Some("127.0.0.1:7890".to_owned())).unwrap();
@@ -1606,9 +1607,9 @@ mod tests {
         assert_eq!(
             with.fetch_order(),
             vec![
-                FetchSource::Direct,
                 FetchSource::ViaClashProxy("http://127.0.0.1:7890".to_owned()),
                 FetchSource::ViaSystemProxy,
+                FetchSource::Direct,
             ]
         );
 

@@ -358,6 +358,10 @@ impl Sandbox {
             let home = dir.path().join(format!("home-{attempt}"));
             std::fs::create_dir_all(core_dir.join("data")).expect("the core's directory");
             std::fs::create_dir_all(home.join("profiles")).expect("the home directory");
+            let mut settings = cvt_core::Settings::default();
+            settings.core.external_controller = Some(format!("127.0.0.1:{port}"));
+            settings.core.secret = Some(String::new());
+            settings.save(&cvt_core::AppPaths::new(&home)).unwrap();
             let document = Self::document(port);
             std::fs::write(core_dir.join("config.yaml"), document.as_bytes())
                 .expect("the core's configuration");

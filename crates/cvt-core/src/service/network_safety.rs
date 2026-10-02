@@ -1,7 +1,5 @@
 //! Local resource checks before a core can change routing or DNS.
 
-#[cfg(target_os = "linux")]
-use std::net::IpAddr;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 
 use super::{Config, Error, Result, Service};
@@ -13,6 +11,9 @@ impl Service {
     /// # Errors
     /// Returns a configuration error for a detected local resource conflict.
     pub fn validate_environment(&self, config: &Config) -> Result<()> {
+        if config.tun_enabled() && crate::mihomo::resolver::available() {
+            crate::mihomo::resolver::Target::from_config(config)?;
+        }
         let current = if self.core_status().is_running() {
             self.paths
                 .read(&self.paths.runtime_config())
@@ -135,12 +136,23 @@ impl Service {
                 continue;
             }
             let directory = entry.path();
+            let Some(identity) = live_process_identity(&directory) else {
+                continue;
+            };
             let name = std::fs::read_to_string(directory.join("comm")).unwrap_or_default();
             if !name.contains("mihomo") && !["clash", "clash-meta"].contains(&name.trim()) {
                 continue;
             }
             let bytes = std::fs::read(directory.join("cmdline")).unwrap_or_default();
             let args: Vec<_> = bytes.split(|byte| *byte == 0).collect();
+            // Parser/version subprocesses never install TUN routes even when
+            // their input document enables TUN.
+            if args
+                .iter()
+                .any(|arg| matches!(*arg, b"-t" | b"-v" | b"--version" | b"--test"))
+            {
+                continue;
+            }
             let foreign = args
                 .windows(2)
                 .find(|pair| pair[0] == b"-f")
@@ -158,7 +170,8 @@ impl Service {
                 },
                 Config::tun_enabled,
             );
-            if conflict {
+            // The process may exit while its argv/config is being inspected.
+            if conflict && live_process_identity(&directory) == Some(identity) {
                 return Err(Error::invalid(
                     "tun",
                     format!(
@@ -186,7 +199,10 @@ fn check_listener(address: &str, udp: bool) -> Result<()> {
     // /proc catches a privileged-port conflict even when bind would fail
     // first with EACCES in this unprivileged client process.
     #[cfg(target_os = "linux")]
-    if occupied(socket, udp) {
+    if crate::mihomo::listeners::inspect(socket)
+        .iter()
+        .any(|owner| owner.protocol == if udp { "udp" } else { "tcp" })
+    {
         return Err(conflict(address));
     }
     let result = if udp {
@@ -206,60 +222,48 @@ fn check_listener(address: &str, udp: bool) -> Result<()> {
 }
 
 fn conflict(address: &str) -> Error {
+    use crate::mihomo::listeners::{OwnerKind, inspect, parse_address};
+    let owners = parse_address(address).map(inspect).unwrap_or_default();
+    let details = owners
+        .iter()
+        .map(|owner| {
+            let category = match owner.kind {
+                OwnerKind::SystemDns => "system DNS service",
+                OwnerKind::ProxyCore => "another proxy core",
+                OwnerKind::Unknown => "unknown or inaccessible process",
+            };
+            format!(
+                "{} {}: {category}, process {}, pid {}{}",
+                owner.protocol,
+                owner.address,
+                owner.process.as_deref().unwrap_or("unknown"),
+                owner
+                    .pid
+                    .map_or_else(|| "unknown".to_owned(), |pid| pid.to_string()),
+                if owner.inferred {
+                    " (inferred stub identity)"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
     Error::invalid(
         "listener",
         format!(
-            "{address} is already in use; stop the conflicting listener or choose another port (for DNS, e.g. 127.0.0.1:1053)"
+            "{address} is already in use ({details}); keep the existing service and choose a separate local listener (for DNS, set core.dns_listen, e.g. 127.0.0.1:53 or 127.0.0.1:1053)"
         ),
     )
 }
 
+/// A live Linux process birth identity; zombies have released TUN descriptors.
 #[cfg(target_os = "linux")]
-fn occupied(socket: SocketAddr, udp: bool) -> bool {
-    let protocol = if udp { "udp" } else { "tcp" };
-    [
-        format!("/proc/net/{protocol}"),
-        format!("/proc/net/{protocol}6"),
-    ]
-    .iter()
-    .any(|path| {
-        std::fs::read_to_string(path)
-            .unwrap_or_default()
-            .lines()
-            .skip(1)
-            .any(|line| {
-                let fields: Vec<_> = line.split_whitespace().collect();
-                if !udp && fields.get(3) != Some(&"0A") {
-                    return false;
-                }
-                let Some((ip, port)) = fields.get(1).and_then(|value| value.split_once(':')) else {
-                    return false;
-                };
-                if u16::from_str_radix(port, 16).ok() != Some(socket.port()) {
-                    return false;
-                }
-                let address: Option<IpAddr> = if ip.len() == 8 {
-                    u32::from_str_radix(ip, 16)
-                        .ok()
-                        .map(|value| std::net::Ipv4Addr::from(value.to_ne_bytes()).into())
-                } else if ip.len() == 32 {
-                    let mut bytes = [0; 16];
-                    for (index, chunk) in ip.as_bytes().chunks(8).enumerate() {
-                        let Some(value) = std::str::from_utf8(chunk)
-                            .ok()
-                            .and_then(|text| u32::from_str_radix(text, 16).ok())
-                        else {
-                            return false;
-                        };
-                        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
-                    }
-                    Some(std::net::Ipv6Addr::from(bytes).into())
-                } else {
-                    None
-                };
-                address.is_some_and(|ip| {
-                    ip == socket.ip() || ip.is_unspecified() || socket.ip().is_unspecified()
-                })
-            })
-    })
+fn live_process_identity(directory: &std::path::Path) -> Option<u64> {
+    let stat = std::fs::read_to_string(directory.join("stat")).ok()?;
+    let tail = stat.rsplit_once(')')?.1;
+    if matches!(tail.split_whitespace().next(), Some("Z" | "X" | "x")) {
+        return None;
+    }
+    tail.split_whitespace().nth(19)?.parse().ok()
 }

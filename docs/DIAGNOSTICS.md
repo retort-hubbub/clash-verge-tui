@@ -8,15 +8,10 @@ front of you, and the code is what this page explains.
 list as data, with `severity`, `code`, `message`, `at` (which node of the
 document) and `fix` where a fix is one line.
 
-**Errors** stop the document from being written or applied. **Warnings** do not
-— the core accepts the configuration — but each one is something that is
-usually not what the author meant. **Notes** are informational.
+**Errors** block writing or applying the generated configuration. **Warnings** flag potential issues
+without blocking apply. **Notes** provide additional information.
 
-A code is never reused for a different meaning, and a code that stops being
-produced is removed rather than repurposed — a family check that rejected rules
-the core loads went that way. Its name is deliberately not repeated here: this
-page is asserted against the codes the validator produces, and a code named in
-a sentence is not one a reader can look up.
+Diagnostic codes are not reused. Removed codes are omitted from this reference.
 
 ## Errors
 
@@ -99,28 +94,71 @@ what the core does was settled by asking the core.
 
 If applying a profile reports an occupied listener, choose a free controller or
 DNS address. `dns.listen: :53` binds all interfaces and commonly conflicts with
-systemd-resolved's local stub. Use `127.0.0.1:1053` when TUN's DNS interception
-handles client queries; do not disable the system resolver just to free port 53.
+systemd-resolved's local stub. Use `127.0.0.1:1053`; with active systemd-resolved,
+the application routes system DNS to that listener through its TUN link.
+Do not disable the system resolver just to free port 53.
 Applications explicitly using a host DNS listener must be pointed at its new
 address separately.
+
+A subscription with `dns.listen: :53` remains usable. If it conflicts, the TUI
+shows the observed listener addresses, protocols and owner categories: system
+DNS service, another proxy core, or an unknown/inaccessible process. Process
+name and PID are shown when readable. An active resolved stub on
+`127.0.0.53:53` or `127.0.0.54:53` can be identified by its endpoint when process
+descriptors are inaccessible; the dialog explicitly marks that classification
+as inferred, not confirmed ownership.
+
+The dialog first proposes `127.0.0.1:53` if available, keeping the DNS port while
+avoiding the stub's distinct loopback address. Otherwise it proposes a free
+local port, starting at 1053. Accepting persists `core.dns_listen` as an
+application override; cancelling leaves settings unchanged. The subscription
+document and existing services are preserved. Listener availability is checked
+again before launch. A local-only listener cannot serve LAN DNS clients through
+the original wildcard address. Edit/remove `core.dns_listen` in the settings
+file to change/reset the override. CLI conflict errors include the same owner
+classification and setting name. A separate listener does not make simultaneous
+TUN routing by two proxy cores safe.
 
 TUN is affected by both the subscription and `core.tun_enabled`. `profile`
 follows the subscription; `on` overrides a subscription that has no TUN section.
 Run only one Mihomo TUN owner at a time, including Clash Verge Rev. Different
-proxy/controller ports do not isolate default routes or system DNS.
+proxy/controller ports do not isolate default routes or system DNS. Linux
+conflict detection excludes exited/zombie processes and parser/version probes,
+and rechecks process birth identity before reporting a conflict.
+
+A rejected TUI profile switch keeps the previous profile selected. Runtime
+recovery uses the exact pre-switch document; `config.previous.yaml` is not an
+automatic startup fallback. If recovery itself fails, the error states that the
+old profile remains selected and the runtime could not be resumed.
 
 `CAP_NET_ADMIN`, `CAP_NET_RAW` and `CAP_NET_BIND_SERVICE` authorize kernel
-operations, not systemd-resolved's D-Bus methods. The core's `resolvectl` helper
-uses `--no-ask-password` to prevent repeated policy-agent dialogs. It may be
-refused by the system policy; TUI-created TUN uses explicit UDP/TCP DNS hijacking
-and does not require that policy to be changed. This helper only affects the
-managed child's PATH, not commands in the user's shell.
+operations, not systemd-resolved's D-Bus methods. When resolved is active, the
+explicit TUN authorization also installs
+`/etc/polkit-1/rules.d/49-clash-verge-tui-<uid>-resolver.rules`. It grants that
+user only four Link operations on `cvt-mihomo`: set DNS servers, set domains,
+set default DNS routing and revert. It does not grant a root shell or authority
+over physical interfaces. Administrators can remove this file to revoke the
+resolver grant; replacing Mihomo still requires renewing its capabilities.
+
+After the owned core's TUN appears, the application sets the local DNS server,
+the `~.` routing domain and `default-route yes`, flushes caches, and reads the
+Link settings back. These [Link-level settings](https://github.com/systemd/systemd/blob/main/man/resolvectl.xml)
+send ordinary system DNS queries to Mihomo, including queries originating from
+the local systemd-resolved stub. Commands have deadlines and use
+`--no-ask-password`; missing authorization is an error rather than another
+password dialog. A recorded interface index limits cleanup to the same Link.
+Stop, TUN disable and failed handoff reset that Link; a vanished/recreated
+interface is not adopted for cleanup.
+
+With this integration, `dns.enable` must be true and `dns.listen` must be local.
+Missing listeners default to `127.0.0.1:1053`. Upstreams pointing to `system`,
+the resolved stub or Mihomo's own listener are rejected to prevent recursive
+resolution. Use independent upstream DNS servers. Without active resolved,
+the application does not install a resolver policy or change system DNS.
 
 A successful syntax check cannot guarantee DNS answers, remote proxy availability,
 or TLS correctness. Startup additionally checks local conflicts and known DNS/TUN
 listener failures; apply failures use runtime snapshots when rollback is enabled.
-A Python `Exception ignored while flushing sys.stdout` needs its complete traceback
-(e.g. `BrokenPipeError`) to diagnose; the message alone is not evidence of a DNS fault.
 
 ### Managed download failures and recovery
 

@@ -154,6 +154,7 @@ impl Outcome {
 pub struct Pipeline {
     paths: AppPaths,
     tun_enabled: Option<bool>,
+    dns_listen: Option<String>,
     /// The control plane the application itself insists on, if the user set
     /// one. It wins over every profile.
     application_control_plane: bool,
@@ -175,29 +176,24 @@ impl Pipeline {
         Self {
             paths,
             tun_enabled: None,
+            dns_listen: None,
             application_control_plane: false,
             control_plane: Vec::new(),
             protected: Vec::new(),
         }
     }
 
-    /// Whether an existing runtime document still uses application-owned controls.
-    pub(crate) fn matches_control_plane(&self, config: &Config) -> bool {
-        !self.application_control_plane
-            || CONTROL_PLANE.iter().all(|key| {
-                let wanted = self
-                    .control_plane
-                    .iter()
-                    .find(|(name, _)| name == key)
-                    .map(|(_, value)| value);
-                config.get(key) == wanted
-            })
-    }
-
     /// Force the TUN switch after profile enhancements have been applied.
     #[must_use]
     pub fn with_tun_enabled(mut self, enabled: Option<bool>) -> Self {
         self.tun_enabled = enabled;
+        self
+    }
+
+    /// Apply a local listener explicitly approved by the user.
+    #[must_use]
+    pub fn with_dns_listen(mut self, address: Option<&str>) -> Self {
+        self.dns_listen = address.map(str::to_owned);
         self
     }
 
@@ -574,6 +570,34 @@ impl Pipeline {
             } else {
                 return Err(Error::invalid("tun", "TUN settings must be a mapping"));
             }
+        }
+
+        #[cfg(target_os = "linux")]
+        if self.application_control_plane
+            && config
+                .get("tun")
+                .and_then(|tun| tun.get("enable"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            // The reserved interface permits a narrow persistent DNS policy;
+            // subscriptions cannot select a physical link as its target.
+            config["tun"]["device"] = Value::String(crate::mihomo::resolver::DEVICE.to_owned());
+            let object = config.as_object_mut().expect("configuration mapping");
+            let dns = object
+                .entry("dns")
+                .or_insert_with(|| serde_json::json!({"enable": true}));
+            if let Some(dns) = dns.as_object_mut() {
+                dns.entry("enable").or_insert(Value::Bool(true));
+                dns.entry("listen")
+                    .or_insert_with(|| Value::String("127.0.0.1:1053".to_owned()));
+            }
+        }
+
+        if let Some(address) = &self.dns_listen
+            && let Some(dns) = config.get_mut("dns").and_then(Value::as_object_mut)
+        {
+            dns.insert("listen".to_owned(), Value::String(address.clone()));
         }
 
         if self.application_control_plane

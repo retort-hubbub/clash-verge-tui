@@ -38,7 +38,7 @@ impl Executor {
             busy.store(false, Ordering::SeqCst);
             match result {
                 Ok(Some(release)) => {
-                    Self::emit(&sink, Event::Data(Data::AppUpdateAvailable(release)))
+                    Self::emit(&sink, Event::Data(Data::AppUpdateAvailable(release)));
                 }
                 Ok(None) if manual => Self::emit(
                     &sink,

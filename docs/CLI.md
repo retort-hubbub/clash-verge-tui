@@ -1,9 +1,6 @@
 # `clash-verge-tui` command line
 
-This document describes the command line interface. It is written for someone
-who has never seen the source: it lists every subcommand,
-every flag, the JSON shape each command prints, and the exit codes a script
-should branch on.
+Reference for commands, options, JSON output and exit codes.
 
 ```
 clash-verge-tui [OPTIONS] [COMMAND]
@@ -294,11 +291,8 @@ Exactly one of `<id>` and `--all` is required; passing both is a usage error.
 
 `delay` accepts `--url`, `--timeout` and `--concurrency` like `proxies test`.
 
-`urls` measures `test.urls` from `cvt.yaml` — `google`, `github` and `youtube`
-out of the box — through a single node. The point is not the latency but
-*which sites a node can reach*: a delay probe says a socket opened to one host,
-and the host is the same for every node, so a node that cannot reach anything
-useful still reports a healthy number.
+`urls` tests the reachability of `test.urls` from `cvt.yaml` through one node.
+The default targets are `google`, `github` and `youtube`.
 
 `--url` accepts one of those names wherever it accepts a URL:
 
@@ -307,9 +301,8 @@ $ cvt test delay --group PROXY --url youtube
 $ cvt test delay --group PROXY --url https://example.com/generate_204
 ```
 
-A value that is neither an http(s) URL nor a configured name is refused, with
-the list in the message. Fetching a typo would fail, and it would look like a
-node problem rather than a mistake.
+`--url` accepts an HTTP(S) URL or a configured target name. Invalid values
+report the available target names.
 
 *JSON:* `cvt.test.delay.v1`, `cvt.test.dns.v1`, `cvt.test.urls.v1`,
 `cvt.test.targets.v1`.

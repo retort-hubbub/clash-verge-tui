@@ -278,7 +278,7 @@ impl AppPaths {
             .create(true)
             .truncate(false)
             .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed())
             .open(&path)
             .map_err(|e| Error::io(&path, e))?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -286,7 +286,7 @@ impl AppPaths {
             match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
                 Ok(()) => return Ok(file),
                 Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(20))
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                 }
                 Err(error) => return Err(Error::io(&path, std::io::Error::from(error))),
             }

@@ -31,10 +31,8 @@ over it.
   outcomes rather than raw effects: `ApplyReport`, `ReloadOutcome`
   (`HotReloaded`, `Restarted { pid }`, `RolledBack { reason, snapshot }`),
   and diagnostics a user can read.
-- The reload decision tree lives in exactly one method, and it reports *why*
-  something failed rather than what the rollback bookkeeping did — a reload
-  that cannot be undone reports the restart failure itself, and a machine with
-  no core binary is not treated as a document worth rolling back.
+- Service deployment methods own reload and recovery policy. Errors include
+  the deployment failure and any recovery failure.
 - The CLI is parse, dispatch, and map an error onto an exit code. The
   interface's effect executor is the same thing with events instead of exit
   codes.
@@ -47,12 +45,10 @@ over it.
   still own event sequencing and must not duplicate the reload policy.
 - Shared ordering is covered at the service boundary; front-end and live-core
   checks cover integration behavior.
-- `Service` is a large surface, and it is the crate's centre of gravity. A
-  change to how an operation is sequenced touches every front end at once,
-  which is a feature here and would be a problem in a larger program.
-- The interface cannot do something the library cannot express. That has
-  forced at least one honest limitation into the open rather than into a
-  workaround inside the UI.
+- Changes to shared operation sequencing affect both front ends and require
+  service-boundary regression coverage.
+- New shared operations require a library API. Terminal-specific interaction
+  remains in the TUI and executor.
 
 ## Alternatives considered
 

@@ -1,9 +1,4 @@
-//! Streaming and AI availability checks.
-//!
-//! The screen is a queue rather than a set of independent buttons: a batch
-//! runs one check at a time, and the title says how many are still waiting, so
-//! a user who pressed Enter on four rows knows whether the last one has
-//! started yet.
+//! Streaming and AI availability checks, with queued batch progress.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};

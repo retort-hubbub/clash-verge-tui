@@ -95,11 +95,11 @@ pub struct App {
     pub keymap: Keymap,
     /// The modal layer on top, which consumes keys first.
     pub overlay: Option<Overlay>,
-    pending_authorization: Option<Effect>,
+    pending_confirmation: Option<Effect>,
     pending_profile_source: Option<String>,
     /// Latest application release waiting for a safe modal opportunity.
     pub app_update: Option<UpdateRelease>,
-    app_update_next_check: Instant,
+    next_update_check: Instant,
     /// Profiles, as the store lists them.
     pub profiles: Table<ProfileRow>,
     /// Proxy rows, flattened to what is currently visible.
@@ -254,10 +254,10 @@ impl App {
             screen: Screen::Home,
             keymap: Keymap::new(),
             overlay: None,
-            pending_authorization: None,
+            pending_confirmation: None,
             pending_profile_source: None,
             app_update: None,
-            app_update_next_check: Instant::now() + Duration::from_secs(3600),
+            next_update_check: Instant::now() + Duration::from_secs(3600),
             profiles: Table::new(),
             nodes: Table::new(),
             connections: Table::new(),
@@ -471,8 +471,8 @@ impl App {
         self.ticks = self.ticks.wrapping_add(1);
         self.expire_status();
         self.show_pending_app_update();
-        if Instant::now() >= self.app_update_next_check && self.app_update.is_none() {
-            self.app_update_next_check = Instant::now() + Duration::from_secs(3600);
+        if Instant::now() >= self.next_update_check && self.app_update.is_none() {
+            self.next_update_check = Instant::now() + Duration::from_secs(3600);
             return vec![Effect::CheckAppUpdate { manual: false }];
         }
         let before = self.node_health.len();

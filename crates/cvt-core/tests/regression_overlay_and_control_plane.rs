@@ -163,11 +163,9 @@ fn confirmed_the_control_plane_class_is_every_key_the_core_calls_external_contro
     // The two the core knows and the list leaves out, each for a reason that is
     // about the *class* rather than about the key: `external-ui-name` chooses a
     // subdirectory of the directory `external-ui` already names and redirects
-    // nothing on its own, and `external-doh-server` is a DNS-over-HTTPS proxy
-    // for the core's own queries rather than a listener anybody connects to.
-    let deliberately_out: BTreeSet<&str> = ["external-doh-server", "external-ui-name"]
-        .into_iter()
-        .collect();
+    // nothing on its own. external-doh-server is a listener exposed alongside
+    // the management API and therefore belongs to CONTROL_PLANE.
+    let deliberately_out: BTreeSet<&str> = std::iter::once("external-ui-name").collect();
     let unexplained: Vec<&&str> = listed
         .iter()
         .chain(deliberately_out.iter())
@@ -1300,6 +1298,7 @@ fn confirmed_a_sequence_patch_deletes_by_name_for_every_sequence_key() {
 #[test]
 fn defect_9_the_backups_directory_is_never_checked_for_a_symlink() {
     let (home_dir, paths) = home();
+    let service = cvt_core::Service::open(paths.clone()).unwrap();
     let outside = TempDir::new().unwrap();
     let elsewhere = outside.path().canonicalize().unwrap();
 
@@ -1307,7 +1306,10 @@ fn defect_9_the_backups_directory_is_never_checked_for_a_symlink() {
     std::fs::remove_dir(paths.backups_dir()).unwrap();
     std::os::unix::fs::symlink(&elsewhere, paths.backups_dir()).unwrap();
 
-    let service = cvt_core::Service::open(paths).unwrap();
+    assert!(
+        cvt_core::Service::open(paths).is_err(),
+        "unsafe links are refused on startup"
+    );
     // A refusal is the fix this finding asks for, and the only way to satisfy
     // the check below: with a link at `backups/`, any `Ok` either wrote the
     // whole state outside the home or returned a path that lies about where it
@@ -1387,6 +1389,7 @@ fn defect_9_the_backups_directory_is_never_checked_for_a_symlink() {
 #[test]
 fn defect_10_a_linked_cvt_yaml_is_read_through_where_a_linked_document_is_skipped() {
     let (_dir, paths) = home();
+    let service = cvt_core::Service::open(paths.clone()).unwrap();
     let outside = TempDir::new().unwrap();
     let secret = outside.path().join("somebody-elses.yaml");
     std::fs::write(&secret, "ui:\n  refresh_ms: 4242\n").unwrap();
@@ -1403,7 +1406,10 @@ fn defect_10_a_linked_cvt_yaml_is_read_through_where_a_linked_document_is_skippe
     let linked_document = paths.profiles_dir().join("L2.yaml");
     std::os::unix::fs::symlink(&secret, &linked_document).unwrap();
 
-    let service = cvt_core::Service::open(paths.clone()).unwrap();
+    assert!(
+        cvt_core::Service::open(paths.clone()).is_err(),
+        "unsafe links are refused on startup"
+    );
     let taken = service.backup().unwrap();
 
     let copied_document = taken.join("profiles").join("L2.yaml");
@@ -1578,8 +1584,8 @@ fn confirmed_a_restore_is_additive_for_every_kind_of_entry() {
 
     assert_eq!(
         std::fs::read_to_string(paths.settings_file()).unwrap(),
-        "ui:\n  refresh_ms: 1\n",
-        "a file the backup holds is written back"
+        std::fs::read_to_string(taken.join("cvt.yaml")).unwrap(),
+        "a file the backup holds is written back, including generated credentials"
     );
     assert!(
         paths.profiles_dir().join("orphan.yaml").is_file(),

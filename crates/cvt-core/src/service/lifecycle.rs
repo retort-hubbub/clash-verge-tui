@@ -27,6 +27,7 @@ impl Service {
             // runtime document. Starting from a fresh home should complete
             // that first apply, using the same validation as an explicit apply.
             let outcome = self.generate()?;
+            self.validate_candidate(&outcome)?;
             self.pipeline().commit(&outcome, false)?;
         }
         let text = self.paths.read(&config)?;
@@ -47,12 +48,19 @@ impl Service {
                 "the core is already running as pid {pid}; stop it first"
             )));
         }
+        self.validate_environment(&parsed)?;
         supervisor.validate_config(&binary, &config)?;
         // Logs are rotated here or never: the child holds its log open for as
         // long as it runs, so this is the only moment either file can be moved
         // without a live process writing into a file nobody will read.
         self.rotate_logs(&supervisor);
-        supervisor.start(&binary, &config)
+        let pid = supervisor.start(&binary, &config)?;
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if let Err(error) = supervisor.check_health() {
+            let _ = supervisor.stop();
+            return Err(error);
+        }
+        Ok(pid)
     }
 
     /// Rotate and prune both logs, best effort.
@@ -93,6 +101,15 @@ impl Service {
     /// # Errors
     /// Propagates stop and start failures.
     pub fn restart_core(&self) -> Result<u32> {
+        let config = self.paths.runtime_config();
+        if config.is_file() {
+            let parsed = Config::from_yaml(&self.paths.read(&config)?)?;
+            self.validate_environment(&parsed)?;
+            let binary = self.core_binary().ok_or_else(|| Error::CoreUnavailable {
+                reason: "no Mihomo binary found".to_owned(),
+            })?;
+            self.supervisor().validate_config(&binary, &config)?;
+        }
         self.stop_core()?;
         self.start_core()
     }

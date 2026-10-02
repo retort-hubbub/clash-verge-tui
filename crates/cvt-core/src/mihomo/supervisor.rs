@@ -5,7 +5,7 @@
 //! `Command` calls:
 //!
 //! * **It must be validated before it is launched.** `mihomo -t` parses a
-//!   configuration and exits without touching the network. Running that first
+//!   configuration without starting listeners; providers may be fetched. Running that first
 //!   turns a crash loop into one clear error message.
 //! * **It must not be killed twice.** A terminal can be closed, a `SIGHUP`
 //!   delivered, or two instances started against the same home. A pid file
@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::paths::AppPaths;
+
+mod runtime;
 
 /// Environment variable naming an explicit core binary.
 pub const CORE_ENV: &str = "CVT_CORE";
@@ -72,7 +74,7 @@ impl CoreStatus {
 }
 
 /// The record written to the pid file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PidRecord {
     pid: u32,
     /// Start time in unix seconds, used to detect pid reuse.
@@ -81,6 +83,12 @@ struct PidRecord {
     /// processes with the same pid never share this.
     #[serde(default)]
     start_ticks: u64,
+    #[serde(default)]
+    log_offset: u64,
+    #[serde(default)]
+    config: Option<PathBuf>,
+    #[serde(default)]
+    endpoint: Option<crate::mihomo::endpoint::Endpoint>,
 }
 
 /// Rotating and pruning a log file, for whichever log is being rotated.
@@ -339,13 +347,14 @@ impl Supervisor {
         which(exe_name())
     }
 
-    /// Report the running state, using the pid file as the only authority.
+    /// Report running state using the PID record and the process launch identity.
     #[must_use]
     pub fn status(&self) -> CoreStatus {
         let Some(record) = self.read_pid_record() else {
             return CoreStatus::Stopped;
         };
-        if !process_alive(record.pid) || !pid_matches(record) {
+        if !process_alive(record.pid) || !pid_matches(record.clone()) || !self.owns_process(&record)
+        {
             return CoreStatus::StalePid { pid: record.pid };
         }
         CoreStatus::Running {
@@ -354,36 +363,39 @@ impl Supervisor {
         }
     }
 
-    /// Ask the core to check a configuration without running it.
-    ///
-    /// This is `mihomo -t -d <dir> -f <file>`. Running it before every apply
-    /// converts a crash-on-start into a readable message.
-    ///
-    /// # Errors
-    /// [`Error::CoreUnavailable`] when no binary is found, and
-    /// [`Error::ProcessFailed`] when validation reports a problem.
-    pub fn validate_config(&self, binary: &Path, config: &Path) -> Result<()> {
-        let output = Command::new(binary)
-            .arg("-t")
-            .arg("-d")
-            .arg(self.paths.core_work_dir())
-            .arg("-f")
-            .arg(config)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| Error::ProcessFailed {
-                program: binary.display().to_string(),
-                status: "spawn failed".to_owned(),
-                stderr: e.to_string(),
-            })?;
-        if output.status.success() {
-            return Ok(());
+    /// Require the exact work directory and runtime file, not just a live PID.
+    fn owns_process(&self, record: &PidRecord) -> bool {
+        let pid = record.pid;
+        #[cfg(target_os = "linux")]
+        {
+            let Ok(bytes) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                return false;
+            };
+            let args: Vec<_> = bytes.split(|byte| *byte == 0).collect();
+            let matches = |flag: &[u8], expected: PathBuf| {
+                args.windows(2).any(|pair| {
+                    pair[0] == flag
+                        && std::fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(pair[1])))
+                            .ok()
+                            .zip(std::fs::canonicalize(&expected).ok())
+                            .is_some_and(|(actual, expected)| actual == expected)
+                })
+            };
+            use std::os::unix::ffi::OsStrExt as _;
+            matches(b"-d", self.paths.core_work_dir())
+                && matches(
+                    b"-f",
+                    record
+                        .config
+                        .clone()
+                        .unwrap_or_else(|| self.paths.runtime_config()),
+                )
         }
-        Err(Error::ProcessFailed {
-            program: format!("{} -t", binary.display()),
-            status: output.status.to_string(),
-            stderr: summarise(&String::from_utf8_lossy(&output.stderr)),
-        })
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            true
+        }
     }
 
     /// Launch the core with a generated configuration.
@@ -401,6 +413,12 @@ impl Supervisor {
                 "the core is already running as pid {pid}; stop it first"
             )));
         }
+        let work = self.paths.core_work_dir();
+        let work = std::fs::canonicalize(&work).map_err(|error| Error::io(&work, error))?;
+        let config = std::fs::canonicalize(config).map_err(|error| Error::io(config, error))?;
+        let endpoint = crate::model::config::Config::from_yaml(&self.paths.read(&config)?)
+            .ok()
+            .and_then(|config| crate::mihomo::endpoint::Endpoint::from_config(&config));
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -408,11 +426,12 @@ impl Supervisor {
             .map_err(|e| Error::io(self.log_file(), e))?;
         let log_err = log.try_clone().map_err(|e| Error::io(self.log_file(), e))?;
 
-        let child = Command::new(binary)
+        let log_offset = std::fs::metadata(self.log_file()).map_or(0, |metadata| metadata.len());
+        let mut child = Command::new(binary)
             .arg("-d")
-            .arg(self.paths.core_work_dir())
+            .arg(&work)
             .arg("-f")
-            .arg(config)
+            .arg(&config)
             // The generated configuration lives outside the core's own home,
             // and mihomo refuses any `path` that is not under it:
             //
@@ -425,7 +444,8 @@ impl Supervisor {
             // the reload design exists to avoid because a restart drops every
             // live connection. `SAFE_PATHS` is how the core is told which other
             // directories it may read a configuration from.
-            .env("SAFE_PATHS", safe_path_for(config))
+            .env("SAFE_PATHS", safe_path_for(&config))
+            .env("PATH", self.child_path()?)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
@@ -441,9 +461,18 @@ impl Supervisor {
             pid,
             since: chrono::Utc::now().timestamp(),
             start_ticks: process_start_ticks(pid).unwrap_or(0),
+            log_offset,
+            endpoint,
+            config: Some(config),
         };
-        let yaml = serde_norway::to_string(&record).map_err(|e| Error::serialize("pid file", e))?;
-        self.paths.write_atomic(&self.pid_file(), &yaml)?;
+        let written = serde_norway::to_string(&record)
+            .map_err(|error| Error::serialize("pid file", error))
+            .and_then(|yaml| self.paths.write_atomic(&self.pid_file(), &yaml));
+        if let Err(error) = written {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         Ok(pid)
     }
 
@@ -469,13 +498,17 @@ impl Supervisor {
         terminate(pid, false)?;
         let deadline = std::time::Instant::now() + GRACEFUL_TIMEOUT;
         while std::time::Instant::now() < deadline {
-            if !process_alive(pid) {
+            if !process_alive(pid)
+                || !matches!(self.status(), CoreStatus::Running { pid: current, .. } if current == pid)
+            {
                 let _ = std::fs::remove_file(self.pid_file());
                 return Ok(true);
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        terminate(pid, true)?;
+        if matches!(self.status(), CoreStatus::Running { pid: current, .. } if current == pid) {
+            terminate(pid, true)?;
+        }
         // Give the kernel a moment to reap before reporting.
         std::thread::sleep(std::time::Duration::from_millis(100));
         let _ = std::fs::remove_file(self.pid_file());
@@ -520,7 +553,7 @@ impl Supervisor {
 /// Guard against pid reuse: a recycled pid must not be mistaken for ours.
 fn pid_matches(record: PidRecord) -> bool {
     if record.start_ticks == 0 {
-        return true; // the field was unavailable, so do not second-guess
+        return !cfg!(target_os = "linux"); // Linux records without identity are not adopted
     }
     process_start_ticks(record.pid) == Some(record.start_ticks)
 }
@@ -608,7 +641,7 @@ fn terminate(pid: u32, force: bool) -> Result<()> {
 /// Field 22 of `/proc/<pid>/stat`: process start time in clock ticks.
 ///
 /// Used to tell a live process from a recycled pid. Returns `None` where the
-/// information is unavailable, in which case the caller trusts the pid.
+/// information is unavailable; Linux callers refuse to adopt such records.
 fn process_start_ticks(pid: u32) -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
@@ -778,6 +811,9 @@ mod tests {
             pid: std::process::id(),
             since: 1,
             start_ticks: u64::MAX,
+            log_offset: 0,
+            config: None,
+            endpoint: None,
         };
         assert!(
             !pid_matches(mismatched),
@@ -793,9 +829,33 @@ mod tests {
             pid,
             since: 1,
             start_ticks: ticks,
+            log_offset: 0,
+            config: None,
+            endpoint: None,
         };
         assert!(pid_matches(record));
         assert!(process_alive(pid), "the test process is obviously alive");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_live_foreign_pid_is_not_adopted_or_signalled() {
+        let (_dir, sup) = supervisor();
+        let pid = std::process::id();
+        let record = PidRecord {
+            pid,
+            since: 1,
+            start_ticks: process_start_ticks(pid).unwrap(),
+            log_offset: 0,
+            config: None,
+            endpoint: None,
+        };
+        sup.paths
+            .write_atomic(&sup.pid_file(), &serde_norway::to_string(&record).unwrap())
+            .unwrap();
+        assert_eq!(sup.status(), CoreStatus::StalePid { pid });
+        assert!(!sup.stop().unwrap());
+        assert!(process_alive(pid));
     }
 
     #[test]
@@ -877,21 +937,43 @@ mod tests {
     #[test]
     fn starting_when_already_running_is_refused() {
         let (_d, sup) = supervisor();
-        // Pretend this very process is the core.
-        let pid = std::process::id();
-        let ticks = process_start_ticks(pid).unwrap_or(0);
-        let record = PidRecord {
-            pid,
-            since: 1,
-            start_ticks: ticks,
-        };
-        sup.paths
-            .write_atomic(&sup.pid_file(), &serde_norway::to_string(&record).unwrap())
+        #[cfg(target_os = "linux")]
+        {
+            // A matching PID alone is not ownership: this regression must use
+            // a child with the supervisor's actual -d/-f launch arguments.
+            use std::os::unix::fs::PermissionsExt as _;
+            let binary = sup.paths.core_dir().join("mock-mihomo");
+            std::fs::write(
+                &binary,
+                "#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do sleep 0.1; done\n",
+            )
             .unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            sup.paths
+                .write_atomic(&sup.paths.runtime_config(), "rules: [MATCH,DIRECT]\n")
+                .unwrap();
+            sup.start(&binary, &sup.paths.runtime_config()).unwrap();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let record = PidRecord {
+                pid: std::process::id(),
+                since: 1,
+                start_ticks: process_start_ticks(std::process::id()).unwrap_or(0),
+                log_offset: 0,
+                config: None,
+                endpoint: None,
+            };
+            sup.paths
+                .write_atomic(&sup.pid_file(), &serde_norway::to_string(&record).unwrap())
+                .unwrap();
+        }
         assert!(sup.status().is_running());
         let err = sup
             .start(Path::new("/bin/true"), Path::new("/tmp/x.yaml"))
             .unwrap_err();
+        #[cfg(target_os = "linux")]
+        assert!(sup.stop().unwrap());
         assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
         assert!(err.to_string().contains("already running"), "{err}");
     }

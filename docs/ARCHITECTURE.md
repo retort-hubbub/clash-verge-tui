@@ -31,7 +31,7 @@ Dependencies point toward `cvt-core`. Shared application operations belong in
 | `enhance::pipeline` | Yes | Read the profile chain, generate, commit and snapshot configuration |
 | `mihomo` | Yes | Controller client, event streams and process supervisor |
 | `service` | Yes | Public application facade, paths, settings and adapter construction |
-| `service::{deployment,lifecycle,selection}` (private) | Yes | Apply/reload/rollback, process lifecycle and bounded selection replay |
+| `service::{deployment,lifecycle,network_safety,selection}` (private) | Yes | Apply/reload/rollback, process lifecycle and bounded selection replay |
 | `service::backup` (private) | Yes | Backup copying, restore and retention behind the `Service` API |
 
 Pure transformations accept values. Adapters own filesystem, network,
@@ -51,6 +51,7 @@ profile::store: resolve the ordered chain and read its documents
     -> enhance::pipeline: apply each profile's transformation in chain order
     -> validate: collect errors and warnings
     -> Outcome: rendered configuration, diff and per-profile results
+    -> Service::validate_candidate: local resource checks and bounded mihomo -t
     -> Pipeline::commit: snapshot the previous runtime file, then write the new one
     -> Service::reload: hot reload or restart, with rollback when configured
 ```
@@ -83,7 +84,15 @@ The UI refresh interval does not control request timeouts.
 `mihomo::stream` provides WebSocket and HTTP newline-delimited transports with
 reconnection and bounded queues. `mihomo::supervisor` locates and controls the
 core, validates configuration with `mihomo -t`, and records process identity so
-a recycled pid is not mistaken for the managed core. Platform-specific behavior
+a recycled pid is not mistaken for the managed core. On Linux, start ticks,
+work-directory and configuration arguments must match; legacy records without
+start ticks are not adopted. Signals are limited to matching processes.
+The PID record also pins the process's controller independently of a newly
+selected or committed document. Controller address changes require restart;
+otherwise reload uses the running endpoint and then checks the new document.
+Atomic state writes use unique temporary files with private permissions.
+Controller readiness alone is insufficient: DNS/TUN startup failures are read
+from a bounded log window for the current launch or reload. Platform-specific behavior
 is implemented in that adapter.
 
 ### Subscription updates
@@ -95,10 +104,15 @@ are supported. Response metadata supplies subscription usage information, and
 
 ### Applying configuration
 
-`Service` exposes operations shared by the CLI and TUI. `apply` generates and
-commits a document, then reloads it according to `ReloadMode`. Automatic mode
-tries hot reload before restart. When restart fails and rollback is enabled,
-it restores a previous runtime snapshot and attempts to start that configuration.
+`Service` exposes operations shared by the CLI and TUI. `apply` generates a
+candidate, checks local controller/DNS listeners and competing TUN processes,
+and runs the installed core's parser against a temporary file before commit.
+Parser execution is bounded to 30 seconds. Automatic mode tries hot reload
+before restart. Failed reloads in all modes use the same snapshot recovery
+when rollback is enabled, including API readiness and startup log checks.
+Recovery first tries to reload the previous document into a surviving process.
+If no process was running before the attempt, rollback restores disk state
+without starting a previously stopped core.
 An `ApplyReport` distinguishes an applied configuration from a rollback.
 
 After a successful reload, the service waits for the expected groups and

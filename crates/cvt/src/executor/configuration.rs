@@ -76,11 +76,19 @@ impl Executor {
 
 /// Serialized worker operation; readiness waits must stay off the event loop.
 fn deploy(service: &Service, mode: Option<ReloadMode>) -> Result<Done> {
+    if let Some(mode) = mode {
+        let report = tokio::runtime::Handle::current().block_on(service.apply(false, mode))?;
+        return Ok(Done::ConfigApplied {
+            reload: report.reload,
+            changed: report.outcome.diff.entries.len(),
+        });
+    }
     let outcome = service.generate()?;
+    service.validate_candidate(&outcome)?;
     let changed = outcome.diff.entries.len();
     service.pipeline().commit(&outcome, false)?;
-    let reload = mode
-        .map(|mode| tokio::runtime::Handle::current().block_on(service.reload(mode)))
-        .transpose()?;
-    Ok(Done::ConfigApplied { reload, changed })
+    Ok(Done::ConfigApplied {
+        reload: None,
+        changed,
+    })
 }

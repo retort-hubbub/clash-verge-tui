@@ -71,6 +71,7 @@ impl Executor {
     pub(super) fn start_core(&self, restart: bool, sink: &EventSink) {
         self.invalidate_ip();
         let service = Arc::clone(&self.service);
+        let health_service = Arc::clone(&self.service);
         let starting = Arc::clone(&self.starting);
         let sink = sink.clone();
         starting.store(true, Ordering::SeqCst);
@@ -83,7 +84,22 @@ impl Executor {
             })
             .await;
             let result = match result {
-                Ok(Ok(launch)) => ready_mode(launch).await,
+                Ok(Ok(launch)) => {
+                    let pid = launch.0;
+                    let ready = ready_mode(launch).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    let guard = health_service
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let health = guard.supervisor().check_health();
+                    let result = ready.and_then(|value| health.map(|()| value));
+                    if result.is_err()
+                        && matches!(guard.core_status(), cvt_core::mihomo::CoreStatus::Running { pid: current, .. } if current == pid)
+                    {
+                        let _ = guard.stop_core();
+                    }
+                    result
+                }
                 Ok(Err(error)) => Err(error),
                 Err(error) => Err(Error::Unsupported(error.to_string())),
             };

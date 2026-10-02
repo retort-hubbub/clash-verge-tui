@@ -133,7 +133,17 @@ impl Executor {
 
     /// A client for the running core, if there is one.
     fn client(&self) -> Result<Client, Error> {
-        self.with_service(|service| service.client())
+        self.with_service(|service| {
+            if !service.core_status().is_running() {
+                return Err(Error::ControllerUnreachable {
+                    endpoint: service
+                        .endpoint()?
+                        .map_or_else(|| "unknown".to_owned(), |endpoint| endpoint.describe()),
+                    source: "no running core owned by this application home".into(),
+                });
+            }
+            service.client()
+        })
     }
 
     /// Send an event, ignoring the report when the interface has gone.

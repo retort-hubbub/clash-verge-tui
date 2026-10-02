@@ -349,6 +349,7 @@ fn authorize_listeners(ctx: &Ctx) -> Result<()> {
     } else {
         ctx.service().generate()?.config
     };
+    ctx.service().validate_environment(&config)?;
     let capabilities = crate::tun::required_capabilities(&config);
     if capabilities.is_empty() {
         return Ok(());

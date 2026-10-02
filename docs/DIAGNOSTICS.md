@@ -93,3 +93,31 @@ entirely once `mihomo -t` and a running core showed it loads
 `IP-CIDR,2001:db8::/32,DIRECT` and matches traffic with it. Neither name is
 repeated here, for the same reason. Every check in this file that describes
 what the core does was settled by asking the core.
+
+
+## Local DNS and TUN conflicts
+
+If applying a profile reports an occupied listener, choose a free controller or
+DNS address. `dns.listen: :53` binds all interfaces and commonly conflicts with
+systemd-resolved's local stub. Use `127.0.0.1:1053` when TUN's DNS interception
+handles client queries; do not disable the system resolver just to free port 53.
+Applications explicitly using a host DNS listener must be pointed at its new
+address separately.
+
+TUN is affected by both the subscription and `core.tun_enabled`. `profile`
+follows the subscription; `on` overrides a subscription that has no TUN section.
+Run only one Mihomo TUN owner at a time, including Clash Verge Rev. Different
+proxy/controller ports do not isolate default routes or system DNS.
+
+`CAP_NET_ADMIN`, `CAP_NET_RAW` and `CAP_NET_BIND_SERVICE` authorize kernel
+operations, not systemd-resolved's D-Bus methods. The core's `resolvectl` helper
+uses `--no-ask-password` to prevent repeated policy-agent dialogs. It may be
+refused by the system policy; TUI-created TUN uses explicit UDP/TCP DNS hijacking
+and does not require that policy to be changed. This helper only affects the
+managed child's PATH, not commands in the user's shell.
+
+A successful syntax check cannot guarantee DNS answers, remote proxy availability,
+or TLS correctness. Startup additionally checks local conflicts and known DNS/TUN
+listener failures; apply failures use runtime snapshots when rollback is enabled.
+A Python `Exception ignored while flushing sys.stdout` needs its complete traceback
+(e.g. `BrokenPipeError`) to diagnose; the message alone is not evidence of a DNS fault.

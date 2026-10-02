@@ -207,19 +207,25 @@ impl AppPaths {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
         }
-        let tmp = path.with_extension(format!(
-            "{}.tmp",
-            path.extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or("out")
-        ));
-        {
-            let mut f = std::fs::File::create(&tmp).map_err(|e| Error::io(&tmp, e))?;
-            f.write_all(contents.as_bytes())
-                .map_err(|e| Error::io(&tmp, e))?;
-            f.sync_all().map_err(|e| Error::io(&tmp, e))?;
-        }
-        std::fs::rename(&tmp, path).map_err(|e| Error::io(path, e))?;
+        let directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        // Unique, exclusively created files prevent collisions and symlink
+        // attacks on predictable .tmp names. tempfile defaults to mode 0600,
+        // keeping subscription credentials and controller secrets private.
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory).map_err(|error| Error::io(path, error))?;
+        temporary
+            .write_all(contents.as_bytes())
+            .map_err(|error| Error::io(path, error))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| Error::io(path, error))?;
+        temporary
+            .persist(path)
+            .map_err(|error| Error::io(path, error.error))?;
         Ok(())
     }
 
@@ -258,5 +264,28 @@ impl AppPaths {
     #[must_use]
     pub fn is_initialised(&self) -> bool {
         self.profiles_index().is_file()
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod atomic_write_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    #[test]
+    fn atomic_state_is_private_and_does_not_follow_predictable_temp_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(directory.path());
+        let target = directory.path().join("state.yaml");
+        let other = directory.path().join("unrelated");
+        std::fs::write(&other, "keep").unwrap();
+        symlink(&other, directory.path().join("state.yaml.tmp")).unwrap();
+        paths.write_atomic(&target, "secret").unwrap();
+        assert_eq!(std::fs::read_to_string(other).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "secret");
+        assert_eq!(
+            std::fs::metadata(target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

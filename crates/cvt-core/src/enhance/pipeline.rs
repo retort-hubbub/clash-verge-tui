@@ -539,11 +539,15 @@ impl Pipeline {
             if let Some(tun) = tun.as_object_mut() {
                 tun.insert("enable".to_owned(), Value::Bool(enabled));
                 if enabled {
+                    tun.entry("device")
+                        .or_insert_with(|| Value::String("cvt-mihomo".to_owned()));
                     tun.entry("stack")
                         .or_insert_with(|| Value::String("mixed".to_owned()));
                     tun.entry("auto-route").or_insert(Value::Bool(true));
                     tun.entry("auto-detect-interface")
                         .or_insert(Value::Bool(true));
+                    tun.entry("dns-hijack")
+                        .or_insert_with(|| serde_json::json!(["any:53", "tcp://any:53"]));
                 }
             } else {
                 return Err(Error::invalid("tun", "TUN settings must be a mapping"));

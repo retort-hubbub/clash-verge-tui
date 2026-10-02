@@ -283,6 +283,9 @@ impl App {
                     return self.dispatch(action, true);
                 }
                 if matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc) {
+                    if action == Action::AuthorizeCore {
+                        self.pending_authorization = None;
+                    }
                     self.set_status(StatusKind::Info, "cancelled");
                     return Vec::new();
                 }

@@ -27,6 +27,7 @@
 mod backup;
 mod deployment;
 mod lifecycle;
+mod network_safety;
 mod selection;
 
 #[cfg(test)]
@@ -250,7 +251,11 @@ impl Service {
     /// [`Error::MissingField`] when no configuration declares a controller,
     /// so the caller can tell "not configured yet" from "unreachable".
     pub fn client(&self) -> Result<Client> {
-        let endpoint = self.endpoint()?.ok_or_else(|| Error::MissingField {
+        let endpoint = match self.supervisor().controller_endpoint() {
+            Some(endpoint) => Some(endpoint),
+            None => self.endpoint()?,
+        }
+        .ok_or_else(|| Error::MissingField {
             uid: "-".to_owned(),
             field: "external-controller",
         })?;

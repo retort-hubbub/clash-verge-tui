@@ -124,6 +124,22 @@ and needs `/dev/net/tun`. After saving, enabling TUN regenerates the runtime
 configuration and restarts a running core. Background `core start` cannot ask
 for a password; authorize the binary interactively before enabling login startup.
 
+The capability grant is reused across restarts and profile switches. A new core
+binary needs a new grant. On Linux, child `resolvectl` calls use
+`--no-ask-password`; they do not launch additional DNS authorization dialogs.
+TUI-enabled TUN defaults to the `cvt-mihomo` interface and intercepts UDP/TCP DNS
+on port 53 instead of depending on an interactive system resolver change.
+Do not run two Mihomo TUN configurations simultaneously. Startup refuses
+detected foreign TUN and occupied controller/DNS listeners. With systemd-resolved,
+prefer `dns.listen: 127.0.0.1:1053` over `:53`; TUN DNS interception does not
+require a host listener on port 53.
+
+Before applying, the generated candidate is checked with the installed Mihomo
+core (30-second limit). The previous runtime file is snapshotted before replacement.
+When rollback is enabled, failed hot reloads and restarts restore the snapshot
+and check recovery readiness. Local checks and startup logs catch known resource
+conflicts; they cannot predict every remote DNS, TLS, or proxy connectivity failure.
+
 On **Profiles**, `e` edits the document, `E` edits its subscription URL, and `o`
 opens the selected base profile's private override in the editor. On **Rules**,
 `a` adds a rule to the current subscription's private override and `o` edits

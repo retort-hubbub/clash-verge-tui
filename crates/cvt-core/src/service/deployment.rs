@@ -11,6 +11,13 @@ impl Service {
     pub async fn apply(&self, force: bool, mode: ReloadMode) -> Result<ApplyReport> {
         let outcome = self.generate()?;
         let pipeline = self.pipeline();
+        if mode == ReloadMode::HotReload && self.controller_changes(&outcome.config) {
+            return Err(Error::invalid(
+                "reload mode",
+                "controller address or secret changes require a restart; use auto or restart",
+            ));
+        }
+        self.validate_candidate(&outcome)?;
         pipeline.commit(&outcome, force)?;
         let reload = self.reload(mode).await?;
         // A reload rebuilds every group, so the choice a user made this morning
@@ -45,6 +52,42 @@ impl Service {
         })
     }
 
+    fn controller_changes(&self, config: &Config) -> bool {
+        if !self.core_status().is_running() {
+            return false;
+        }
+        match self.supervisor().controller_endpoint() {
+            Some(current) => Some(current) != super::Endpoint::from_config(config),
+            // Old records cannot establish which controller belongs to the
+            // process. Restart once rather than connect to an inferred address.
+            None => true,
+        }
+    }
+
+    /// Validate the candidate without overwriting the running configuration.
+    ///
+    /// # Errors
+    /// Returns local conflicts or Mihomo parser failures before commit.
+    pub fn validate_candidate(&self, outcome: &crate::enhance::pipeline::Outcome) -> Result<()> {
+        self.validate_environment(&outcome.config)?;
+        if let Some(binary) = self.core_binary() {
+            use std::io::Write as _;
+            let directory = self.paths.runtime_dir();
+            std::fs::create_dir_all(&directory).map_err(|error| Error::io(&directory, error))?;
+            let mut candidate = tempfile::Builder::new()
+                .prefix("preflight-")
+                .suffix(".yaml")
+                .tempfile_in(&directory)
+                .map_err(|error| Error::io(&directory, error))?;
+            candidate
+                .write_all(outcome.yaml.as_bytes())
+                .map_err(|error| Error::io(candidate.path(), error))?;
+            self.supervisor()
+                .validate_config(&binary, candidate.path())?;
+        }
+        Ok(())
+    }
+
     /// Hand the already-written runtime configuration to the core.
     ///
     /// Tries the requested reload strategy and restores a snapshot when rollback
@@ -66,41 +109,53 @@ impl Service {
                 "no configuration has been generated yet; apply a profile first",
             ));
         }
-        match mode {
-            ReloadMode::Restart => return self.restart_with_rollback().await,
-            ReloadMode::HotReload => {
-                self.hot_reload().await?;
-                return Ok(ReloadOutcome::HotReloaded);
+        let was_running = self.core_status().is_running();
+        let result = match mode {
+            ReloadMode::Restart => self.restart_with_rollback().await,
+            ReloadMode::HotReload => self.hot_reload().await.map(|()| ReloadOutcome::HotReloaded),
+            ReloadMode::Auto
+                if self.controller_changes(&Config::from_yaml(
+                    &self.paths.read(&self.paths.runtime_config())?,
+                )?) =>
+            {
+                self.restart_with_rollback().await
             }
-            ReloadMode::Auto => {}
-        }
-
-        match self.hot_reload().await {
-            Ok(()) => Ok(ReloadOutcome::HotReloaded),
-            Err(reason) => {
-                let reason = reason.to_string();
-                match self.restart_with_rollback().await {
-                    Ok(ReloadOutcome::Restarted { pid }) => Ok(ReloadOutcome::Restarted { pid }),
-                    Ok(other) => Ok(other),
-                    Err(e) => {
-                        if !self.settings.core.rollback_on_failure || !e.is_rollbackable() {
-                            return Err(e);
-                        }
-                        // The core would not come up with the new document, so
-                        // put back what was working. A first apply has nothing
-                        // to put back: report the restart failure — the only
-                        // real information there is — rather than replacing it
-                        // with a complaint about a missing snapshot.
-                        if self.pipeline().snapshots()?.is_empty() {
-                            return Err(e);
-                        }
-                        let snapshot = self.pipeline().rollback()?;
-                        self.stop_core()?;
-                        self.start_core()?;
-                        Ok(ReloadOutcome::RolledBack { reason, snapshot })
-                    }
+            ReloadMode::Auto => match self.hot_reload().await {
+                Ok(()) => Ok(ReloadOutcome::HotReloaded),
+                Err(reason) => {
+                    tracing::warn!(error = %reason, "hot reload failed; restarting the managed core");
+                    self.restart_with_rollback().await
                 }
+            },
+        };
+        match result {
+            Ok(outcome) => Ok(outcome),
+            Err(error)
+                if self.settings.core.rollback_on_failure
+                    && !self.pipeline().snapshots()?.is_empty() =>
+            {
+                let reason = error.to_string();
+                let snapshot = self.pipeline().rollback()?;
+                let recovery = async {
+                    // A failed apply must not turn a previously stopped core
+                    // into a running one merely to restore its file.
+                    if !was_running {
+                        self.stop_core()?;
+                        return Ok(());
+                    }
+                    // The old process may still be healthy after an API refusal.
+                    // Restore its document without discarding connections first.
+                    if self.hot_reload().await.is_err() {
+                        self.restart_core()?;
+                    }
+                    self.wait_until_ready().await
+                }
+                .await;
+                recovery.map_err(|failure| Error::invalid("rollback", format!(
+                    "apply failed: {reason}; previous configuration restored on disk, but recovery failed: {failure}")))?;
+                Ok(ReloadOutcome::RolledBack { reason, snapshot })
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -117,20 +172,31 @@ impl Service {
                 source: "the core process is not running".into(),
             });
         }
-        let client = self.client()?;
+        let endpoint = self.supervisor().controller_endpoint().ok_or_else(||
+            Error::invalid("core identity", "the running core has no recorded controller identity; restart it once before hot reload"))?;
+        let client = super::Client::new(endpoint)?;
         if self.settings.update.close_connections_on_apply {
             // Best effort: a core that refuses this is still reloadable.
             let _ = client.close_all_connections().await;
         }
+        self.supervisor().begin_reload()?;
         client
             .reload_configs(Some(&self.paths.runtime_config()), None, true)
-            .await
+            .await?;
+        self.supervisor().finish_reload()?;
+        self.wait_until_ready().await
     }
 
     /// Restart the core, waiting for the API to come back.
     async fn restart_with_rollback(&self) -> Result<ReloadOutcome> {
         let pid = self.restart_core()?;
-        self.wait_until_ready().await?;
+        if let Err(error) = self.wait_until_ready().await {
+            if matches!(self.core_status(), super::CoreStatus::Running { pid: current, .. } if current == pid)
+            {
+                let _ = self.stop_core();
+            }
+            return Err(error);
+        }
         Ok(ReloadOutcome::Restarted { pid })
     }
 
@@ -199,6 +265,8 @@ impl Service {
     /// [`Error::ControllerUnreachable`] when it never answers within the
     /// deadline.
     pub async fn wait_until_ready(&self) -> Result<()> {
-        self.client()?.wait_until_ready().await
+        self.client()?.wait_until_ready().await?;
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        self.supervisor().check_health()
     }
 }

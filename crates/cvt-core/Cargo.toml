@@ -24,10 +24,10 @@ reqwest.workspace = true
 tokio-tungstenite.workspace = true
 bytes.workspace = true
 flate2.workspace = true
+tempfile = "3"
 
 [dev-dependencies]
 proptest = "1.11.0"
-tempfile = "3"
 
 [lints]
 workspace = true

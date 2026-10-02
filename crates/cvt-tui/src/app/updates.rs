@@ -25,6 +25,11 @@ impl App {
                 capabilities,
                 next,
             } => {
+                if self.pending_authorization.is_some() {
+                    // Repeated synchronization effects must not replace the
+                    // user's in-progress authorization dialog.
+                    return Vec::new();
+                }
                 let question = crate::i18n::message(
                     self.language(),
                     crate::i18n::Message::CoreAuthorization {

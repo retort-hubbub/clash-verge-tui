@@ -32,7 +32,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 /// Where the core is, which binary it is, and where the data lives.
 fn status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let core_type = if app.settings.core.use_managed {
+    let paths = cvt_core::AppPaths::new(&app.home);
+    let binary = cvt_core::mihomo::supervisor::Supervisor::new(paths.clone()).locate_with(
+        app.settings.core.binary.as_deref(),
+        app.settings.core.use_managed,
+    );
+    let managed = paths.core_dir().join(if cfg!(windows) {
+        "mihomo.exe"
+    } else {
+        "mihomo"
+    });
+    let core_type = if binary
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .zip(std::fs::canonicalize(managed).ok())
+        .is_some_and(|(actual, managed)| actual == managed)
+    {
         app.tr("managed")
     } else {
         app.tr("local")

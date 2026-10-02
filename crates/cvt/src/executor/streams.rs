@@ -25,7 +25,7 @@ impl Executor {
                 service
                     .core_status()
                     .is_running()
-                    .then(|| service.endpoint().ok().flatten())
+                    .then(|| service.supervisor().controller_endpoint())
                     .flatten(),
             )
         });
@@ -41,6 +41,7 @@ impl Executor {
 
         let sink = sink.clone();
         let streaming = Arc::clone(&self.streaming);
+        let service = Arc::clone(&self.service);
         tokio::spawn(async move {
             let options = Options::new(Selection {
                 traffic: true,
@@ -50,7 +51,7 @@ impl Executor {
             })
             .with_log_level(level);
 
-            let mut stream = match Stream::spawn(endpoint, options) {
+            let mut stream = match Stream::spawn(endpoint.clone(), options) {
                 Ok(stream) => stream,
                 Err(error) => {
                     let _ = sink.send(Event::Failed(error.to_string()));
@@ -58,7 +59,25 @@ impl Executor {
                     return;
                 }
             };
-            while let Some(event) = stream.recv().await {
+            let mut ownership = tokio::time::interval(std::time::Duration::from_millis(500));
+            loop {
+                let event = tokio::select! {
+                    _ = ownership.tick() => {
+                        let guard = match service.try_lock() {
+                            Ok(guard) => guard,
+                            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                            Err(std::sync::TryLockError::WouldBlock) => continue,
+                        };
+                        if guard.supervisor().controller_endpoint().as_ref() != Some(&endpoint) {
+                            break;
+                        }
+                        continue;
+                    }
+                    event = stream.recv() => match event {
+                        Some(event) => event,
+                        None => break,
+                    },
+                };
                 let event = match event {
                     StreamEvent::Traffic(traffic) => Event::Data(Data::Traffic(traffic)),
                     StreamEvent::Memory(memory) => Event::Data(Data::Memory(memory.inuse)),

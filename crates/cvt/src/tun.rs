@@ -67,22 +67,56 @@ pub fn has_capabilities(binary: &Path, capabilities: &str) -> Result<bool> {
     if capabilities.is_empty() {
         return Ok(true);
     }
+    let granted = file_capabilities(binary)?;
+    Ok(capabilities_include(&granted, capabilities))
+}
+
+fn capabilities_include(granted: &str, capabilities: &str) -> bool {
+    capabilities.split(',').all(|required| {
+        let mut effective = false;
+        let mut permitted = false;
+        for clause in granted.split_whitespace() {
+            let Some(index) = clause.find(['=', '+', '-']) else {
+                continue;
+            };
+            let names = &clause[..index];
+            let operator = clause.as_bytes()[index];
+            let flags = &clause[index + 1..];
+            if names.is_empty() || names.split(',').any(|name| name == required) {
+                if operator == b'=' {
+                    effective = flags.contains('e');
+                    permitted = flags.contains('p');
+                } else {
+                    if flags.contains('e') {
+                        effective = operator == b'+';
+                    }
+                    if flags.contains('p') {
+                        permitted = operator == b'+';
+                    }
+                }
+            }
+        }
+        effective && permitted
+    })
+}
+
+// getcap does not follow symlinks. Preserve all clauses, including capability
+// sets with different flags, when adding privileges to an existing binary.
+fn file_capabilities(binary: &Path) -> Result<String> {
+    let binary = std::fs::canonicalize(binary).context("locating the Mihomo binary")?;
     let output = Command::new(capability_tool("getcap")?)
-        .arg(binary)
+        .arg(&binary)
         .output()?;
     if !output.status.success() {
         bail!("could not inspect Mihomo network capabilities");
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let granted = text.split_whitespace().last().unwrap_or_default();
-    let Some((names, flags)) = granted.split_once('=') else {
-        return Ok(false);
-    };
-    Ok(flags.contains('e')
-        && flags.contains('p')
-        && capabilities
-            .split(',')
-            .all(|cap| names.split(',').any(|name| cap == name)))
+    let text = String::from_utf8(output.stdout).context("reading file capabilities")?;
+    Ok(text
+        .trim()
+        .strip_prefix(binary.to_string_lossy().as_ref())
+        .unwrap_or_default()
+        .trim()
+        .to_owned())
 }
 
 /// Grant the requested network capabilities after explicit user approval.
@@ -105,6 +139,8 @@ pub fn authorize_capabilities(binary: &Path, capabilities: &str) -> Result<()> {
     if has_capabilities(&binary, capabilities)? {
         return Ok(());
     }
+    let existing = file_capabilities(&binary)?;
+    let grant = format!("{existing} {capabilities}+ep").trim().to_owned();
     let setcap = capability_tool("setcap")?;
     let desktop =
         std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
@@ -130,7 +166,7 @@ pub fn authorize_capabilities(binary: &Path, capabilities: &str) -> Result<()> {
         std::io::stdin().is_terminal(),
     );
     let mut status = command
-        .arg(format!("{capabilities}+ep"))
+        .arg(&grant)
         .arg(&binary)
         .status()
         .context("authorization needs pkexec on a desktop, or sudo in a terminal")?;
@@ -138,7 +174,7 @@ pub fn authorize_capabilities(binary: &Path, capabilities: &str) -> Result<()> {
         // No policy agent in an SSH/headless session: allow terminal sudo.
         status = sudo_command(true)
             .arg(&setcap)
-            .arg(format!("{capabilities}+ep"))
+            .arg(&grant)
             .arg(&binary)
             .status()?;
     }
@@ -186,6 +222,17 @@ fn authorization_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_grants_are_found_across_all_getcap_clauses() {
+        assert!(capabilities_include(
+            "cap_net_admin,cap_net_raw=ep cap_chown=i",
+            "cap_net_admin,cap_net_raw"
+        ));
+        assert!(capabilities_include("=ep cap_net_raw-e", "cap_net_admin"));
+        assert!(!capabilities_include("=ep cap_net_raw-e", "cap_net_raw"));
+        assert!(!capabilities_include("cap_net_admin=p", "cap_net_admin"));
+    }
 
     #[test]
     fn headless_authorization_uses_sudo_even_when_pkexec_is_installed() {

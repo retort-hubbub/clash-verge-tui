@@ -60,6 +60,7 @@ impl Executor {
                         .collect(),
                 });
             }
+            service.validate_environment(&config)?;
             let capabilities = crate::tun::required_capabilities(&config);
             if capabilities.is_empty() {
                 return Ok(None);

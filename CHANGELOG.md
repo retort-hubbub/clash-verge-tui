@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-10-06
+
+### Added
+
+- Stream real-time connection transfer rates and display per-connection upload and download throughput in the connections table and detail pane.
+- Add transfer rate sorting (`Fastest`) to cycle and order active connections by live bandwidth usage.
+
+### Fixed
+
+- Stabilize the connections table layout with width-aware column prioritization and dedicated spacing across terminal sizes.
+- Drive the terminal UI event loop with a persistent frame clock, skipping missed ticks to eliminate render jitter and input latency.
+
 ## [0.8.5] - 2026-10-03
 
 ### Fixed
@@ -920,7 +932,8 @@ input.
   not have passed, and the declared MSRV was three versions below what the
   dependency graph requires.
 
-[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.5...develop
+[Unreleased]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.6...develop
+[0.8.6]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/retort-hubbub/clash-verge-tui/compare/v0.8.2...v0.8.3

@@ -206,9 +206,9 @@ pub(crate) fn table_rows_area(app: &App) -> Option<Rect> {
 /// Shared pane height for rendering and mouse hit testing.
 pub(crate) const fn detail_height(screen: Screen) -> u16 {
     match screen {
-        Screen::Profiles => 9,
+        Screen::Profiles | Screen::Connections => 9,
         Screen::Proxies => 10,
-        Screen::Connections | Screen::Rules => 7,
+        Screen::Rules => 7,
         Screen::Tests | Screen::Settings => 6,
         Screen::Help => 5,
         Screen::Home | Screen::Logs => 0,

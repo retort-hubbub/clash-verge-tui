@@ -12,8 +12,8 @@ impl Executor {
 
     /// Start the live stream, once.
     ///
-    /// Traffic, memory and logs arrive on one connection and keep arriving, so
-    /// this starts on the first refresh and is then left alone: starting it
+    /// Traffic, memory, logs and connections arrive through a stream session,
+    /// so this starts on the first refresh and is then left alone: starting it
     /// again on every tick would open a new WebSocket every refresh interval.
     pub(super) fn start_streaming(&self, sink: &EventSink) {
         if self.starting.load(Ordering::SeqCst) {
@@ -47,7 +47,7 @@ impl Executor {
                 traffic: true,
                 memory: true,
                 logs: true,
-                connections: false,
+                connections: true,
             })
             .with_log_level(level);
 

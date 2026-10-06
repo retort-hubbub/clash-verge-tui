@@ -92,6 +92,17 @@ pub struct ListSpec {
 
 /// Draw a list, or a useful message when it has no rows.
 pub fn list(frame: &mut Frame<'_>, area: Rect, app: &App, spec: ListSpec) {
+    list_with_spacing(frame, area, app, spec, 1);
+}
+
+/// Draw a table with a page-specific gap between columns.
+pub fn list_with_spacing(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    spec: ListSpec,
+    spacing: u16,
+) {
     if spec.rows.is_empty() {
         message(frame, area, app.theme, app.tr(&spec.empty));
         return;
@@ -110,7 +121,7 @@ pub fn list(frame: &mut Frame<'_>, area: Rect, app: &App, spec: ListSpec) {
                 .style(app.theme.emphasis()),
         )
         .block(panel(Line::from(title), app.theme))
-        .column_spacing(1)
+        .column_spacing(spacing)
         .row_highlight_style(app.theme.selection())
         .highlight_symbol("");
     let mut state = spec.state;

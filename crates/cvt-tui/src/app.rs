@@ -40,6 +40,7 @@ use crate::theme::Theme;
 
 mod actions;
 mod application_update;
+mod connection_traffic;
 mod details;
 mod input;
 mod lists;
@@ -146,6 +147,7 @@ pub struct App {
     pub preview: Option<Preview>,
     /// How the connection table is ordered.
     pub connection_sort: ConnectionSort,
+    connection_traffic: connection_traffic::ConnectionTraffic,
     /// How members within each proxy group are ordered. Group headings keep
     /// their order from the generated configuration.
     pub node_sort: SortOrder,
@@ -281,6 +283,7 @@ impl App {
             viewport: (80, 24),
             preview: None,
             connection_sort: ConnectionSort::Natural,
+            connection_traffic: connection_traffic::ConnectionTraffic::default(),
             node_sort: SortOrder::Natural,
             probe_mode: ProbeMode::Connect,
             show_disabled_rules: true,

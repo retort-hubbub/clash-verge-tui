@@ -318,13 +318,23 @@ where
     async fn run(&mut self) -> Result<(), RunError> {
         self.prime().await?;
         self.draw()?;
+        let mut frame = Duration::from_millis(self.app.settings.ui.refresh_ms).max(FASTEST_FRAME);
+        let mut clock = tokio::time::interval_at(tokio::time::Instant::now() + frame, frame);
+        clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !self.app.is_quit() {
-            let frame = Duration::from_millis(self.app.settings.ui.refresh_ms).max(FASTEST_FRAME);
+            let configured =
+                Duration::from_millis(self.app.settings.ui.refresh_ms).max(FASTEST_FRAME);
+            if configured != frame {
+                frame = configured;
+                clock = tokio::time::interval_at(tokio::time::Instant::now() + frame, frame);
+                clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            }
             let wake = tokio::select! {
+                biased;
+                _ = clock.tick() => Wake::Frame,
                 event = self.input.next(), if !self.input_ended => Wake::Input(event),
                 event = self.reports.recv() => Wake::Input(event),
                 Some(()) = self.running.next(), if !self.running.is_empty() => Wake::Effect,
-                () = tokio::time::sleep(frame) => Wake::Frame,
             };
             match wake {
                 Wake::Input(Some(event)) => self.deliver(event).await?,
@@ -462,9 +472,8 @@ fn refresh_key(app: &App) -> Option<KeyEvent> {
 
 /// Terminal input, translated into the interface's own vocabulary.
 ///
-/// The frame clock is not here: it is a deadline the loop resets after every
-/// wake-up, so an interval that arrives while the user is typing cannot queue
-/// up frames behind them.
+/// The session owns a persistent frame clock. Input and live reports do not
+/// reset its deadline; missed ticks are skipped rather than queued.
 fn terminal_input() -> impl Stream<Item = Event> {
     EventStream::new().filter_map(|event| async move {
         match event {

@@ -147,6 +147,7 @@ impl Executor {
                 }
             }
             Screen::Connections => {
+                self.start_streaming(sink);
                 if self.has_controller_endpoint(sink) {
                     self.spawn_net(
                         sink,

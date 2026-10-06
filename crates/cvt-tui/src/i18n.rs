@@ -96,11 +96,6 @@ pub(crate) enum Message<'a> {
         count: usize,
         sort: &'a str,
     },
-    ConnectionTotal {
-        shown: usize,
-        total: usize,
-        bytes: &'a str,
-    },
     HomeTraffic {
         down: &'a str,
         up: &'a str,
@@ -203,22 +198,6 @@ pub(crate) fn message(language: Language, message: Message<'_>) -> String {
         (Language::Chinese, Message::ConnectionsTitle { count, sort }) => {
             format!(" 连接（{count}）· 排序：{sort} ")
         }
-        (
-            Language::English,
-            Message::ConnectionTotal {
-                shown,
-                total,
-                bytes,
-            },
-        ) => format!("{shown} shown of {total}, {bytes} transferred"),
-        (
-            Language::Chinese,
-            Message::ConnectionTotal {
-                shown,
-                total,
-                bytes,
-            },
-        ) => format!("显示 {shown} / {total}，已传输 {bytes}"),
         (
             Language::English,
             Message::HomeTraffic {
@@ -919,7 +898,11 @@ pub fn text(language: Language, english: &str) -> &str {
         "natural" => "默认",
         "fastest" => "最快",
         "slowest" => "最慢",
-        "busiest" => "流量最高",
+        "busiest" => "总流量最高",
+        "total traffic" => "总流量",
+        "transfer rate" => "实时速率",
+        "oldest" => "最早建立",
+        "newest" => "最新建立",
         "from a URL" => "从 URL 导入",
         "a blank local profile" => "新建空白本地配置",
         "update rule set" => "更新规则集",

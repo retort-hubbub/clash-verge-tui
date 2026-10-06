@@ -22,6 +22,8 @@ pub enum ConnectionSort {
     Oldest,
     /// Most recently opened first.
     Newest,
+    /// Largest current upload plus download rate first.
+    Fastest,
 }
 
 impl ConnectionSort {
@@ -32,7 +34,8 @@ impl ConnectionSort {
             Self::Natural => Self::Busiest,
             Self::Busiest => Self::Oldest,
             Self::Oldest => Self::Newest,
-            Self::Newest => Self::Natural,
+            Self::Newest => Self::Fastest,
+            Self::Fastest => Self::Natural,
         }
     }
 
@@ -41,9 +44,10 @@ impl ConnectionSort {
     pub fn label(self) -> &'static str {
         match self {
             Self::Natural => "natural",
-            Self::Busiest => "busiest",
+            Self::Busiest => "total traffic",
             Self::Oldest => "oldest",
             Self::Newest => "newest",
+            Self::Fastest => "transfer rate",
         }
     }
 }

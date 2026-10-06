@@ -28,7 +28,7 @@ fn cycling_the_sort_order_is_local_and_reorders_the_rows() {
     assert_eq!(press(&mut a, KeyCode::Char('s')), Vec::new());
     assert_eq!(a.connection_sort, ConnectionSort::Busiest);
     assert_eq!(a.connections.items()[0].id, "c2", "the busiest comes first");
-    assert!(a.current_status().unwrap().text.contains("busiest"));
+    assert!(a.current_status().unwrap().text.contains("total traffic"));
     assert_eq!(press(&mut a, KeyCode::Char('s')), Vec::new());
     assert_eq!(a.connection_sort, ConnectionSort::Oldest);
 }

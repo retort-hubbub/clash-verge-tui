@@ -63,7 +63,10 @@ impl App {
             }
             Data::Profiles(rows) => self.set_profiles(rows),
             Data::Nodes(rows) => self.set_nodes(rows),
-            Data::Connections(rows) => self.set_connections(rows),
+            Data::Connections(rows) => {
+                self.connection_traffic.update(&rows);
+                self.set_connections(rows);
+            }
             Data::Rules(rows) => self.set_rules(rows),
             Data::RuleProviders(names) => self.rule_providers = names,
             Data::Log(row) => self.logs.push(row),
@@ -211,6 +214,7 @@ impl App {
         self.nodes.set_items(Vec::new());
         self.expanded.clear();
         self.connections.set_items(Vec::new());
+        self.connection_traffic = super::connection_traffic::ConnectionTraffic::default();
         self.all_rules.clear();
         self.rules.set_items(Vec::new());
         self.rule_providers.clear();
@@ -300,6 +304,9 @@ impl App {
         let mut rows = self.connections.items().to_vec();
         match order {
             ConnectionSort::Busiest => rows.sort_by_key(|row| std::cmp::Reverse(row.total())),
+            ConnectionSort::Fastest => {
+                rows.sort_by_key(|row| std::cmp::Reverse(self.connection_rate_total(&row.id)));
+            }
             ConnectionSort::Oldest => rows.sort_by(|a, b| a.started.cmp(&b.started)),
             ConnectionSort::Newest => rows.sort_by(|a, b| b.started.cmp(&a.started)),
             ConnectionSort::Natural => {}

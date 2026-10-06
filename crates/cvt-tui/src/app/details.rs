@@ -147,7 +147,8 @@ impl App {
                     ("network", row.network.clone()),
                     ("rule", row.rule.clone()),
                     ("chain", row.chain.clone()),
-                    ("traffic", row.traffic_label()),
+                    ("transfer rate", self.connection_rate_label(&row.id)),
+                    ("total traffic", row.traffic_label()),
                     ("id", row.id.clone()),
                 ]
             }),
